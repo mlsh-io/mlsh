@@ -1,0 +1,140 @@
+name: mlsh-cli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mlsh-cli/**"
+      - "mlsh-crypto/**"
+      - "mlsh-protocol/**"
+      - "mlsh-menubar/**"
+      - ".github/workflows/mlsh-cli.yml"
+  pull_request:
+    paths:
+      - "mlsh-cli/**"
+      - "mlsh-crypto/**"
+      - "mlsh-protocol/**"
+      - "mlsh-menubar/**"
+  workflow_dispatch:
+
+jobs:
+  # -- Lint -----------------------------------------------------------------------
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check -p mlsh-cli
+      - run: cargo clippy -p mlsh-cli -- -D warnings -A clippy::uninlined_format_args
+
+  # -- Test -----------------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p mlsh-cli --lib
+
+  # -- Build binaries (cross-platform) -------------------------------------------
+  build:
+    name: build (${{ matrix.target }})
+    needs: [lint, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS
+          - target: aarch64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          # Linux
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            use_cross: true
+            archive: tar.gz
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.use_cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release -p mlsh-cli --target ${{ matrix.target }}
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release -p mlsh-cli --target ${{ matrix.target }}
+
+      - name: Create mlshtund symlink
+        if: matrix.archive == 'tar.gz'
+        run: ln -sf mlsh target/${{ matrix.target }}/release/mlshtund
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: tar czfh mlsh-cli-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release mlsh mlshtund
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          cp target/${{ matrix.target }}/release/mlsh.exe target/${{ matrix.target }}/release/mlshtund.exe
+          7z a mlsh-cli-${{ matrix.target }}.zip ./target/${{ matrix.target }}/release/mlsh.exe ./target/${{ matrix.target }}/release/mlshtund.exe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlsh-cli-${{ matrix.target }}
+          path: mlsh-cli-${{ matrix.target }}.${{ matrix.archive }}
+
+  # -- Build macOS .app bundle --------------------------------------------------
+  app-bundle:
+    name: MLSH.app (universal)
+    needs: [lint, test]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-bundle
+
+      - name: Build MLSH.app (universal)
+        run: make app-universal
+
+      - name: Upload MLSH.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: MLSH.app
+          path: target/MLSH.app

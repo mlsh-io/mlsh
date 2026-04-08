@@ -1,0 +1,20 @@
+[package]
+name = "mlsh-crypto"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Shared cryptographic primitives for MLSH (setup keypair derivation, provisioning encryption)"
+
+[dependencies]
+ring = "0.17"
+rcgen = { version = "0.14", features = ["pem"] }
+rustls-pki-types = "1"
+base64 = "0.22"
+sha2 = "0.11"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = "0.3"
+
+[dev-dependencies]
+tempfile = "3"

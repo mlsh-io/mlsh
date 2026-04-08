@@ -1,0 +1,107 @@
+name: mlsh-signal
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mlsh-signal/**"
+      - "mlsh-crypto/**"
+      - "mlsh-protocol/**"
+      - ".github/workflows/mlsh-signal.yml"
+  pull_request:
+    paths:
+      - "mlsh-signal/**"
+      - "mlsh-crypto/**"
+      - "mlsh-protocol/**"
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/mlsh-signal
+
+jobs:
+  # -- Lint -----------------------------------------------------------------------
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check -p mlsh-signal
+      - run: cargo clippy -p mlsh-signal -- -D warnings -A clippy::uninlined_format_args
+
+  # -- Test -----------------------------------------------------------------------
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p mlsh-signal --lib
+
+  # -- Check ----------------------------------------------------------------------
+  check:
+    name: cargo check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p mlsh-signal
+
+  # -- Build & push image ---------------------------------------------------------
+  image:
+    name: build image
+    runs-on: ubuntu-latest
+    needs: [lint, test, check]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,prefix=,format=short
+
+      - name: Set up QEMU (for cross-arch builds)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Get version from git describe
+        id: version
+        run: echo "git_version=$(git describe --tags --always --dirty=-dirty 2>/dev/null || echo v0.2.0)" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: mlsh-signal/Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.ref == 'refs/heads/main' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            GIT_VERSION=${{ steps.version.outputs.git_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

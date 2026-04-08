@@ -1,0 +1,63 @@
+[package]
+name = "mlsh-cli"
+version = "0.3.0"
+edition = "2021"
+license = "MIT"
+
+[[bin]]
+name = "mlsh"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.6", features = ["derive", "cargo", "env"] }
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+# Error handling
+anyhow = "1.0"
+# Terminal UI
+colored = "3.1"
+# Configuration
+dirs = "6.0"
+toml = "1.1"
+# Date/time
+time = { version = "0.3", features = ["formatting", "parsing"] }
+# Async runtime
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "signal"] }
+tokio-util = "0.7"
+# QUIC transport (ADR-011) — prefer-post-quantum enables X25519Kyber768 via aws-lc-rs
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "logging", "std", "tls12"] }
+rustls-pemfile = "2"
+rustls-pki-types = "1"
+# Shared crypto (deterministic keypair, provisioning encryption)
+mlsh-crypto = { path = "../mlsh-crypto" }
+# Shared protocol types and framing
+mlsh-protocol = { path = "../mlsh-protocol" }
+# TUN device for overlay network
+tun-rs = { version = "2", features = ["async"] }
+# Local IP address discovery (for candidate gathering)
+local-ip-address = "0.6"
+# Logging
+env_logger = "0.11"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# QR code generation for invite URLs
+qrcode = "0.14"
+# Base64 encoding for invite payloads
+base64 = "0.22"
+# Username detection
+whoami = "2"
+
+[target.'cfg(unix)'.dependencies]
+# Unix process management
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# D-Bus for systemd-resolved DNS integration
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,43 @@
+[package]
+name = "mlsh-signal"
+version = "0.2.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "mlsh-signal"
+path = "src/main.rs"
+
+[dependencies]
+# QUIC transport — prefer-post-quantum enables X25519Kyber768 via aws-lc-rs
+quinn   = "0.11"
+rustls  = { version = "0.23", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "logging", "std", "tls12"] }
+rcgen   = { version = "0.14", features = ["pem"] }
+rustls-pemfile = "2"
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+# Database
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+# Compile sqlite3 into the binary — required for static musl builds
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
+# Serialization
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Error handling
+anyhow = "1"
+# Token generation
+base64 = { version = "0.22", features = ["alloc"] }
+ring   = "0.17"
+# Shared crypto primitives
+mlsh-crypto = { path = "../mlsh-crypto" }
+# Shared protocol types and framing
+mlsh-protocol = { path = "../mlsh-protocol" }
+time = { version = "0.3", features = ["formatting"] }
+# Config
+toml = "1"
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

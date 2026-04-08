@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="18" height="18" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- MLSH hexagonal logo — monochrome template for macOS menu bar -->
+  <!-- Outer hexagon -->
+  <path d="M128 7L24 67V187L128 247L232 187V67Z" stroke="black" stroke-width="14" fill="none" stroke-linejoin="round"/>
+  <!-- Top diamond face -->
+  <path d="M128 39L52 83L128 127L204 83Z" stroke="black" stroke-width="10" fill="none" stroke-linejoin="round"/>
+  <!-- Vertical center line -->
+  <line x1="128" y1="127" x2="128" y2="215" stroke="black" stroke-width="10" stroke-linecap="round"/>
+  <!-- Left vertical -->
+  <line x1="52" y1="83" x2="52" y2="171" stroke="black" stroke-width="10" stroke-linecap="round"/>
+  <!-- Right vertical -->
+  <line x1="204" y1="83" x2="204" y2="171" stroke="black" stroke-width="10" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,49 @@
+# ── xx helper (provides xx-cargo, xx-apk, etc.) ───────────────────────────────
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.6.1 AS xx
+
+# ── Build stage ────────────────────────────────────────────────────────────────
+FROM --platform=$BUILDPLATFORM rust:1.88-alpine AS builder
+
+# Copy xx scripts into the builder
+COPY --from=xx / /
+
+ARG TARGETPLATFORM
+ARG GIT_VERSION=
+
+# xx-apk installs packages for the *target* arch; we also need host build tools
+RUN apk add --no-cache clang lld musl-dev
+RUN xx-apk add --no-cache musl-dev gcc
+
+# Install the Rust target for cross-compilation
+RUN xx-cargo --print-target-triple | xargs rustup target add
+
+# Copy path dependencies (for caching)
+COPY mlsh-crypto /mlsh-crypto
+COPY mlsh-protocol /mlsh-protocol
+
+WORKDIR /build
+
+# Cache dependencies layer
+COPY mlsh-signal/Cargo.toml ./
+RUN mkdir src && echo 'fn main(){}' > src/main.rs \
+    && xx-cargo build --release \
+    && rm -rf src
+
+# Build the real source
+COPY mlsh-signal/build.rs ./
+COPY mlsh-signal/src ./src
+RUN touch src/main.rs \
+    && GIT_VERSION="${GIT_VERSION}" xx-cargo build --release \
+    && cp "target/$(xx-cargo --print-target-triple)/release/mlsh-signal" /mlsh-signal
+
+# ── Runtime stage — scratch (binary only, zero OS layer) ──────────────────────
+FROM scratch
+
+COPY --from=builder /mlsh-signal /mlsh-signal
+
+ENV MLSH_SIGNAL_DB=/var/lib/mlsh-signal/signal.db
+ENV RUST_LOG=mlsh_signal=info
+
+EXPOSE 4433/udp
+
+ENTRYPOINT ["/mlsh-signal"]
