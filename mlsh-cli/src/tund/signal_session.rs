@@ -208,9 +208,7 @@ async fn run_session(
             anyhow::bail!("Signal auth failed ({}): {}", code, message);
         }
         ServerMessage::NodeAuthOk {
-            overlay_ip,
-            peers,
-            ..
+            overlay_ip, peers, ..
         } => {
             let ip: Ipv4Addr = overlay_ip.parse().context("Invalid overlay IP")?;
             (ip, peers)

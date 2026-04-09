@@ -10,11 +10,7 @@ use tracing::{debug, info};
 use super::listener::QuicState;
 use crate::protocol::RelayMessage;
 
-async fn reject(
-    send: &mut quinn::SendStream,
-    code: &str,
-    msg: &str,
-) -> anyhow::Result<()> {
+async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::Result<()> {
     let resp = crate::protocol::ServerMessage::error(code, msg);
     crate::protocol::write_message(send, &resp).await?;
     send.finish()?;

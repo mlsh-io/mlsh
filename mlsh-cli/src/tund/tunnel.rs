@@ -898,7 +898,15 @@ async fn establish_peer_connection(
         }
     };
 
-    match open_relay_to_peer(&signal_conn, cluster_id, my_node_id, node_token, &peer.node_id).await {
+    match open_relay_to_peer(
+        &signal_conn,
+        cluster_id,
+        my_node_id,
+        node_token,
+        &peer.node_id,
+    )
+    .await
+    {
         Ok((send, recv)) => {
             tracing::info!("Relay to {} via signal", peer.node_id);
 

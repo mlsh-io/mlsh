@@ -4,8 +4,8 @@
 //! with a custom TLS verifier, and exchanges the bootstrap or join payload.
 
 use super::verifier::SetupCodeVerifier;
-use mlsh_protocol::framing;
 use anyhow::{Context, Result};
+use mlsh_protocol::framing;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;

@@ -224,7 +224,10 @@ async fn run_node_session(
         overlay_ip: overlay_ip.to_string(),
         candidates: Vec::new(),
     };
-    state.sessions.notify_peer_joined(&cluster_id, peer_info).await;
+    state
+        .sessions
+        .notify_peer_joined(&cluster_id, peer_info)
+        .await;
 
     // Message loop
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
@@ -300,7 +303,10 @@ async fn run_node_session(
         .await;
 
     if was_active {
-        state.sessions.notify_peer_left(&cluster_id, &node.node_id).await;
+        state
+            .sessions
+            .notify_peer_left(&cluster_id, &node.node_id)
+            .await;
     }
 
     info!(id, cluster_id, node_id = %node.node_id, was_active, "Node session closed");
@@ -365,10 +371,7 @@ async fn handle_adopt(
     let signing_key = state.config.signing_key.as_deref().unwrap_or("");
     let node_token = mlsh_crypto::invite::generate_node_token(signing_key, cluster_id, node_id);
 
-    let peers = state
-        .sessions
-        .get_peer_list(cluster_id, node_id)
-        .await;
+    let peers = state.sessions.get_peer_list(cluster_id, node_id).await;
 
     info!(cluster_id, node_id, %overlay_ip, role, "Node adopted");
 
@@ -481,7 +484,10 @@ async fn handle_revoke(
         Ok(true) => {
             // Kick the node's active session (closes QUIC connection)
             state.sessions.kick_node(cluster_id, target_node_id).await;
-            state.sessions.notify_peer_left(cluster_id, target_node_id).await;
+            state
+                .sessions
+                .notify_peer_left(cluster_id, target_node_id)
+                .await;
             info!(cluster_id, target_node_id, "Node revoked");
             ServerMessage::RevokeOk
         }

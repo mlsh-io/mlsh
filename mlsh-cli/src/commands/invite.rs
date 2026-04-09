@@ -84,8 +84,13 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
         + ttl;
     let expires_dt = time::OffsetDateTime::from_unix_timestamp(expires_at as i64)
         .map(|dt| {
-            dt.format(&time::format_description::parse("[year]-[month]-[day] [hour]:[minute]:[second] UTC").unwrap())
-                .unwrap_or_else(|_| format!("{}s from now", ttl))
+            dt.format(
+                &time::format_description::parse(
+                    "[year]-[month]-[day] [hour]:[minute]:[second] UTC",
+                )
+                .unwrap(),
+            )
+            .unwrap_or_else(|_| format!("{}s from now", ttl))
         })
         .unwrap_or_else(|_| format!("{}s from now", ttl));
 
