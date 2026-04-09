@@ -16,10 +16,17 @@ GIT_VERSION  := $(shell git describe --tags --always --dirty=-dirty 2>/dev/null 
 # Top-level targets
 # ---------------------------------------------------------------------------
 
-.PHONY: help app app-universal cli cli-universal windows menubar menubar-universal signal signal-image clean
+.PHONY: help fmt lint app app-universal cli cli-universal windows menubar menubar-universal signal signal-image clean
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+
+fmt: ## Format all Rust code
+	cargo fmt --all
+
+lint: ## Run fmt check + clippy on all crates
+	cargo fmt --all --check
+	cargo clippy --all -- -D warnings -A clippy::uninlined_format_args
 
 app: cli menubar bundle ## Build MLSH.app for current arch
 	@echo "\nDone: $(APP)  (run with: open $(APP))"
