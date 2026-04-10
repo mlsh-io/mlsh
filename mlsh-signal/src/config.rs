@@ -23,11 +23,6 @@ pub struct Config {
     #[serde(default)]
     pub cloud_api_token: Option<String>,
 
-    /// Cluster secret for HMAC-based invite verification (self-hosted mode).
-    /// If absent, invites cannot be verified locally (managed mode uses cloud).
-    #[serde(default)]
-    pub cluster_secret: Option<String>,
-
     /// Overlay network subnet in CIDR notation (e.g. "10.0.10.0/24").
     /// Nodes are allocated sequential IPs from this range.
     #[serde(default = "default_overlay_subnet")]
@@ -77,7 +72,6 @@ impl Default for Config {
             quic: QuicConfig::default(),
             cloud_url: None,
             cloud_api_token: None,
-            cluster_secret: None,
             overlay_subnet: default_overlay_subnet(),
         }
     }
@@ -96,15 +90,9 @@ impl Config {
         if let Ok(s) = std::env::var("MLSH_CLOUD_API_TOKEN") {
             cfg.cloud_api_token = Some(s);
         }
-        if let Ok(s) = std::env::var("MLSH_CLUSTER_SECRET") {
-            cfg.cluster_secret = Some(s);
-        }
         if let Ok(s) = std::env::var("MLSH_OVERLAY_SUBNET") {
             cfg.overlay_subnet = s;
         }
-
-        // cluster_secret and signing_key are persisted in the DB.
-        // Auto-generation happens in main.rs after DB init.
 
         Ok(cfg)
     }

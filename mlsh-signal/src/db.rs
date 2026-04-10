@@ -69,7 +69,145 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .execute(&pool)
         .await;
 
+    // --- Cluster registry
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS clusters (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create clusters table")?;
+
+    let _ = sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_clusters_name ON clusters (name)")
+        .execute(&pool)
+        .await;
+
+    // --- One-time setup codes (per-cluster, burned after first use)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS setup_codes (
+            cluster_id TEXT NOT NULL REFERENCES clusters(id),
+            code_hash  TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            PRIMARY KEY (cluster_id)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create setup_codes table")?;
+
     Ok(pool)
+}
+
+// --- Cluster management
+
+/// Create a new cluster. Returns the generated UUID.
+pub async fn create_cluster(pool: &SqlitePool, name: &str) -> Result<String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
+    sqlx::query("INSERT INTO clusters (id, name, created_at) VALUES (?1, ?2, ?3)")
+        .bind(&id)
+        .bind(name)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .context("Failed to create cluster (name may already exist)")?;
+
+    Ok(id)
+}
+
+/// Look up a cluster by name.
+pub async fn get_cluster_by_name(pool: &SqlitePool, name: &str) -> Result<Option<(String, String)>> {
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT id, name FROM clusters WHERE name = ?1")
+            .bind(name)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to lookup cluster")?;
+    Ok(row)
+}
+
+/// Check whether a cluster_id exists in the clusters table.
+pub async fn cluster_exists(pool: &SqlitePool, cluster_id: &str) -> Result<bool> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM clusters WHERE id = ?1")
+            .bind(cluster_id)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to check cluster")?;
+    Ok(row.is_some())
+}
+
+// --- Setup codes (one-time, per-cluster)
+
+/// Store a hashed setup code for a cluster. Replaces any existing code.
+pub async fn store_setup_code(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    code_hash: &str,
+    expires_at: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT OR REPLACE INTO setup_codes (cluster_id, code_hash, expires_at) VALUES (?1, ?2, ?3)",
+    )
+    .bind(cluster_id)
+    .bind(code_hash)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .context("Failed to store setup code")?;
+    Ok(())
+}
+
+/// Verify a setup code and burn it (delete) on success.
+///
+/// Returns the cluster_id if valid, or None if the code doesn't match or expired.
+pub async fn verify_and_burn_setup_code(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    code_hash: &str,
+) -> Result<bool> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT expires_at FROM setup_codes WHERE cluster_id = ?1 AND code_hash = ?2",
+    )
+    .bind(cluster_id)
+    .bind(code_hash)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to verify setup code")?;
+
+    let expires_at = match row {
+        Some((ea,)) => ea,
+        None => return Ok(false),
+    };
+
+    // Check expiry
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    if now > expires_at {
+        // Expired — burn it anyway
+        sqlx::query("DELETE FROM setup_codes WHERE cluster_id = ?1")
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .ok();
+        return Ok(false);
+    }
+
+    // Valid — burn it
+    sqlx::query("DELETE FROM setup_codes WHERE cluster_id = ?1")
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to burn setup code")?;
+
+    Ok(true)
 }
 
 // --- Config key-value store
@@ -474,6 +612,21 @@ mod tests {
         .unwrap();
         sqlx::query(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_overlay_ip ON nodes (cluster_id, overlay_ip)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS clusters (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS setup_codes (
+                cluster_id TEXT NOT NULL, code_hash TEXT NOT NULL,
+                expires_at TEXT NOT NULL, PRIMARY KEY (cluster_id))",
         )
         .execute(&pool)
         .await

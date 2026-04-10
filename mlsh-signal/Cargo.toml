@@ -35,6 +35,12 @@ mlsh-protocol = { path = "../mlsh-protocol" }
 time = { version = "0.3", features = ["formatting"] }
 # Config
 toml = "1"
+# CLI
+clap = { version = "4.6", features = ["derive"] }
+# UUID generation for cluster IDs
+uuid = { version = "1", features = ["v4"] }
+# Cryptographic hashing for setup codes
+sha2 = "0.10"
 # Logging
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

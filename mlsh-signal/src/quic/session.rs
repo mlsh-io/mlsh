@@ -312,21 +312,19 @@ async fn handle_adopt(
     _expires_at: u64,
 ) -> ServerMessage {
     // Two adoption paths:
-    // 1. cluster_secret → first node setup (role: admin)
-    // 2. sponsor-signed invite → subsequent nodes (role from invite)
+    // 1. One-time setup code → first node (role: admin), code is burned after use.
+    // 2. Sponsor-signed invite → subsequent nodes (role from invite).
 
-    let is_cluster_secret = state
-        .config
-        .cluster_secret
-        .as_deref()
-        .is_some_and(|secret| pre_auth_token == secret);
+    let is_setup_code = {
+        use sha2::{Digest, Sha256};
+        let code_hash = format!("{:x}", Sha256::digest(pre_auth_token.as_bytes()));
+        db::verify_and_burn_setup_code(&state.db, cluster_id, &code_hash)
+            .await
+            .unwrap_or(false)
+    };
 
-    let (role, sponsored_by, admission_cert_json) = if is_cluster_secret {
-        // First node — becomes admin, self-signed admission cert.
-        // The node's key_pem isn't available on signal, so we generate
-        // a placeholder. The real self-signed cert is created client-side
-        // and stored in the AdoptOk response flow.
-        // For now, signal stores the fact that this is a root admin.
+    let (role, sponsored_by, admission_cert_json) = if is_setup_code {
+        // First node — becomes admin via one-time setup code (now burned).
         ("admin".to_string(), String::new(), String::new())
     } else {
         // Sponsor-signed Ed25519 invite — build admission cert from it
@@ -422,16 +420,8 @@ async fn verify_sponsor_invite(
     }
 
     // Verify the signature using the sponsor's public key
-    // For now, we use the stored public_key field. If empty (migration), fall back to
-    // HMAC verification for backward compat.
     if sponsor.public_key.is_empty() {
-        // Fallback: try HMAC verification with cluster_secret
-        if let Some(secret) = state.config.cluster_secret.as_deref() {
-            if mlsh_crypto::invite::verify_invite(secret, invite_token, signed.payload.expires_at) {
-                return Ok((signed.payload.target_role, signed.payload.sponsor_node_id));
-            }
-        }
-        return Err("Sponsor has no public key and HMAC verification failed".to_string());
+        return Err("Sponsor has no public key — cannot verify invite signature".to_string());
     }
 
     // Decode the public key
