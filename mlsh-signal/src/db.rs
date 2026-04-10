@@ -604,6 +604,38 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
 }
 
 /// Remove a node from a cluster. Returns true if a row was deleted.
+/// Update a node's role and admission cert. Returns true if the node was found.
+pub async fn update_node_role(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    node_id: &str,
+    new_role: &str,
+    admission_cert: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        "UPDATE nodes SET role = ?1, admission_cert = ?2 WHERE cluster_id = ?3 AND node_id = ?4",
+    )
+    .bind(new_role)
+    .bind(admission_cert)
+    .bind(cluster_id)
+    .bind(node_id)
+    .execute(pool)
+    .await
+    .context("Failed to update node role")?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Count the number of admin nodes in a cluster.
+pub async fn count_admins(pool: &SqlitePool, cluster_id: &str) -> Result<i64> {
+    let row: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM nodes WHERE cluster_id = ?1 AND role = 'admin'")
+            .bind(cluster_id)
+            .fetch_one(pool)
+            .await
+            .context("Failed to count admins")?;
+    Ok(row.0)
+}
+
 pub async fn remove_node(pool: &SqlitePool, cluster_id: &str, node_id: &str) -> Result<bool> {
     let result = sqlx::query("DELETE FROM nodes WHERE cluster_id = ?1 AND node_id = ?2")
         .bind(cluster_id)

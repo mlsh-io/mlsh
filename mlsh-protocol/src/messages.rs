@@ -62,6 +62,15 @@ pub enum StreamMessage {
         target_node_id: String,
     },
 
+    /// Change a node's role (admin only). The caller signs a new admission cert.
+    Promote {
+        cluster_id: String,
+        target_node_id: String,
+        new_role: String,
+        /// New admission cert signed by the caller (JSON-serialized).
+        admission_cert: String,
+    },
+
     /// List all nodes in the cluster (sent within an authenticated session).
     ListNodes,
 }
@@ -101,6 +110,15 @@ pub enum ServerMessage {
         cluster_id: String,
     },
     RevokeOk,
+    PromoteOk,
+
+    /// Pushed to all connected peers when a node's role changes.
+    PeerUpdated {
+        node_id: String,
+        cluster_id: String,
+        new_role: String,
+        admission_cert: String,
+    },
 
     /// Response to ListNodes: all registered nodes with online/offline status.
     NodeList {

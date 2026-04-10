@@ -93,6 +93,24 @@ async fn handle_stream(
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
+        StreamMessage::Promote {
+            cluster_id,
+            target_node_id,
+            new_role,
+            admission_cert,
+        } => {
+            let resp = handle_promote(
+                state,
+                conn,
+                &cluster_id,
+                &target_node_id,
+                &new_role,
+                &admission_cert,
+            )
+            .await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
         StreamMessage::RelayOpen {
             cluster_id,
             node_id,
@@ -487,6 +505,94 @@ async fn handle_revoke(
         Ok(false) => ServerMessage::error("not_found", "Node not found"),
         Err(e) => {
             warn!(error = %e, "Failed to remove node");
+            ServerMessage::error("internal", "Database error")
+        }
+    }
+}
+
+// --- Promote handler
+
+async fn handle_promote(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    cluster_id: &str,
+    target_node_id: &str,
+    new_role: &str,
+    admission_cert: &str,
+) -> ServerMessage {
+    // Validate role
+    if new_role != "admin" && new_role != "node" {
+        return ServerMessage::error("invalid_request", "Role must be 'admin' or 'node'");
+    }
+
+    // Authenticate the caller via TLS client certificate
+    let caller_fp = match extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
+        None => return ServerMessage::error("auth_failed", "Client certificate required"),
+    };
+
+    let caller = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
+        Err(e) => {
+            warn!(error = %e, "Failed to look up caller for promote");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    if caller.role != "admin" {
+        return ServerMessage::error("forbidden", "Only admin nodes can change roles");
+    }
+
+    // Prevent demoting the last admin
+    if new_role == "node" {
+        match db::count_admins(&state.db, cluster_id).await {
+            Ok(count) if count <= 1 => {
+                return ServerMessage::error(
+                    "forbidden",
+                    "Cannot demote the last admin — cluster would be locked",
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "Failed to count admins");
+                return ServerMessage::error("internal", "Database error");
+            }
+            _ => {}
+        }
+    }
+
+    // Update the node's role and admission cert
+    match db::update_node_role(&state.db, cluster_id, target_node_id, new_role, admission_cert)
+        .await
+    {
+        Ok(true) => {
+            info!(cluster_id, target_node_id, new_role, caller = %caller.node_id, "Node role updated");
+            db::audit(
+                &state.db,
+                cluster_id,
+                "promote",
+                target_node_id,
+                &format!("role={}, by={}", new_role, caller.node_id),
+            )
+            .await;
+
+            // Broadcast PeerUpdated to all connected peers
+            let msg = ServerMessage::PeerUpdated {
+                node_id: target_node_id.to_string(),
+                cluster_id: cluster_id.to_string(),
+                new_role: new_role.to_string(),
+                admission_cert: admission_cert.to_string(),
+            };
+            state
+                .sessions
+                .broadcast(cluster_id, msg)
+                .await;
+
+            ServerMessage::PromoteOk
+        }
+        Ok(false) => ServerMessage::error("not_found", "Node not found"),
+        Err(e) => {
+            warn!(error = %e, "Failed to update node role");
             ServerMessage::error("internal", "Database error")
         }
     }

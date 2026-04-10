@@ -4,5 +4,6 @@ pub mod daemon;
 pub mod identity;
 pub mod invite;
 pub mod nodes;
+pub mod promote;
 pub mod revoke;
 pub mod setup;

@@ -77,6 +77,17 @@ enum Commands {
         cluster: String,
     },
 
+    /// Change a node's role (admin only)
+    Promote {
+        /// Cluster name
+        cluster: String,
+        /// Node ID to promote/demote
+        node: String,
+        /// New role (admin or node)
+        #[arg(long)]
+        role: String,
+    },
+
     /// Remove a node from the cluster (admin only)
     Revoke {
         /// Cluster name
@@ -220,6 +231,11 @@ async fn run_cli() -> Result<()> {
             commands::invite::handle_invite(&cluster, ttl, &role).await
         }
         Commands::Nodes { cluster } => commands::nodes::handle_nodes(&cluster).await,
+        Commands::Promote {
+            cluster,
+            node,
+            role,
+        } => commands::promote::handle_promote(&cluster, &node, &role).await,
         Commands::Revoke { cluster, node } => {
             commands::revoke::handle_revoke(&cluster, &node).await
         }
