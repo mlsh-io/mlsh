@@ -1,19 +1,18 @@
-//! HMAC-based invite tokens and node authentication tokens.
+//! HMAC-based invite tokens and Ed25519-signed sponsor invites.
 //!
 //! Invite tokens are generated offline by the CLI using the cluster secret.
 //! They encode an expiration timestamp and can be verified by signal without
 //! any stored state — signal just recomputes the HMAC.
 //!
-//! Node tokens are issued by signal at onboarding and used for reconnection.
-//! They are derived from a signing key that is independent of the cluster secret,
-//! so rotating the cluster secret does not invalidate existing node tokens.
+//! Node authentication uses mTLS — the node's Ed25519 certificate is presented
+//! during the QUIC handshake and verified by fingerprint lookup. No shared
+//! secret or token is needed for reconnection.
 
 use base64::Engine;
 use ring::hmac;
 use ring::signature::{self, Ed25519KeyPair};
 
 const INVITE_DOMAIN: &[u8] = b"mlsh-invite-v1";
-const NODE_TOKEN_DOMAIN: &[u8] = b"mlsh-node-token-v1";
 
 /// Generate an invite token for a cluster.
 ///
@@ -35,30 +34,6 @@ pub fn verify_invite(cluster_secret: &str, token: &str, expires_at: u64) -> bool
         return false;
     }
     let expected = compute_invite_hmac(cluster_secret, expires_at);
-    constant_time_eq(token.as_bytes(), expected.as_bytes())
-}
-
-/// Generate a node token for reconnection.
-///
-/// `signing_key` is signal's internal key (independent of cluster_secret).
-/// The token is `HMAC-SHA256(signing_key, domain || cluster_id || node_id)`, base64url-encoded.
-pub fn generate_node_token(signing_key: &str, cluster_id: &str, node_id: &str) -> String {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, signing_key.as_bytes());
-    let mut msg =
-        Vec::with_capacity(NODE_TOKEN_DOMAIN.len() + cluster_id.len() + node_id.len() + 2);
-    msg.extend_from_slice(NODE_TOKEN_DOMAIN);
-    msg.push(0x00); // separator
-    msg.extend_from_slice(cluster_id.as_bytes());
-    msg.push(0x00);
-    msg.extend_from_slice(node_id.as_bytes());
-
-    let tag = hmac::sign(&key, &msg);
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(tag.as_ref())
-}
-
-/// Verify a node token.
-pub fn verify_node_token(signing_key: &str, cluster_id: &str, node_id: &str, token: &str) -> bool {
-    let expected = generate_node_token(signing_key, cluster_id, node_id);
     constant_time_eq(token.as_bytes(), expected.as_bytes())
 }
 
@@ -301,38 +276,6 @@ mod tests {
         let (token, expires_at) = generate_invite(secret, 3600);
         // Attacker tries to extend expiry
         assert!(!verify_invite(secret, &token, expires_at + 7200));
-    }
-
-    #[test]
-    fn node_token_roundtrip() {
-        let signing_key = "signal-signing-key-abc";
-        let token = generate_node_token(signing_key, "cluster-1", "node-a");
-        assert!(verify_node_token(
-            signing_key,
-            "cluster-1",
-            "node-a",
-            &token
-        ));
-    }
-
-    #[test]
-    fn node_token_wrong_key_fails() {
-        let token = generate_node_token("key-a", "cluster-1", "node-a");
-        assert!(!verify_node_token("key-b", "cluster-1", "node-a", &token));
-    }
-
-    #[test]
-    fn node_token_wrong_node_fails() {
-        let key = "signing-key";
-        let token = generate_node_token(key, "cluster-1", "node-a");
-        assert!(!verify_node_token(key, "cluster-1", "node-b", &token));
-    }
-
-    #[test]
-    fn node_token_wrong_cluster_fails() {
-        let key = "signing-key";
-        let token = generate_node_token(key, "cluster-1", "node-a");
-        assert!(!verify_node_token(key, "cluster-2", "node-a", &token));
     }
 
     #[test]

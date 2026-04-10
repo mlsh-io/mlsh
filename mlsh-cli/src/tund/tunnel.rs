@@ -34,7 +34,6 @@ pub struct ClusterConfig {
     pub cluster_id: String,
     pub node_id: String,
     pub fingerprint: String,
-    pub node_token: String,
     pub public_key: String,
     /// Path to the identity directory containing cert.pem and key.pem.
     pub identity_dir: std::path::PathBuf,
@@ -42,16 +41,22 @@ pub struct ClusterConfig {
 
 impl ClusterConfig {
     /// Build signal session credentials from this config.
-    pub fn signal_credentials(&self) -> SignalCredentials {
-        SignalCredentials {
+    pub fn signal_credentials(&self) -> Result<SignalCredentials> {
+        let cert_pem = std::fs::read_to_string(self.identity_dir.join("cert.pem"))
+            .context("Missing identity cert.pem")?;
+        let key_pem = std::fs::read_to_string(self.identity_dir.join("key.pem"))
+            .context("Missing identity key.pem")?;
+
+        Ok(SignalCredentials {
             signal_endpoint: self.signal_endpoint.clone(),
             signal_fingerprint: self.signal_fingerprint.clone(),
             cluster_id: self.cluster_id.clone(),
             node_id: self.node_id.clone(),
             fingerprint: self.fingerprint.clone(),
-            node_token: self.node_token.clone(),
             public_key: self.public_key.clone(),
-        }
+            cert_pem,
+            key_pem,
+        })
     }
 }
 
@@ -264,7 +269,13 @@ async fn tunnel_task(
     // Spawn ONE signal session — it handles its own reconnection internally.
     // Pass the PeerTable so incoming relay streams can register routes.
     let session = signal_session::spawn(
-        config.signal_credentials(),
+        match config.signal_credentials() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to load identity: {}", e);
+                return;
+            }
+        },
         Some(device.clone()),
         peer_table.clone(),
         overlay_port,
@@ -459,7 +470,6 @@ async fn establish_and_run(
     let cm_device = device.clone();
     let cm_node_id = config.node_id.clone();
     let cm_cluster_id = config.cluster_id.clone();
-    let cm_node_token = config.node_token.clone();
     let cm_identity_dir = config.identity_dir.clone();
     let conn_manager = tokio::spawn(async move {
         run_connection_manager(
@@ -470,7 +480,6 @@ async fn establish_and_run(
             overlay_ip,
             &cm_node_id,
             &cm_cluster_id,
-            &cm_node_token,
             &cm_identity_dir,
         )
         .await;
@@ -703,7 +712,6 @@ async fn run_connection_manager(
     overlay_ip: Ipv4Addr,
     my_node_id: &str,
     cluster_id: &str,
-    node_token: &str,
     identity_dir: &std::path::Path,
 ) {
     use std::collections::HashMap;
@@ -773,7 +781,6 @@ async fn run_connection_manager(
             let dev = device.clone();
             let cid = cluster_id.to_string();
             let nid = my_node_id.to_string();
-            let token = node_token.to_string();
             let signal_conn = conn_rx.borrow().clone();
             let id_dir = identity_dir.to_path_buf();
 
@@ -787,7 +794,6 @@ async fn run_connection_manager(
                     signal_conn,
                     &cid,
                     &nid,
-                    &token,
                     &id_dir,
                 )
                 .await;
@@ -828,7 +834,6 @@ async fn establish_peer_connection(
     signal_conn: Option<quinn::Connection>,
     cluster_id: &str,
     my_node_id: &str,
-    node_token: &str,
     identity_dir: &std::path::Path,
 ) {
     // Try direct connection first if peer has candidates
@@ -902,7 +907,6 @@ async fn establish_peer_connection(
         &signal_conn,
         cluster_id,
         my_node_id,
-        node_token,
         &peer.node_id,
     )
     .await
@@ -951,7 +955,6 @@ async fn open_relay_to_peer(
     signal_conn: &quinn::Connection,
     cluster_id: &str,
     node_id: &str,
-    token: &str,
     target_node_id: &str,
 ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
     let (mut send, mut recv) = signal_conn
@@ -962,7 +965,6 @@ async fn open_relay_to_peer(
     let msg = mlsh_protocol::messages::StreamMessage::RelayOpen {
         cluster_id: cluster_id.to_string(),
         node_id: node_id.to_string(),
-        token: token.to_string(),
         target_node_id: target_node_id.to_string(),
     };
     mlsh_protocol::framing::write_msg(&mut send, &msg).await?;
@@ -1150,12 +1152,6 @@ fn parse_cluster_config_from_toml(
         .context("Missing node_auth.fingerprint")?
         .to_string();
 
-    let node_token = node_auth
-        .get("node_token")
-        .and_then(|v| v.as_str())
-        .context("Missing node_auth.node_token")?
-        .to_string();
-
     let overlay_ip = table
         .get("overlay")
         .and_then(|o| o.get("ip"))
@@ -1187,7 +1183,6 @@ fn parse_cluster_config_from_toml(
         cluster_id,
         node_id,
         fingerprint,
-        node_token,
         public_key,
         identity_dir: identity_dir.to_path_buf(),
     })

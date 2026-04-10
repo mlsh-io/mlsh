@@ -132,10 +132,6 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         .as_str()
         .unwrap_or("100.64.0.0/10")
         .to_string();
-    let node_token = resp["node_token"]
-        .as_str()
-        .context("Missing node_token")?
-        .to_string();
     let resp_cluster_id = resp["cluster_id"]
         .as_str()
         .unwrap_or(&cluster_id)
@@ -150,14 +146,13 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         "[cluster]\n\
          name = \"{cluster_name}\"\n\
          id = \"{resp_cluster_id}\"\n\
-         mode = \"node-token\"\n\
+         mode = \"mtls\"\n\
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
          \n\
          [node_auth]\n\
          node_id = \"{node_id}\"\n\
          fingerprint = \"{fp}\"\n\
-         node_token = \"{node_token}\"\n\
          \n\
          [overlay]\n\
          ip = \"{overlay_ip}\"\n\
@@ -168,7 +163,6 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     let cluster_file = clusters_dir.join(format!("{}.toml", cluster_name));
     std::fs::write(&cluster_file, &cluster_toml)?;
 
-    // Restrict permissions — file contains node_token
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

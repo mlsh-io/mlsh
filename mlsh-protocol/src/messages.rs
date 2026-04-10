@@ -21,21 +21,20 @@ pub enum StreamMessage {
     },
 
     /// Relay stream request (opens bidirectional relay through signal).
+    /// Caller is authenticated via TLS client certificate.
     RelayOpen {
         cluster_id: String,
         node_id: String,
-        token: String,
         /// Target peer to relay to. If empty, signal picks the first available.
         #[serde(default)]
         target_node_id: String,
     },
 
-    // Per-node keypair auth
-    /// Node reconnection: authenticate with fingerprint + node_token.
+    /// Node authentication via TLS client certificate.
+    /// Signal extracts the fingerprint from the QUIC connection's client cert
+    /// and looks it up in the node registry — no shared secret needed.
     NodeAuth {
         cluster_id: String,
-        fingerprint: String,
-        node_token: String,
         #[serde(default)]
         public_key: String,
     },
@@ -54,9 +53,9 @@ pub enum StreamMessage {
     },
 
     /// Admin revocation: remove a node from the cluster.
+    /// Caller is authenticated via TLS client certificate.
     Revoke {
         cluster_id: String,
-        node_token: String,
         target_node_id: String,
     },
 
@@ -86,7 +85,6 @@ pub enum ServerMessage {
         node_id: String,
         overlay_ip: String,
         overlay_subnet: String,
-        node_token: String,
         peers: Vec<PeerInfo>,
     },
 
@@ -139,7 +137,6 @@ pub enum RelayMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
     fn serialize_error() {
@@ -166,19 +163,17 @@ mod tests {
     #[test]
     fn deserialize_relay_open() {
         let msg: StreamMessage = serde_json::from_str(
-            r#"{"type":"relay_open","cluster_id":"c1","node_id":"n1","token":"tok"}"#,
+            r#"{"type":"relay_open","cluster_id":"c1","node_id":"n1"}"#,
         )
         .unwrap();
         match msg {
             StreamMessage::RelayOpen {
                 cluster_id,
                 node_id,
-                token,
                 target_node_id,
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(node_id, "n1");
-                assert_eq!(token, "tok");
                 assert!(target_node_id.is_empty());
             }
             _ => panic!("expected RelayOpen"),

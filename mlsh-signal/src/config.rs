@@ -28,11 +28,6 @@ pub struct Config {
     #[serde(default)]
     pub cluster_secret: Option<String>,
 
-    /// Signing key for generating node tokens (reconnection auth).
-    /// Auto-generated at first startup if absent, then persisted.
-    #[serde(default)]
-    pub signing_key: Option<String>,
-
     /// Overlay network subnet in CIDR notation (e.g. "10.0.10.0/24").
     /// Nodes are allocated sequential IPs from this range.
     #[serde(default = "default_overlay_subnet")]
@@ -83,7 +78,6 @@ impl Default for Config {
             cloud_url: None,
             cloud_api_token: None,
             cluster_secret: None,
-            signing_key: None,
             overlay_subnet: default_overlay_subnet(),
         }
     }
@@ -104,9 +98,6 @@ impl Config {
         }
         if let Ok(s) = std::env::var("MLSH_CLUSTER_SECRET") {
             cfg.cluster_secret = Some(s);
-        }
-        if let Ok(s) = std::env::var("MLSH_SIGNING_KEY") {
-            cfg.signing_key = Some(s);
         }
         if let Ok(s) = std::env::var("MLSH_OVERLAY_SUBNET") {
             cfg.overlay_subnet = s;

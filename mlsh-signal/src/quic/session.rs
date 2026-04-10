@@ -57,18 +57,10 @@ async fn handle_stream(
     match msg {
         StreamMessage::NodeAuth {
             cluster_id,
-            fingerprint,
-            node_token,
             public_key,
         } => {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let auth = NodeAuthRequest {
-                cluster_id,
-                fingerprint,
-                node_token,
-                public_key,
-            };
-            run_node_session(id, auth, send, recv, conn, state).await?;
+            run_node_session(id, &cluster_id, &public_key, send, recv, conn, state).await?;
         }
         StreamMessage::Adopt {
             cluster_id,
@@ -93,26 +85,24 @@ async fn handle_stream(
         }
         StreamMessage::Revoke {
             cluster_id,
-            node_token,
             target_node_id,
         } => {
-            let resp = handle_revoke(state, &cluster_id, &node_token, &target_node_id).await;
+            let resp = handle_revoke(state, conn, &cluster_id, &target_node_id).await;
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::RelayOpen {
             cluster_id,
             node_id,
-            token,
             target_node_id,
         } => {
             super::relay::handle_relay(
                 send,
                 recv,
+                conn,
                 state,
                 &cluster_id,
                 &node_id,
-                &token,
                 &target_node_id,
             )
             .await?;
@@ -131,50 +121,35 @@ async fn handle_stream(
     Ok(())
 }
 
-// --- Per-node keypair auth
+// --- Per-node mTLS auth
 
-struct NodeAuthRequest {
-    cluster_id: String,
-    fingerprint: String,
-    node_token: String,
-    public_key: String,
-}
-
-/// Long-lived session for a node authenticated via fingerprint + node_token.
+/// Long-lived session for a node authenticated via TLS client certificate.
+///
+/// The node's identity is its Ed25519 certificate fingerprint, extracted from
+/// the QUIC connection. No shared secret (node_token) is needed — the TLS
+/// handshake proves the node holds the private key.
 async fn run_node_session(
     id: u64,
-    auth: NodeAuthRequest,
+    cluster_id: &str,
+    public_key: &str,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     conn: &quinn::Connection,
     state: &QuicState,
 ) -> anyhow::Result<()> {
-    let cluster_id = auth.cluster_id;
-    let fingerprint = auth.fingerprint;
-    let node_token = auth.node_token;
-    let public_key = auth.public_key;
-
-    // Verify that the TLS client certificate matches the claimed fingerprint.
-    match extract_peer_fingerprint(conn) {
-        Some(tls_fp) if tls_fp == fingerprint => {}
-        Some(_) => {
-            warn!(id, cluster_id, "TLS cert fingerprint does not match claimed fingerprint");
-            let resp = ServerMessage::error("auth_failed", "Certificate mismatch");
-            protocol::write_message(&mut send, &resp).await.ok();
-            return Ok(());
-        }
+    // Extract fingerprint from the TLS client certificate.
+    let fingerprint = match extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
         None => {
-            // No client cert presented — allowed for Adopt (first connection)
-            // but not for NodeAuth (reconnection with existing identity).
             warn!(id, cluster_id, "No client certificate presented for NodeAuth");
             let resp = ServerMessage::error("auth_failed", "Client certificate required");
             protocol::write_message(&mut send, &resp).await.ok();
             return Ok(());
         }
-    }
+    };
 
     // Verify the node exists in the registry
-    let node = match db::lookup_node_by_fingerprint(&state.db, &cluster_id, &fingerprint).await? {
+    let node = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &fingerprint).await? {
         Some(n) => n,
         None => {
             let resp = ServerMessage::error("auth_failed", "Unknown fingerprint");
@@ -182,15 +157,6 @@ async fn run_node_session(
             return Ok(());
         }
     };
-
-    // Verify node_token
-    let signing_key = state.config.signing_key.as_deref().unwrap_or("");
-    if !mlsh_crypto::invite::verify_node_token(signing_key, &cluster_id, &node.node_id, &node_token)
-    {
-        let resp = ServerMessage::error("auth_failed", "Invalid node token");
-        protocol::write_message(&mut send, &resp).await.ok();
-        return Ok(());
-    }
 
     // Update public_key if the node sent one and it was previously empty
     if !public_key.is_empty() && node.public_key.is_empty() {
@@ -211,7 +177,7 @@ async fn run_node_session(
 
     // Send auth success
     let reply = ServerMessage::NodeAuthOk {
-        cluster_id: cluster_id.clone(),
+        cluster_id: cluster_id.to_string(),
         overlay_ip: overlay_ip.to_string(),
         overlay_subnet: state.overlay_subnet.cidr.clone(),
         peers,
@@ -386,10 +352,6 @@ async fn handle_adopt(
         }
     };
 
-    // Generate node_token for reconnection
-    let signing_key = state.config.signing_key.as_deref().unwrap_or("");
-    let node_token = mlsh_crypto::invite::generate_node_token(signing_key, cluster_id, node_id);
-
     let peers = state.sessions.get_peer_list(cluster_id, node_id).await;
 
     info!(cluster_id, node_id, %overlay_ip, role, "Node adopted");
@@ -399,7 +361,6 @@ async fn handle_adopt(
         node_id: node_id.to_string(),
         overlay_ip: overlay_ip.to_string(),
         overlay_subnet: state.overlay_subnet.cidr.clone(),
-        node_token,
         peers,
     }
 }
@@ -471,28 +432,23 @@ async fn verify_sponsor_invite(
 
 async fn handle_revoke(
     state: &QuicState,
+    conn: &quinn::Connection,
     cluster_id: &str,
-    node_token: &str,
     target_node_id: &str,
 ) -> ServerMessage {
-    let signing_key = state.config.signing_key.as_deref().unwrap_or("");
-
-    // Verify the caller has a valid node_token
-    let nodes = match db::list_nodes(&state.db, cluster_id).await {
-        Ok(n) => n,
-        Err(e) => {
-            warn!(error = %e, "Failed to list nodes for revoke");
-            return ServerMessage::error("internal", "Database error");
-        }
+    // Authenticate the caller via TLS client certificate
+    let caller_fp = match extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
+        None => return ServerMessage::error("auth_failed", "Client certificate required"),
     };
 
-    let caller = nodes.iter().find(|n| {
-        mlsh_crypto::invite::verify_node_token(signing_key, cluster_id, &n.node_id, node_token)
-    });
-
-    let caller = match caller {
-        Some(c) => c,
-        None => return ServerMessage::error("unauthorized", "Invalid node token"),
+    let caller = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
+        Err(e) => {
+            warn!(error = %e, "Failed to look up caller for revoke");
+            return ServerMessage::error("internal", "Database error");
+        }
     };
 
     if caller.role != "admin" {
@@ -519,7 +475,7 @@ async fn handle_revoke(
 }
 
 /// Extract the SHA-256 fingerprint from the peer's TLS client certificate.
-fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
+pub fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     let peer_certs = conn.peer_identity()?;
     let certs = peer_certs
         .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()

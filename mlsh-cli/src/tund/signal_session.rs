@@ -1,7 +1,7 @@
 //! Persistent QUIC session to mlsh-signal.
 //!
-//! Maintains a long-lived connection to signal, authenticates with fingerprint +
-//! node_token, receives peer list updates (PeerJoined/PeerLeft), and reports
+//! Maintains a long-lived connection to signal, authenticates via mTLS client
+//! certificate, receives peer list updates (PeerJoined/PeerLeft), and reports
 //! host candidates. Reconnects automatically on disconnection.
 
 use std::net::{Ipv4Addr, SocketAddr};
@@ -27,8 +27,11 @@ pub struct SignalCredentials {
     pub cluster_id: String,
     pub node_id: String,
     pub fingerprint: String,
-    pub node_token: String,
     pub public_key: String,
+    /// PEM-encoded client certificate (for mTLS auth to signal).
+    pub cert_pem: String,
+    /// PEM-encoded private key (for mTLS auth to signal).
+    pub key_pem: String,
 }
 
 /// Handle to a running signal session. Provides reactive access to
@@ -178,7 +181,7 @@ async fn run_session(
     overlay_prefix_len: u8,
 ) -> Result<bool> {
     let addr = resolve_addr(&creds.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &creds.signal_endpoint, &creds.signal_fingerprint).await?;
+    let conn = connect_to_signal(addr, &creds.signal_endpoint, &creds).await?;
 
     // Expose connection to the tunnel for relay/direct streams
     let _ = conn_tx.send(Some(conn.clone()));
@@ -191,11 +194,10 @@ async fn run_session(
         .await
         .context("Failed to open signal stream")?;
 
-    // Send NodeAuth
+    // Send NodeAuth — identity is proven by the TLS client certificate;
+    // signal extracts the fingerprint from the QUIC handshake.
     let auth_msg = StreamMessage::NodeAuth {
         cluster_id: creds.cluster_id.clone(),
-        fingerprint: creds.fingerprint.clone(),
-        node_token: creds.node_token.clone(),
         public_key: creds.public_key.clone(),
     };
     framing::write_msg(&mut send, &auth_msg).await?;
@@ -336,15 +338,31 @@ fn handle_push_message(msg: &ServerMessage, peers_tx: &watch::Sender<Arc<Vec<Pee
 async fn connect_to_signal(
     addr: SocketAddr,
     endpoint_str: &str,
-    signal_fingerprint: &str,
+    creds: &SignalCredentials,
 ) -> Result<quinn::Connection> {
-    // Verify signal's QUIC cert fingerprint (obtained during setup/adopt via HTTPS)
+    // Load identity for mTLS client auth
+    let cert_der = {
+        let b64: String = creds
+            .cert_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64)
+            .context("Invalid identity cert PEM")?
+    };
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls_pemfile::private_key(&mut creds.key_pem.as_bytes())
+        .context("Failed to parse identity key")?
+        .context("No private key in PEM")?;
+
+    // Verify signal's QUIC cert fingerprint + send our client cert
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
-            crate::quic::verifier::FingerprintVerifier::new(signal_fingerprint),
+            crate::quic::verifier::FingerprintVerifier::new(&creds.signal_fingerprint),
         ))
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![cert], key)
+        .context("Failed to set client auth cert")?;
     tls_config.alpn_protocols = vec![mlsh_protocol::alpn::ALPN_SIGNAL.to_vec()];
 
     let mut client_config = quinn::ClientConfig::new(Arc::new(

@@ -9,7 +9,7 @@ use crate::tund::tunnel::load_cluster_config;
 pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     let base_dir = crate::config::config_dir()?;
     let config = load_cluster_config(cluster_name, &base_dir)?;
-    let creds = config.signal_credentials();
+    let creds = config.signal_credentials()?;
 
     let addr = resolve_addr(&creds.signal_endpoint)?;
     let conn = connect_to_signal(addr, &creds.signal_endpoint, &creds.signal_fingerprint).await?;
@@ -24,8 +24,6 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     let auth_msg = serde_json::json!({
         "type": "node_auth",
         "cluster_id": creds.cluster_id,
-        "fingerprint": creds.fingerprint,
-        "node_token": creds.node_token,
         "public_key": creds.public_key,
     });
     write_msg(&mut send, &auth_msg).await?;

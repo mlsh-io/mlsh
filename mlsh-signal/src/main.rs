@@ -50,14 +50,6 @@ async fn main() -> anyhow::Result<()> {
         format!("{}-{}-{}", &code[..4], &code[4..8], &code[8..12])
     })
     .await;
-    load_or_generate_secret(&pool, &mut cfg.signing_key, "signing_key", || {
-        use base64::Engine;
-        let mut raw = [0u8; 32];
-        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut raw)
-            .expect("Failed to generate random signing key");
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
-    })
-    .await;
 
     // Start QUIC server — cert is persisted in DB
     let quic_bind: std::net::SocketAddr = cfg.quic.bind.parse().expect("Invalid QUIC bind address");

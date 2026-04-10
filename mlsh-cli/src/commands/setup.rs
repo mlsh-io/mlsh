@@ -90,7 +90,6 @@ pub async fn handle_setup(
 
     let overlay_ip = resp["overlay_ip"].as_str().context("Missing overlay_ip")?;
     let overlay_subnet = resp["overlay_subnet"].as_str().unwrap_or("100.64.0.0/10");
-    let node_token = resp["node_token"].as_str().context("Missing node_token")?;
 
     // Save cluster config
     let clusters_dir = config_dir.join("clusters");
@@ -100,14 +99,13 @@ pub async fn handle_setup(
         "[cluster]\n\
          name = \"{cluster_name}\"\n\
          id = \"{cluster_name}\"\n\
-         mode = \"node-token\"\n\
+         mode = \"mtls\"\n\
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
          \n\
          [node_auth]\n\
          node_id = \"{node_id}\"\n\
          fingerprint = \"{fp}\"\n\
-         node_token = \"{node_token}\"\n\
          \n\
          [overlay]\n\
          ip = \"{overlay_ip}\"\n\

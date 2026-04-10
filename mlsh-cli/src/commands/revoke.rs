@@ -27,7 +27,6 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
     let msg = serde_json::json!({
         "type": "revoke",
         "cluster_id": config.cluster_id,
-        "node_token": config.node_token,
         "target_node_id": target_node,
     });
     write_msg(&mut send, &msg).await?;

@@ -19,7 +19,7 @@ async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::
 
 /// Handle a relay request from a node.
 ///
-/// 1. Verify the caller's node_token
+/// 1. Authenticate the caller via TLS client certificate
 /// 2. Identify the caller node (to avoid relaying to self)
 /// 3. Find the target peer's QUIC connection
 /// 4. Open a bi-stream on the target's connection
@@ -28,20 +28,41 @@ async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::
 pub async fn handle_relay(
     mut cli_send: quinn::SendStream,
     mut cli_recv: quinn::RecvStream,
+    conn: &quinn::Connection,
     state: &QuicState,
     cluster_id: &str,
     node_id: &str,
-    token: &str,
     target_node_id: &str,
 ) -> anyhow::Result<()> {
-    // Authenticate the caller in O(1) using the claimed node_id
-    let signing_key = state.config.signing_key.as_deref().unwrap_or("");
-    if !mlsh_crypto::invite::verify_node_token(signing_key, cluster_id, node_id, token) {
-        reject(&mut cli_send, "unauthorized", "Invalid node token").await?;
-        return Ok(());
-    }
+    // Authenticate the caller via TLS client certificate fingerprint
+    let caller_fp = match super::session::extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
+        None => {
+            reject(&mut cli_send, "auth_failed", "Client certificate required").await?;
+            return Ok(());
+        }
+    };
 
-    let caller_node_id = node_id;
+    // Verify the claimed node_id matches the TLS cert fingerprint
+    let caller_node = match crate::db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp)
+        .await
+    {
+        Ok(Some(n)) if n.node_id == node_id => n,
+        Ok(Some(_)) => {
+            reject(&mut cli_send, "auth_failed", "Node ID does not match certificate").await?;
+            return Ok(());
+        }
+        Ok(None) => {
+            reject(&mut cli_send, "auth_failed", "Unknown fingerprint").await?;
+            return Ok(());
+        }
+        Err(_) => {
+            reject(&mut cli_send, "internal", "Database error").await?;
+            return Ok(());
+        }
+    };
+
+    let caller_node_id = &caller_node.node_id;
 
     // Find the target peer's connection
     let target_conn = if !target_node_id.is_empty() {
