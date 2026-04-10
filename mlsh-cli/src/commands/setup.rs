@@ -21,8 +21,8 @@ pub async fn handle_setup(
     token: &str,
     name_override: Option<&str>,
 ) -> Result<()> {
-    // Parse token: SECRET@FINGERPRINT
-    let (cluster_secret, signal_fingerprint) = parse_setup_token(token)?;
+    // Parse token: CODE@CLUSTER_ID@FINGERPRINT
+    let (setup_code, cluster_id, signal_fingerprint) = parse_setup_token(token)?;
 
     println!("{}", "MLSH Cluster Setup".cyan().bold());
     println!("  Cluster: {}", cluster_name);
@@ -53,21 +53,32 @@ pub async fn handle_setup(
     );
 
     let addr = resolve_addr(&signal_endpoint)?;
-    let conn = connect_to_signal(addr, &signal_endpoint, &signal_fingerprint).await?;
+    let conn = connect_to_signal(addr, &signal_endpoint, &signal_fingerprint, &identity).await?;
 
-    // Send Adopt with cluster_secret as pre_auth_token (registers as admin)
+    // Send Adopt with setup code as pre_auth_token (registers as admin)
     let (mut send, mut recv) = conn
         .open_bi()
         .await
         .context("Failed to open signal stream")?;
 
+    // Generate self-signed admission cert for the root admin
+    let admission_cert = mlsh_crypto::invite::generate_self_signed_admission_cert(
+        &identity.key_pem,
+        &node_id,
+        &identity.fingerprint,
+        &cluster_id,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to generate admission cert: {}", e))?;
+    let admission_cert_json = serde_json::to_string(&admission_cert)?;
+
     let adopt_msg = serde_json::json!({
         "type": "adopt",
-        "cluster_id": cluster_name,
-        "pre_auth_token": cluster_secret,
+        "cluster_id": cluster_id,
+        "pre_auth_token": setup_code,
         "fingerprint": identity.fingerprint,
         "node_id": node_id,
         "public_key": public_key,
+        "admission_cert": admission_cert_json,
     });
     write_msg(&mut send, &adopt_msg).await?;
 
@@ -98,7 +109,7 @@ pub async fn handle_setup(
     let cluster_toml = format!(
         "[cluster]\n\
          name = \"{cluster_name}\"\n\
-         id = \"{cluster_name}\"\n\
+         id = \"{cluster_id}\"\n\
          mode = \"mtls\"\n\
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
@@ -144,15 +155,21 @@ pub async fn handle_setup(
 
 // --- Token parsing
 
-/// Parse a setup token: `SECRET@FINGERPRINT`.
-fn parse_setup_token(token: &str) -> Result<(String, String)> {
-    let (secret, fingerprint) = token
-        .rsplit_once('@')
-        .context("Invalid setup token format. Expected: SECRET@FINGERPRINT")?;
-    if secret.is_empty() || fingerprint.is_empty() {
-        anyhow::bail!("Invalid setup token: both secret and fingerprint are required");
+/// Parse a setup token: `CODE@CLUSTER_ID@FINGERPRINT`.
+fn parse_setup_token(token: &str) -> Result<(String, String, String)> {
+    let parts: Vec<&str> = token.splitn(3, '@').collect();
+    match parts.as_slice() {
+        [code, cluster_id, fingerprint]
+            if !code.is_empty() && !cluster_id.is_empty() && !fingerprint.is_empty() =>
+        {
+            Ok((
+                code.to_string(),
+                cluster_id.to_string(),
+                fingerprint.to_string(),
+            ))
+        }
+        _ => anyhow::bail!("Invalid setup token format. Expected: CODE@CLUSTER_ID@FINGERPRINT"),
     }
-    Ok((secret.to_string(), fingerprint.to_string()))
 }
 
 /// Ensure the endpoint has a port suffix.
@@ -170,13 +187,22 @@ async fn connect_to_signal(
     addr: SocketAddr,
     endpoint_str: &str,
     signal_fingerprint: &str,
+    identity: &mlsh_crypto::identity::NodeIdentity,
 ) -> Result<quinn::Connection> {
+    let cert_der = mlsh_crypto::identity::pem_to_der_pub(&identity.cert_pem)
+        .map_err(|e| anyhow::anyhow!("Invalid cert PEM: {}", e))?;
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls_pemfile::private_key(&mut identity.key_pem.as_bytes())
+        .context("Failed to parse identity key")?
+        .context("No private key in PEM")?;
+
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
             crate::quic::verifier::FingerprintVerifier::new(signal_fingerprint),
         ))
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![cert], key)
+        .context("Failed to set client auth cert")?;
     tls_config.alpn_protocols = vec![b"mlsh-signal".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(
@@ -250,19 +276,22 @@ mod tests {
 
     #[test]
     fn parse_token_valid() {
-        let (secret, fp) = parse_setup_token("ABCD-EFGH-IJKL@deadbeef1234").unwrap();
-        assert_eq!(secret, "ABCD-EFGH-IJKL");
+        let (code, cid, fp) =
+            parse_setup_token("ABCD-EFGH-IJKL@550e8400-e29b@deadbeef1234").unwrap();
+        assert_eq!(code, "ABCD-EFGH-IJKL");
+        assert_eq!(cid, "550e8400-e29b");
         assert_eq!(fp, "deadbeef1234");
     }
 
     #[test]
-    fn parse_token_missing_at() {
+    fn parse_token_missing_parts() {
         assert!(parse_setup_token("ABCDEFGH").is_err());
+        assert!(parse_setup_token("code@cluster").is_err());
     }
 
     #[test]
     fn parse_token_empty_parts() {
-        assert!(parse_setup_token("@fingerprint").is_err());
-        assert!(parse_setup_token("secret@").is_err());
+        assert!(parse_setup_token("@@fingerprint").is_err());
+        assert!(parse_setup_token("code@@fp").is_err());
     }
 }

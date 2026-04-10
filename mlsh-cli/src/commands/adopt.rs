@@ -92,7 +92,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     // Connect to signal via QUIC (verified by fingerprint from invite)
     let signal_endpoint = ensure_port(&signal_host, DEFAULT_SIGNAL_PORT);
     let addr = resolve_addr(&signal_endpoint)?;
-    let conn = connect_to_signal(addr, &signal_endpoint, &signal_fingerprint).await?;
+    let conn = connect_to_signal(addr, &signal_endpoint, &signal_fingerprint, &identity).await?;
 
     // Send Adopt message
     let (mut send, mut recv) = conn
@@ -219,13 +219,22 @@ async fn connect_to_signal(
     addr: SocketAddr,
     endpoint_str: &str,
     signal_fingerprint: &str,
+    identity: &mlsh_crypto::identity::NodeIdentity,
 ) -> Result<quinn::Connection> {
+    let cert_der = mlsh_crypto::identity::pem_to_der_pub(&identity.cert_pem)
+        .map_err(|e| anyhow::anyhow!("Invalid cert PEM: {}", e))?;
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls_pemfile::private_key(&mut identity.key_pem.as_bytes())
+        .context("Failed to parse identity key")?
+        .context("No private key in PEM")?;
+
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
             crate::quic::verifier::FingerprintVerifier::new(signal_fingerprint),
         ))
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![cert], key)
+        .context("Failed to set client auth cert")?;
     tls_config.alpn_protocols = vec![b"mlsh-signal".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(

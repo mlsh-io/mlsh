@@ -21,6 +21,9 @@ pub struct PeerInfo {
     pub overlay_ip: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub candidates: Vec<Candidate>,
+    /// Ed25519 public key (base64url, 32 bytes) for admission cert verification.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub public_key: String,
     /// Admission certificate proving cluster membership (JSON-serialized).
     /// Peers verify this locally before accepting the peer.
     #[serde(default, skip_serializing_if = "String::is_empty")]

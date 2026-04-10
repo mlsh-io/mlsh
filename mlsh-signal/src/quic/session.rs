@@ -69,6 +69,7 @@ async fn handle_stream(
             node_id,
             public_key,
             expires_at,
+            admission_cert,
         } => {
             let resp = handle_adopt(
                 state,
@@ -78,6 +79,7 @@ async fn handle_stream(
                 &node_id,
                 &public_key,
                 expires_at,
+                &admission_cert,
             )
             .await;
             protocol::write_message(&mut send, &resp).await?;
@@ -197,6 +199,7 @@ async fn run_node_session(
                 overlay_ip,
                 connection: conn.clone(),
                 push_tx,
+                public_key: node.public_key.clone(),
                 admission_cert: node.admission_cert.clone(),
             },
             id,
@@ -209,6 +212,7 @@ async fn run_node_session(
         fingerprint: fingerprint.clone(),
         overlay_ip: overlay_ip.to_string(),
         candidates: Vec::new(),
+        public_key: node.public_key.clone(),
         admission_cert: node.admission_cert.clone(),
     };
     state
@@ -310,6 +314,7 @@ async fn handle_adopt(
     node_id: &str,
     public_key: &str,
     _expires_at: u64,
+    client_admission_cert: &str,
 ) -> ServerMessage {
     // Two adoption paths:
     // 1. One-time setup code → first node (role: admin), code is burned after use.
@@ -325,7 +330,8 @@ async fn handle_adopt(
 
     let (role, sponsored_by, admission_cert_json) = if is_setup_code {
         // First node — becomes admin via one-time setup code (now burned).
-        ("admin".to_string(), String::new(), String::new())
+        // The client sends a self-signed admission cert.
+        ("admin".to_string(), String::new(), client_admission_cert.to_string())
     } else {
         // Sponsor-signed Ed25519 invite — build admission cert from it
         match verify_sponsor_invite(state, cluster_id, pre_auth_token).await {

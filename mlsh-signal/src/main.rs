@@ -158,7 +158,7 @@ async fn create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
         .await?
         .unwrap_or_else(|| "<unknown — start the server first>".to_string());
 
-    let setup_token = format!("{}@{}", code_formatted, signal_fingerprint);
+    let setup_token = format!("{}@{}@{}", code_formatted, cluster_id, signal_fingerprint);
 
     eprintln!("Cluster created:");
     eprintln!("  Name:  {}", name);

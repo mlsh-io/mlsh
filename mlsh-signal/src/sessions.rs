@@ -19,6 +19,7 @@ struct NodeSession {
     fingerprint: String,
     overlay_ip: std::net::Ipv4Addr,
     host_candidates: Vec<Candidate>,
+    public_key: String,
     admission_cert: String,
     session_id: u64,
 }
@@ -30,6 +31,7 @@ pub struct NodeSessionInfo {
     pub overlay_ip: std::net::Ipv4Addr,
     pub connection: quinn::Connection,
     pub push_tx: tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>,
+    pub public_key: String,
     pub admission_cert: String,
 }
 
@@ -57,6 +59,7 @@ impl SessionStore {
             fingerprint: info.fingerprint,
             overlay_ip: info.overlay_ip,
             host_candidates: Vec::new(),
+            public_key: info.public_key,
             admission_cert: info.admission_cert,
             session_id,
         };
@@ -112,6 +115,7 @@ impl SessionStore {
                     fingerprint: s.fingerprint.clone(),
                     overlay_ip: s.overlay_ip.to_string(),
                     candidates,
+                    public_key: s.public_key.clone(),
                     admission_cert: s.admission_cert.clone(),
                 }
             })

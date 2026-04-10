@@ -50,6 +50,9 @@ pub enum StreamMessage {
         public_key: String,
         #[serde(default)]
         expires_at: u64,
+        /// Self-signed admission cert (JSON, for root admin setup).
+        #[serde(default)]
+        admission_cert: String,
     },
 
     /// Admin revocation: remove a node from the cluster.

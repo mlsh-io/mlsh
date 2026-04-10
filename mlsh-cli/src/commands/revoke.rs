@@ -15,8 +15,11 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         config.name.bold()
     );
 
+    let identity = mlsh_crypto::identity::load_or_generate(&config.identity_dir, &config.node_id)
+        .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
+
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint).await?;
+    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity).await?;
 
     // Revoke is a one-shot message (no session needed)
     let (mut send, mut recv) = conn
@@ -66,13 +69,22 @@ async fn connect_to_signal(
     addr: SocketAddr,
     endpoint_str: &str,
     signal_fingerprint: &str,
+    identity: &mlsh_crypto::identity::NodeIdentity,
 ) -> Result<quinn::Connection> {
+    let cert_der = mlsh_crypto::identity::pem_to_der_pub(&identity.cert_pem)
+        .map_err(|e| anyhow::anyhow!("Invalid cert PEM: {}", e))?;
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls_pemfile::private_key(&mut identity.key_pem.as_bytes())
+        .context("Failed to parse identity key")?
+        .context("No private key in PEM")?;
+
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
             crate::quic::verifier::FingerprintVerifier::new(signal_fingerprint),
         ))
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![cert], key)
+        .context("Failed to set client auth cert")?;
     tls_config.alpn_protocols = vec![b"mlsh-signal".to_vec()];
 
     let client_config = quinn::ClientConfig::new(Arc::new(

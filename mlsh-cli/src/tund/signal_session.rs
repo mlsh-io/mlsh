@@ -364,16 +364,38 @@ fn verify_admission(
     let peers = peers_tx.borrow();
     let sponsor = peers.iter().find(|p| p.node_id == cert.sponsor_node_id);
     match sponsor {
-        Some(_sponsor_peer) => {
-            // We'd need the sponsor's Ed25519 public key to verify.
-            // Public keys aren't in PeerInfo currently — accept if sponsor is known.
-            // Full signature verification requires public key exchange (Phase 4).
+        Some(sponsor_peer) if !sponsor_peer.public_key.is_empty() => {
+            let pubkey_bytes = match base64::Engine::decode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                &sponsor_peer.public_key,
+            ) {
+                Ok(b) => b,
+                Err(_) => {
+                    tracing::warn!("Sponsor {} has invalid public key encoding", cert.sponsor_node_id);
+                    return false;
+                }
+            };
+            match mlsh_crypto::invite::verify_sponsored_admission_cert(&cert, &pubkey_bytes) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!(
+                        "Peer {} admission cert failed verification: {}",
+                        peer.node_id, e,
+                    );
+                    false
+                }
+            }
+        }
+        Some(_) => {
+            // Sponsor known but has no public key — accept with warning
+            tracing::warn!(
+                "Peer {} sponsor {} has no public key — cannot verify admission cert",
+                peer.node_id, cert.sponsor_node_id,
+            );
             true
         }
         None => {
-            // Sponsor not in our peer list yet — this can happen if peers arrive
-            // out of order. Accept for now; a full implementation would queue and
-            // re-verify when the sponsor appears.
+            // Sponsor not in our peer list yet — can happen if peers arrive out of order.
             tracing::debug!(
                 "Peer {} sponsor {} not yet known — accepting provisionally",
                 peer.node_id,
@@ -578,6 +600,7 @@ mod tests {
                 fingerprint: "abc123".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                public_key: String::new(),
                 admission_cert: String::new(),
             },
         };
@@ -593,6 +616,7 @@ mod tests {
             fingerprint: "abc".into(),
             overlay_ip: "100.64.0.1".into(),
             candidates: vec![],
+            public_key: String::new(),
             admission_cert: String::new(),
         }]));
         let msg = ServerMessage::PeerLeft {
@@ -610,6 +634,7 @@ mod tests {
             fingerprint: "old-fp".into(),
             overlay_ip: "100.64.0.1".into(),
             candidates: vec![],
+            public_key: String::new(),
             admission_cert: String::new(),
         }]));
         let msg = ServerMessage::PeerJoined {
@@ -618,6 +643,7 @@ mod tests {
                 fingerprint: "new-fp".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                public_key: String::new(),
                 admission_cert: String::new(),
             },
         };

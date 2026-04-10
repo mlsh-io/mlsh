@@ -221,6 +221,7 @@ mod tests {
                 fingerprint: "fp-1".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                public_key: String::new(),
                 admission_cert: String::new(),
             },
             PeerInfo {
@@ -228,6 +229,7 @@ mod tests {
                 fingerprint: "fp-2".into(),
                 overlay_ip: "100.64.0.2".into(),
                 candidates: vec![],
+                public_key: String::new(),
                 admission_cert: String::new(),
             },
         ];

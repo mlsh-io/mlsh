@@ -305,6 +305,7 @@ mod tests {
                 fingerprint: "fp".into(),
                 overlay_ip: "100.64.0.2".into(),
                 candidates: vec![],
+                public_key: String::new(),
                 admission_cert: String::new(),
             }]))
             .await;

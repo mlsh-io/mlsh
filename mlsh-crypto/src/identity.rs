@@ -110,6 +110,10 @@ pub fn load_or_generate(
 }
 
 /// Extract DER bytes from a PEM-encoded certificate.
+pub fn pem_to_der_pub(pem: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    pem_to_der(pem)
+}
+
 fn pem_to_der(pem: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let pem = pem.trim();
     let b64: String = pem
