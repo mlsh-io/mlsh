@@ -264,9 +264,15 @@ async fn run_session(
                             let dev = dev.clone();
                             let table = peer_table.clone();
                             let my_ip = overlay_ip;
+                            let relay_identity = mlsh_crypto::identity::NodeIdentity {
+                                cert_der: vec![], // not needed for TLS config
+                                cert_pem: creds.cert_pem.clone(),
+                                key_pem: creds.key_pem.clone(),
+                                fingerprint: creds.fingerprint.clone(),
+                            };
                             tokio::spawn(async move {
                                 if let Err(e) = super::relay_handler::handle_incoming_relay(
-                                    relay_send, relay_recv, dev, my_ip, table,
+                                    relay_send, relay_recv, dev, my_ip, table, relay_identity,
                                 ).await {
                                     tracing::debug!("Incoming relay error: {}", e);
                                 }

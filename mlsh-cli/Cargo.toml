@@ -47,6 +47,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 qrcode = "0.14"
 # Base64 encoding for invite payloads
 base64 = "0.22"
+# TLS over relay stream for E2E encryption
+tokio-rustls = "0.26"
 # Username detection
 whoami = "2"
 

@@ -915,22 +915,78 @@ async fn establish_peer_connection(
     .await
     {
         Ok((send, recv)) => {
-            tracing::info!("Relay to {} via signal", peer.node_id);
+            // Load identity for TLS
+            let identity = match mlsh_crypto::identity::load_or_generate(identity_dir, my_node_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!("Failed to load identity for relay TLS: {}", e);
+                    return;
+                }
+            };
 
-            // Create channel for outbound (TUN reader → relay)
+            // Wrap relay in TLS (we are the initiator = TLS client)
+            let tls_stream = match super::relay_tls::wrap_initiator(
+                send,
+                recv,
+                &identity,
+                &peer.fingerprint,
+            )
+            .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Relay TLS handshake to {} failed: {}", peer.node_id, e);
+                    return;
+                }
+            };
+
+            tracing::info!("Relay to {} via signal (TLS E2E encrypted)", peer.node_id);
+
+            let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
+
             let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
             peer_table.insert_relay(peer_ip, outbound_tx).await;
 
-            // Inbound: relay → TUN
+            // Inbound: TLS → TUN
             let dev_in = device.clone();
             let pt_rx = peer_table.clone();
             let inbound = tokio::spawn(async move {
-                relay_inbound(recv, dev_in, pt_rx).await;
+                use tokio::io::AsyncReadExt;
+                let mut pkt_buf = vec![0u8; 65536];
+                loop {
+                    let mut len_buf = [0u8; 4];
+                    if tls_read.read_exact(&mut len_buf).await.is_err() {
+                        break;
+                    }
+                    let plen = u32::from_be_bytes(len_buf) as usize;
+                    if !(20..=65536).contains(&plen) {
+                        continue;
+                    }
+                    if tls_read.read_exact(&mut pkt_buf[..plen]).await.is_err() {
+                        break;
+                    }
+                    let pkt = &pkt_buf[..plen];
+                    if !peer_table::validate_inbound_packet(pkt) {
+                        continue;
+                    }
+                    pt_rx.record_rx(plen);
+                    let _ = dev_in.send(pkt).await;
+                }
             });
 
-            // Outbound: channel → relay
+            // Outbound: channel → TLS
             let outbound = tokio::spawn(async move {
-                relay_outbound(send, &mut outbound_rx).await;
+                use tokio::io::AsyncWriteExt;
+                while let Some(packet) = outbound_rx.recv().await {
+                    let len = (packet.len() as u32).to_be_bytes();
+                    if tls_write.write_all(&len).await.is_err() {
+                        break;
+                    }
+                    if tls_write.write_all(&packet).await.is_err() {
+                        break;
+                    }
+                }
+                let _ = tls_write.shutdown().await;
             });
 
             tokio::select! {
@@ -1000,50 +1056,6 @@ async fn spawn_peer_inbound(
 }
 
 /// Read packets from a relay stream and write them to the TUN device.
-async fn relay_inbound(
-    mut recv: quinn::RecvStream,
-    device: Arc<tun_rs::AsyncDevice>,
-    peer_table: PeerTable,
-) {
-    let mut pkt_buf = vec![0u8; 65536];
-    loop {
-        let mut len_buf = [0u8; 4];
-        if recv.read_exact(&mut len_buf).await.is_err() {
-            break;
-        }
-        let plen = u32::from_be_bytes(len_buf) as usize;
-        if !(20..=65536).contains(&plen) {
-            continue;
-        }
-        if recv.read_exact(&mut pkt_buf[..plen]).await.is_err() {
-            break;
-        }
-        let pkt = &pkt_buf[..plen];
-        if !peer_table::validate_inbound_packet(pkt) {
-            continue;
-        }
-        peer_table.record_rx(plen);
-        let _ = device.send(pkt).await;
-    }
-}
-
-/// Write packets from a channel to a relay stream.
-async fn relay_outbound(
-    mut send: quinn::SendStream,
-    rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>,
-) {
-    while let Some(packet) = rx.recv().await {
-        let len = (packet.len() as u32).to_be_bytes();
-        if send.write_all(&len).await.is_err() {
-            break;
-        }
-        if send.write_all(&packet).await.is_err() {
-            break;
-        }
-    }
-    let _ = send.finish();
-}
-
 /// Parse a ClusterConfig from TOML contents and an identity directory.
 /// Used by the daemon when receiving config from the CLI via Connect message.
 pub fn parse_cluster_config(
