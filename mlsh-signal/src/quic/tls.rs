@@ -6,7 +6,70 @@
 
 use std::sync::Arc;
 
+use rustls::pki_types::CertificateDer;
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+
 use crate::config::QuicConfig;
+
+/// Accept any client certificate — we verify identity by fingerprint after
+/// handshake, not during TLS negotiation. The purpose is to make the client
+/// SEND its cert so we can extract the fingerprint from the QUIC connection.
+#[derive(Debug)]
+struct AcceptAnyCert;
+
+impl ClientCertVerifier for AcceptAnyCert {
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        &[]
+    }
+
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        false
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General(
+            "TLS 1.2 not supported for QUIC".to_string(),
+        ))
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
 
 /// Build a quinn::ServerConfig and return the certificate's SHA-256 fingerprint.
 ///
@@ -26,7 +89,7 @@ pub async fn build_server_config(
     };
 
     let mut tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
+        .with_client_cert_verifier(Arc::new(AcceptAnyCert))
         .with_single_cert(cert_chain, private_key)?;
 
     tls_config.alpn_protocols = vec![super::alpn::ALPN_SIGNAL.to_vec()];

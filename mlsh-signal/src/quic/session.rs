@@ -154,6 +154,25 @@ async fn run_node_session(
     let node_token = auth.node_token;
     let public_key = auth.public_key;
 
+    // Verify that the TLS client certificate matches the claimed fingerprint.
+    match extract_peer_fingerprint(conn) {
+        Some(tls_fp) if tls_fp == fingerprint => {}
+        Some(_) => {
+            warn!(id, cluster_id, "TLS cert fingerprint does not match claimed fingerprint");
+            let resp = ServerMessage::error("auth_failed", "Certificate mismatch");
+            protocol::write_message(&mut send, &resp).await.ok();
+            return Ok(());
+        }
+        None => {
+            // No client cert presented — allowed for Adopt (first connection)
+            // but not for NodeAuth (reconnection with existing identity).
+            warn!(id, cluster_id, "No client certificate presented for NodeAuth");
+            let resp = ServerMessage::error("auth_failed", "Client certificate required");
+            protocol::write_message(&mut send, &resp).await.ok();
+            return Ok(());
+        }
+    }
+
     // Verify the node exists in the registry
     let node = match db::lookup_node_by_fingerprint(&state.db, &cluster_id, &fingerprint).await? {
         Some(n) => n,
@@ -497,4 +516,14 @@ async fn handle_revoke(
             ServerMessage::error("internal", "Database error")
         }
     }
+}
+
+/// Extract the SHA-256 fingerprint from the peer's TLS client certificate.
+fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
+    let peer_certs = conn.peer_identity()?;
+    let certs = peer_certs
+        .downcast::<Vec<rustls::pki_types::CertificateDer<'static>>>()
+        .ok()?;
+    let cert = certs.first()?;
+    Some(mlsh_crypto::identity::compute_fingerprint(cert.as_ref()))
 }
