@@ -28,14 +28,15 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     // --- Node registry
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS nodes (
-            cluster_id    TEXT NOT NULL,
-            node_id       TEXT NOT NULL,
-            fingerprint   TEXT NOT NULL,
-            public_key    TEXT NOT NULL DEFAULT '',
-            overlay_ip    TEXT NOT NULL,
-            role          TEXT NOT NULL DEFAULT 'node',
-            sponsored_by  TEXT NOT NULL DEFAULT '',
-            created_at    TEXT NOT NULL,
+            cluster_id     TEXT NOT NULL,
+            node_id        TEXT NOT NULL,
+            fingerprint    TEXT NOT NULL,
+            public_key     TEXT NOT NULL DEFAULT '',
+            overlay_ip     TEXT NOT NULL,
+            role           TEXT NOT NULL DEFAULT 'node',
+            sponsored_by   TEXT NOT NULL DEFAULT '',
+            admission_cert TEXT NOT NULL DEFAULT '',
+            created_at     TEXT NOT NULL,
             PRIMARY KEY (cluster_id, node_id)
         )",
     )
@@ -62,6 +63,9 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN sponsored_by TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN admission_cert TEXT NOT NULL DEFAULT ''")
         .execute(&pool)
         .await;
 
@@ -160,6 +164,7 @@ pub struct NodeRecord {
     pub overlay_ip: std::net::Ipv4Addr,
     pub role: String,
     pub sponsored_by: String,
+    pub admission_cert: String,
     pub created_at: String,
 }
 
@@ -181,12 +186,13 @@ pub async fn register_node(
         "",
         "node",
         "",
+        "",
         subnet,
     )
     .await
 }
 
-/// Register a node with full details (public key, role, sponsor).
+/// Register a node with full details (public key, role, sponsor, admission cert).
 #[allow(clippy::too_many_arguments)]
 pub async fn register_node_full(
     pool: &SqlitePool,
@@ -196,6 +202,7 @@ pub async fn register_node_full(
     public_key: &str,
     role: &str,
     sponsored_by: &str,
+    admission_cert: &str,
     subnet: &OverlaySubnet,
 ) -> Result<std::net::Ipv4Addr> {
     // Check if this node already exists
@@ -215,13 +222,14 @@ pub async fn register_node_full(
 
         // Update fingerprint, public_key, role if changed (cert rotation or re-setup)
         sqlx::query(
-            "UPDATE nodes SET fingerprint = ?1, public_key = ?2, role = ?3, sponsored_by = ?4
-             WHERE cluster_id = ?5 AND node_id = ?6",
+            "UPDATE nodes SET fingerprint = ?1, public_key = ?2, role = ?3, sponsored_by = ?4, admission_cert = ?5
+             WHERE cluster_id = ?6 AND node_id = ?7",
         )
         .bind(fingerprint)
         .bind(public_key)
         .bind(role)
         .bind(sponsored_by)
+        .bind(admission_cert)
         .bind(cluster_id)
         .bind(node_id)
         .execute(pool)
@@ -268,8 +276,8 @@ pub async fn register_node_full(
         .unwrap_or_default();
 
     sqlx::query(
-        "INSERT INTO nodes (cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO nodes (cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )
     .bind(cluster_id)
     .bind(node_id)
@@ -278,6 +286,7 @@ pub async fn register_node_full(
     .bind(overlay_ip.to_string())
     .bind(role)
     .bind(sponsored_by)
+    .bind(admission_cert)
     .bind(&now)
     .execute(pool)
     .await
@@ -345,9 +354,9 @@ pub async fn lookup_node_by_fingerprint(
     cluster_id: &str,
     fingerprint: &str,
 ) -> Result<Option<NodeRecord>> {
-    let row: Option<(String, String, String, String, String, String, String, String)> =
+    let row: Option<(String, String, String, String, String, String, String, String, String)> =
         sqlx::query_as(
-            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, created_at
+            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at
              FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2",
         )
         .bind(cluster_id)
@@ -356,7 +365,7 @@ pub async fn lookup_node_by_fingerprint(
         .await
         .context("Failed to lookup node by fingerprint")?;
 
-    Ok(row.map(|(cid, nid, fp, pk, ip, role, sb, ca)| NodeRecord {
+    Ok(row.map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
         cluster_id: cid,
         node_id: nid,
         fingerprint: fp,
@@ -364,6 +373,7 @@ pub async fn lookup_node_by_fingerprint(
         overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
         role,
         sponsored_by: sb,
+        admission_cert: ac,
         created_at: ca,
     }))
 }
@@ -388,9 +398,9 @@ pub async fn update_node_public_key(
 /// List all nodes in a cluster.
 #[allow(clippy::type_complexity)]
 pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRecord>> {
-    let rows: Vec<(String, String, String, String, String, String, String, String)> =
+    let rows: Vec<(String, String, String, String, String, String, String, String, String)> =
         sqlx::query_as(
-            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, created_at
+            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at
              FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip",
         )
         .bind(cluster_id)
@@ -400,7 +410,7 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
 
     Ok(rows
         .into_iter()
-        .map(|(cid, nid, fp, pk, ip, role, sb, ca)| NodeRecord {
+        .map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
             cluster_id: cid,
             node_id: nid,
             fingerprint: fp,
@@ -408,6 +418,7 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
             overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
             role,
             sponsored_by: sb,
+            admission_cert: ac,
             created_at: ca,
         })
         .collect())
@@ -449,8 +460,8 @@ mod tests {
                 cluster_id TEXT NOT NULL, node_id TEXT NOT NULL,
                 fingerprint TEXT NOT NULL, public_key TEXT NOT NULL DEFAULT '',
                 overlay_ip TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'node',
-                sponsored_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
-                PRIMARY KEY (cluster_id, node_id))",
+                sponsored_by TEXT NOT NULL DEFAULT '', admission_cert TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL, PRIMARY KEY (cluster_id, node_id))",
         )
         .execute(&pool)
         .await
@@ -561,12 +572,12 @@ mod tests {
     async fn register_with_role_and_sponsor() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip = register_node_full(&pool, "c1", "nas", "fp-1", "pk-1", "admin", "", &s)
+        let ip = register_node_full(&pool, "c1", "nas", "fp-1", "pk-1", "admin", "", "", &s)
             .await
             .unwrap();
         assert_eq!(ip, std::net::Ipv4Addr::new(100, 64, 0, 1));
 
-        let ip2 = register_node_full(&pool, "c1", "rack", "fp-2", "pk-2", "node", "nas", &s)
+        let ip2 = register_node_full(&pool, "c1", "rack", "fp-2", "pk-2", "node", "nas", "", &s)
             .await
             .unwrap();
         assert_eq!(ip2, std::net::Ipv4Addr::new(100, 64, 0, 2));

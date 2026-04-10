@@ -221,12 +221,14 @@ mod tests {
                 fingerprint: "fp-1".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                admission_cert: String::new(),
             },
             PeerInfo {
                 node_id: "pi".into(),
                 fingerprint: "fp-2".into(),
                 overlay_ip: "100.64.0.2".into(),
                 candidates: vec![],
+                admission_cert: String::new(),
             },
         ];
         table.update_peers(Arc::new(peers)).await;

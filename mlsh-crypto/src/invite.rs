@@ -80,6 +80,9 @@ pub struct InvitePayload {
     /// Signal server TLS certificate fingerprint (for QUIC verification by the adopting node).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_fingerprint: Option<String>,
+    /// Root admin certificate fingerprint (for peer-side verification of admission certs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_fingerprint: Option<String>,
 }
 
 /// A complete signed invite (payload + signature).
@@ -107,10 +110,11 @@ pub fn generate_signed_invite(
         target_role,
         ttl_seconds,
         None,
+        None,
     )
 }
 
-/// Generate a sponsor-signed invite with an optional signal fingerprint.
+/// Generate a sponsor-signed invite with optional signal and root fingerprints.
 pub fn generate_signed_invite_with_fingerprint(
     key_pem: &str,
     cluster_id: &str,
@@ -118,6 +122,7 @@ pub fn generate_signed_invite_with_fingerprint(
     target_role: &str,
     ttl_seconds: u64,
     signal_fingerprint: Option<&str>,
+    root_fingerprint: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let keypair = load_ed25519_from_pem(key_pem)?;
 
@@ -136,6 +141,7 @@ pub fn generate_signed_invite_with_fingerprint(
         expires_at,
         nonce,
         signal_fingerprint: signal_fingerprint.map(String::from),
+        root_fingerprint: root_fingerprint.map(String::from),
     };
 
     // Serialize payload to canonical JSON for signing
@@ -245,6 +251,158 @@ pub fn extract_public_key_from_cert_pem(
     Err("Ed25519 public key not found in certificate".into())
 }
 
+// --- Admission certificates
+//
+// An admission certificate is a proof of cluster membership carried by every node.
+// Peers verify admission certs locally — a node injected into signal's DB without
+// a valid cert is rejected by every peer.
+//
+// Two kinds:
+// - Root admin: self-signed (sponsor_node_id == node_id), verified against
+//   the root_fingerprint pinned in each node's local config.
+// - Sponsored node: the original signed invite serves as proof. Peers verify
+//   the invite signature against the sponsor's public key.
+
+/// An admission certificate proving cluster membership.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AdmissionCert {
+    pub node_id: String,
+    pub fingerprint: String,
+    pub cluster_id: String,
+    pub role: String,
+    pub sponsor_node_id: String,
+    pub issued_at: u64,
+    /// Self-signed: Ed25519 signature over the cert fields (base64url).
+    /// Sponsored: the original base64url signed invite token.
+    pub proof: String,
+}
+
+/// Generate a self-signed admission cert for the root admin.
+///
+/// The root admin signs its own admission cert at setup time.
+/// Peers verify it by checking that the fingerprint matches their locally
+/// pinned `root_fingerprint`.
+pub fn generate_self_signed_admission_cert(
+    key_pem: &str,
+    node_id: &str,
+    fingerprint: &str,
+    cluster_id: &str,
+) -> Result<AdmissionCert, Box<dyn std::error::Error>> {
+    let keypair = load_ed25519_from_pem(key_pem)?;
+    let issued_at = now_secs();
+
+    let cert = AdmissionCert {
+        node_id: node_id.to_string(),
+        fingerprint: fingerprint.to_string(),
+        cluster_id: cluster_id.to_string(),
+        role: "admin".to_string(),
+        sponsor_node_id: node_id.to_string(), // self-signed
+        issued_at,
+        proof: String::new(), // placeholder, filled below
+    };
+
+    let payload = admission_cert_signing_payload(&cert);
+    let sig = keypair.sign(&payload);
+    let proof = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.as_ref());
+
+    Ok(AdmissionCert { proof, ..cert })
+}
+
+/// Build an admission cert for a sponsored node.
+///
+/// The proof is the original signed invite token — peers can verify it
+/// against the sponsor's public key to confirm an admin authorized the join.
+pub fn build_sponsored_admission_cert(
+    node_id: &str,
+    fingerprint: &str,
+    cluster_id: &str,
+    role: &str,
+    sponsor_node_id: &str,
+    invite_token: &str,
+) -> AdmissionCert {
+    AdmissionCert {
+        node_id: node_id.to_string(),
+        fingerprint: fingerprint.to_string(),
+        cluster_id: cluster_id.to_string(),
+        role: role.to_string(),
+        sponsor_node_id: sponsor_node_id.to_string(),
+        issued_at: now_secs(),
+        proof: invite_token.to_string(),
+    }
+}
+
+/// Verify a self-signed admission cert (root admin).
+///
+/// `public_key_bytes` is the root admin's Ed25519 public key (32 bytes).
+/// Also checks that the fingerprint matches the expected root fingerprint.
+pub fn verify_self_signed_admission_cert(
+    cert: &AdmissionCert,
+    public_key_bytes: &[u8],
+    expected_root_fingerprint: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if cert.sponsor_node_id != cert.node_id {
+        return Err("Not a self-signed cert".into());
+    }
+    if cert.fingerprint != expected_root_fingerprint {
+        return Err("Fingerprint does not match root_fingerprint".into());
+    }
+
+    let payload = admission_cert_signing_payload(cert);
+    let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&cert.proof)
+        .map_err(|_| "Invalid proof encoding")?;
+
+    let public_key = signature::UnparsedPublicKey::new(&signature::ED25519, public_key_bytes);
+    public_key
+        .verify(&payload, &sig_bytes)
+        .map_err(|_| "Invalid self-signed admission cert signature")?;
+
+    Ok(())
+}
+
+/// Verify a sponsored admission cert.
+///
+/// Decodes the invite from the proof field and verifies the Ed25519 signature
+/// against the sponsor's public key. Also checks cluster_id and role match.
+pub fn verify_sponsored_admission_cert(
+    cert: &AdmissionCert,
+    sponsor_public_key_bytes: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if cert.sponsor_node_id == cert.node_id {
+        return Err("This is a self-signed cert, use verify_self_signed_admission_cert".into());
+    }
+
+    let payload = verify_signed_invite(&cert.proof, sponsor_public_key_bytes)?;
+
+    if payload.cluster_id != cert.cluster_id {
+        return Err("Invite cluster_id does not match admission cert".into());
+    }
+    if payload.target_role != cert.role {
+        return Err("Invite role does not match admission cert".into());
+    }
+
+    Ok(())
+}
+
+/// Canonical byte payload for self-signed admission cert signatures.
+fn admission_cert_signing_payload(cert: &AdmissionCert) -> Vec<u8> {
+    // domain || node_id || fingerprint || cluster_id || role || sponsor || issued_at
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"mlsh-admission-v1\x00");
+    buf.extend_from_slice(cert.node_id.as_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(cert.fingerprint.as_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(cert.cluster_id.as_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(cert.role.as_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(cert.sponsor_node_id.as_bytes());
+    buf.push(0x00);
+    buf.extend_from_slice(&cert.issued_at.to_be_bytes());
+    buf
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +493,110 @@ mod tests {
         assert!(constant_time_eq(b"hello", b"hello"));
         assert!(!constant_time_eq(b"hello", b"world"));
         assert!(!constant_time_eq(b"short", b"longer"));
+    }
+
+    #[test]
+    fn self_signed_admission_cert_roundtrip() {
+        let id = crate::identity::generate_identity("root-admin").unwrap();
+        let pubkey = extract_public_key_from_cert_pem(&id.cert_pem).unwrap();
+
+        let cert = generate_self_signed_admission_cert(
+            &id.key_pem,
+            "root-admin",
+            &id.fingerprint,
+            "test-cluster",
+        )
+        .unwrap();
+
+        assert_eq!(cert.sponsor_node_id, cert.node_id);
+        assert!(verify_self_signed_admission_cert(&cert, &pubkey, &id.fingerprint).is_ok());
+    }
+
+    #[test]
+    fn self_signed_admission_cert_wrong_root_fingerprint_fails() {
+        let id = crate::identity::generate_identity("root-admin").unwrap();
+        let pubkey = extract_public_key_from_cert_pem(&id.cert_pem).unwrap();
+
+        let cert = generate_self_signed_admission_cert(
+            &id.key_pem,
+            "root-admin",
+            &id.fingerprint,
+            "test-cluster",
+        )
+        .unwrap();
+
+        assert!(verify_self_signed_admission_cert(&cert, &pubkey, "wrong-fingerprint").is_err());
+    }
+
+    #[test]
+    fn self_signed_admission_cert_wrong_key_fails() {
+        let admin = crate::identity::generate_identity("root-admin").unwrap();
+        let other = crate::identity::generate_identity("attacker").unwrap();
+        let other_pubkey = extract_public_key_from_cert_pem(&other.cert_pem).unwrap();
+
+        let cert = generate_self_signed_admission_cert(
+            &admin.key_pem,
+            "root-admin",
+            &admin.fingerprint,
+            "test-cluster",
+        )
+        .unwrap();
+
+        assert!(
+            verify_self_signed_admission_cert(&cert, &other_pubkey, &admin.fingerprint).is_err()
+        );
+    }
+
+    #[test]
+    fn sponsored_admission_cert_roundtrip() {
+        let sponsor = crate::identity::generate_identity("sponsor").unwrap();
+        let sponsor_pubkey = extract_public_key_from_cert_pem(&sponsor.cert_pem).unwrap();
+
+        let invite = generate_signed_invite(
+            &sponsor.key_pem,
+            "test-cluster",
+            "sponsor",
+            "node",
+            3600,
+        )
+        .unwrap();
+
+        let cert = build_sponsored_admission_cert(
+            "new-node",
+            "new-node-fp",
+            "test-cluster",
+            "node",
+            "sponsor",
+            &invite,
+        );
+
+        assert!(verify_sponsored_admission_cert(&cert, &sponsor_pubkey).is_ok());
+    }
+
+    #[test]
+    fn sponsored_admission_cert_wrong_sponsor_key_fails() {
+        let sponsor = crate::identity::generate_identity("sponsor").unwrap();
+        let attacker = crate::identity::generate_identity("attacker").unwrap();
+        let attacker_pubkey = extract_public_key_from_cert_pem(&attacker.cert_pem).unwrap();
+
+        let invite = generate_signed_invite(
+            &sponsor.key_pem,
+            "test-cluster",
+            "sponsor",
+            "node",
+            3600,
+        )
+        .unwrap();
+
+        let cert = build_sponsored_admission_cert(
+            "new-node",
+            "new-node-fp",
+            "test-cluster",
+            "node",
+            "sponsor",
+            &invite,
+        );
+
+        assert!(verify_sponsored_admission_cert(&cert, &attacker_pubkey).is_err());
     }
 }

@@ -102,6 +102,7 @@ pub async fn handle_setup(
          mode = \"mtls\"\n\
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
+         root_fingerprint = \"{fp}\"\n\
          \n\
          [node_auth]\n\
          node_id = \"{node_id}\"\n\

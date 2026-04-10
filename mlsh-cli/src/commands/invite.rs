@@ -62,14 +62,24 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
         "Missing identity key (~/.config/mlsh/identity/key.pem). Run 'mlsh setup' first.",
     )?;
 
-    // Generate the signed invite (includes signal fingerprint for QUIC verification)
+    let root_fingerprint = cluster
+        .get("root_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    // Generate the signed invite (includes signal + root fingerprints)
     let fp = if signal_fingerprint.is_empty() {
         None
     } else {
         Some(signal_fingerprint)
     };
+    let rfp = if root_fingerprint.is_empty() {
+        None
+    } else {
+        Some(root_fingerprint)
+    };
     let invite_token = mlsh_crypto::invite::generate_signed_invite_with_fingerprint(
-        &key_pem, cluster_id, node_id, role, ttl, fp,
+        &key_pem, cluster_id, node_id, role, ttl, fp, rfp,
     )
     .map_err(|e| anyhow::anyhow!("Failed to generate invite: {}", e))?;
 

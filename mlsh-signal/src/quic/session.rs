@@ -197,6 +197,7 @@ async fn run_node_session(
                 overlay_ip,
                 connection: conn.clone(),
                 push_tx,
+                admission_cert: node.admission_cert.clone(),
             },
             id,
         )
@@ -208,6 +209,7 @@ async fn run_node_session(
         fingerprint: fingerprint.clone(),
         overlay_ip: overlay_ip.to_string(),
         candidates: Vec::new(),
+        admission_cert: node.admission_cert.clone(),
     };
     state
         .sessions
@@ -319,20 +321,35 @@ async fn handle_adopt(
         .as_deref()
         .is_some_and(|secret| pre_auth_token == secret);
 
-    let (role, sponsored_by) = if is_cluster_secret {
-        // First node — becomes admin, no sponsor
-        ("admin".to_string(), String::new())
+    let (role, sponsored_by, admission_cert_json) = if is_cluster_secret {
+        // First node — becomes admin, self-signed admission cert.
+        // The node's key_pem isn't available on signal, so we generate
+        // a placeholder. The real self-signed cert is created client-side
+        // and stored in the AdoptOk response flow.
+        // For now, signal stores the fact that this is a root admin.
+        ("admin".to_string(), String::new(), String::new())
     } else {
-        // Try to verify as a sponsor-signed Ed25519 invite
+        // Sponsor-signed Ed25519 invite — build admission cert from it
         match verify_sponsor_invite(state, cluster_id, pre_auth_token).await {
-            Ok((target_role, sponsor_id)) => (target_role, sponsor_id),
+            Ok((target_role, sponsor_id)) => {
+                let cert = mlsh_crypto::invite::build_sponsored_admission_cert(
+                    node_id,
+                    fingerprint,
+                    cluster_id,
+                    &target_role,
+                    &sponsor_id,
+                    pre_auth_token,
+                );
+                let cert_json = serde_json::to_string(&cert).unwrap_or_default();
+                (target_role, sponsor_id, cert_json)
+            }
             Err(e) => {
                 return ServerMessage::error("unauthorized", &e);
             }
         }
     };
 
-    // Register the node with role and sponsor
+    // Register the node with role, sponsor, and admission cert
     let overlay_ip = match db::register_node_full(
         &state.db,
         cluster_id,
@@ -341,6 +358,7 @@ async fn handle_adopt(
         public_key,
         &role,
         &sponsored_by,
+        &admission_cert_json,
         &state.overlay_subnet,
     )
     .await

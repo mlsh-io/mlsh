@@ -32,6 +32,8 @@ pub struct SignalCredentials {
     pub cert_pem: String,
     /// PEM-encoded private key (for mTLS auth to signal).
     pub key_pem: String,
+    /// Root admin fingerprint for admission cert verification.
+    pub root_fingerprint: String,
 }
 
 /// Handle to a running signal session. Provides reactive access to
@@ -282,7 +284,7 @@ async fn run_session(
             msg = framing::read_msg_opt::<ServerMessage>(&mut recv) => {
                 match msg {
                     Ok(Some(msg)) => {
-                        handle_push_message(&msg, peers_tx);
+                        handle_push_message(&msg, peers_tx, &creds.root_fingerprint);
                     }
                     Ok(None) => {
                         tracing::info!("Signal stream closed");
@@ -303,9 +305,100 @@ async fn run_session(
     }
 }
 
-fn handle_push_message(msg: &ServerMessage, peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>) {
+/// Verify a peer's admission certificate before accepting it into the peer list.
+///
+/// Returns `true` if the cert is valid, `false` if it should be rejected.
+/// Peers without admission certs are accepted with a warning (backward compat).
+fn verify_admission(
+    peer: &PeerInfo,
+    peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
+    root_fingerprint: &str,
+) -> bool {
+    if peer.admission_cert.is_empty() {
+        // No admission cert — accept with warning (backward compat with pre-admission nodes)
+        tracing::warn!("Peer {} has no admission cert — accepting (legacy)", peer.node_id);
+        return true;
+    }
+
+    let cert: mlsh_crypto::invite::AdmissionCert = match serde_json::from_str(&peer.admission_cert)
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Peer {} has malformed admission cert: {}", peer.node_id, e);
+            return false;
+        }
+    };
+
+    // Verify fingerprint in cert matches the peer's fingerprint
+    if cert.fingerprint != peer.fingerprint {
+        tracing::warn!(
+            "Peer {} admission cert fingerprint mismatch (cert={}, peer={})",
+            peer.node_id,
+            &cert.fingerprint[..16.min(cert.fingerprint.len())],
+            &peer.fingerprint[..16.min(peer.fingerprint.len())],
+        );
+        return false;
+    }
+
+    if cert.sponsor_node_id == cert.node_id {
+        // Self-signed — must be the root admin
+        if root_fingerprint.is_empty() {
+            tracing::warn!("Cannot verify root admin {} — no root_fingerprint in config", peer.node_id);
+            return true; // accept if we don't have root_fingerprint yet
+        }
+        // Find the peer's public key to verify the signature
+        // For self-signed certs, the root_fingerprint check is sufficient:
+        // the root fingerprint was pinned at setup/adopt time from a trusted
+        // source (setup token or signed invite), outside signal's control.
+        if cert.fingerprint == root_fingerprint {
+            return true;
+        }
+        tracing::warn!(
+            "Peer {} claims to be root admin but fingerprint doesn't match root_fingerprint",
+            peer.node_id,
+        );
+        return false;
+    }
+
+    // Sponsored cert — verify the invite signature against the sponsor's public key
+    let peers = peers_tx.borrow();
+    let sponsor = peers.iter().find(|p| p.node_id == cert.sponsor_node_id);
+    match sponsor {
+        Some(_sponsor_peer) => {
+            // We'd need the sponsor's Ed25519 public key to verify.
+            // Public keys aren't in PeerInfo currently — accept if sponsor is known.
+            // Full signature verification requires public key exchange (Phase 4).
+            true
+        }
+        None => {
+            // Sponsor not in our peer list yet — this can happen if peers arrive
+            // out of order. Accept for now; a full implementation would queue and
+            // re-verify when the sponsor appears.
+            tracing::debug!(
+                "Peer {} sponsor {} not yet known — accepting provisionally",
+                peer.node_id,
+                cert.sponsor_node_id,
+            );
+            true
+        }
+    }
+}
+
+fn handle_push_message(
+    msg: &ServerMessage,
+    peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
+    root_fingerprint: &str,
+) {
     match msg {
         ServerMessage::PeerJoined { peer } => {
+            // Verify admission cert before accepting the peer
+            if !verify_admission(&peer, peers_tx, root_fingerprint) {
+                tracing::warn!(
+                    "Rejected peer {} — invalid admission cert",
+                    peer.node_id,
+                );
+                return;
+            }
             tracing::info!("Peer joined: {} ({})", peer.node_id, peer.overlay_ip);
             let mut new_peers: Vec<PeerInfo> = peers_tx
                 .borrow()
@@ -485,9 +578,10 @@ mod tests {
                 fingerprint: "abc123".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                admission_cert: String::new(),
             },
         };
-        handle_push_message(&msg, &tx);
+        handle_push_message(&msg, &tx, "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].node_id, "nas");
     }
@@ -499,12 +593,13 @@ mod tests {
             fingerprint: "abc".into(),
             overlay_ip: "100.64.0.1".into(),
             candidates: vec![],
+            admission_cert: String::new(),
         }]));
         let msg = ServerMessage::PeerLeft {
             node_id: "nas".into(),
             cluster_id: "c1".into(),
         };
-        handle_push_message(&msg, &tx);
+        handle_push_message(&msg, &tx, "");
         assert!(tx.borrow().is_empty());
     }
 
@@ -515,6 +610,7 @@ mod tests {
             fingerprint: "old-fp".into(),
             overlay_ip: "100.64.0.1".into(),
             candidates: vec![],
+            admission_cert: String::new(),
         }]));
         let msg = ServerMessage::PeerJoined {
             peer: PeerInfo {
@@ -522,9 +618,10 @@ mod tests {
                 fingerprint: "new-fp".into(),
                 overlay_ip: "100.64.0.1".into(),
                 candidates: vec![],
+                admission_cert: String::new(),
             },
         };
-        handle_push_message(&msg, &tx);
+        handle_push_message(&msg, &tx, "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].fingerprint, "new-fp");
     }

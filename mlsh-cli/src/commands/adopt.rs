@@ -33,7 +33,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         serde_json::from_slice(&payload_bytes).context("Invalid invite payload format")?;
 
     // Extract fields from signed invite
-    let (cluster_id, invite_token, signal_fingerprint) =
+    let (cluster_id, invite_token, signal_fingerprint, root_fingerprint) =
         if let Some(inner) = payload_json.get("payload") {
             let cid = inner["cluster_id"]
                 .as_str()
@@ -43,7 +43,11 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            (cid, payload.clone(), fp)
+            let rfp = inner["root_fingerprint"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            (cid, payload.clone(), fp, rfp)
         } else {
             // cluster_secret direct token (from mlsh setup)
             let cid = payload_json["cluster_id"]
@@ -58,7 +62,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            (cid, token, fp)
+            (cid, token, fp, String::new())
         };
 
     if signal_fingerprint.is_empty() {
@@ -149,6 +153,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
          mode = \"mtls\"\n\
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
+         root_fingerprint = \"{root_fingerprint}\"\n\
          \n\
          [node_auth]\n\
          node_id = \"{node_id}\"\n\

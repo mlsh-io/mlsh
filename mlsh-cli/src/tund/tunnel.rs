@@ -35,6 +35,8 @@ pub struct ClusterConfig {
     pub node_id: String,
     pub fingerprint: String,
     pub public_key: String,
+    /// Root admin fingerprint for peer-side admission cert verification.
+    pub root_fingerprint: String,
     /// Path to the identity directory containing cert.pem and key.pem.
     pub identity_dir: std::path::PathBuf,
 }
@@ -56,6 +58,7 @@ impl ClusterConfig {
             public_key: self.public_key.clone(),
             cert_pem,
             key_pem,
+            root_fingerprint: self.root_fingerprint.clone(),
         })
     }
 }
@@ -1130,6 +1133,12 @@ fn parse_cluster_config_from_toml(
         .unwrap_or("")
         .to_string();
 
+    let root_fingerprint = cluster
+        .get("root_fingerprint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let cluster_id = cluster
         .get("id")
         .and_then(|v| v.as_str())
@@ -1184,6 +1193,7 @@ fn parse_cluster_config_from_toml(
         node_id,
         fingerprint,
         public_key,
+        root_fingerprint,
         identity_dir: identity_dir.to_path_buf(),
     })
 }
