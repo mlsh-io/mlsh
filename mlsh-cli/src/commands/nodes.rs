@@ -73,6 +73,8 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         overlay_ip: String,
         role: String,
         online: bool,
+        #[serde(default)]
+        has_admission_cert: bool,
     }
 
     let nodes: Vec<NodeInfo> = serde_json::from_value(
@@ -89,7 +91,10 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<20} {:<18} {:<8} STATUS", "NODE", "OVERLAY IP", "ROLE");
+    println!(
+        "{:<20} {:<18} {:<8} {:<8} STATUS",
+        "NODE", "OVERLAY IP", "ROLE", "CERT"
+    );
 
     for node in &nodes {
         let status = if node.online {
@@ -97,9 +102,14 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         } else {
             "offline".red().to_string()
         };
+        let cert = if node.has_admission_cert {
+            "ok".green().to_string()
+        } else {
+            "none".yellow().to_string()
+        };
         println!(
-            "{:<20} {:<18} {:<8} {}",
-            node.node_id, node.overlay_ip, node.role, status
+            "{:<20} {:<18} {:<8} {:<8} {}",
+            node.node_id, node.overlay_ip, node.role, cert, status
         );
     }
 

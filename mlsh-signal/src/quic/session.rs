@@ -186,6 +186,7 @@ async fn run_node_session(
     };
     protocol::write_message(&mut send, &reply).await?;
     info!(id, cluster_id, node_id = %node.node_id, %overlay_ip, "Node session authenticated");
+    db::audit(&state.db, cluster_id, "auth", &node.node_id, "session started").await;
 
     // Register session + push channel
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<ServerMessage>>();
@@ -246,6 +247,7 @@ async fn run_node_session(
                                         overlay_ip: n.overlay_ip.to_string(),
                                         role: n.role,
                                         online: online.contains(&n.node_id),
+                                        has_admission_cert: !n.admission_cert.is_empty(),
                                     }
                                 }).collect();
                                 let _ = protocol::write_message(&mut send, &ServerMessage::NodeList { nodes }).await;
@@ -377,6 +379,7 @@ async fn handle_adopt(
     let peers = state.sessions.get_peer_list(cluster_id, node_id).await;
 
     info!(cluster_id, node_id, %overlay_ip, role, "Node adopted");
+    db::audit(&state.db, cluster_id, "adopt", node_id, &format!("role={}, sponsor={}", role, sponsored_by)).await;
 
     ServerMessage::AdoptOk {
         cluster_id: cluster_id.to_string(),
@@ -478,6 +481,7 @@ async fn handle_revoke(
                 .notify_peer_left(cluster_id, target_node_id)
                 .await;
             info!(cluster_id, target_node_id, "Node revoked");
+            db::audit(&state.db, cluster_id, "revoke", target_node_id, &format!("by={}", caller.node_id)).await;
             ServerMessage::RevokeOk
         }
         Ok(false) => ServerMessage::error("not_found", "Node not found"),

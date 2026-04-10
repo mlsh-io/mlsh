@@ -85,6 +85,17 @@ enum Commands {
         node: String,
     },
 
+    /// Export the node identity (private key) for backup
+    #[command(name = "identity-export")]
+    IdentityExport,
+
+    /// Import a node identity from backup
+    #[command(name = "identity-import")]
+    IdentityImport {
+        /// Path to the PEM file (reads from stdin if omitted)
+        file: Option<String>,
+    },
+
     /// Show tunnel status
     Status,
 
@@ -211,6 +222,10 @@ async fn run_cli() -> Result<()> {
         Commands::Nodes { cluster } => commands::nodes::handle_nodes(&cluster).await,
         Commands::Revoke { cluster, node } => {
             commands::revoke::handle_revoke(&cluster, &node).await
+        }
+        Commands::IdentityExport => commands::identity::handle_export().await,
+        Commands::IdentityImport { file } => {
+            commands::identity::handle_import(file.as_deref()).await
         }
         Commands::Status => commands::connect::handle_status().await,
         Commands::Tunnel(cmd) => commands::daemon::handle(cmd).await,

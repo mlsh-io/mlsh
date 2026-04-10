@@ -150,6 +150,17 @@ pub async fn handle_setup(
         format!("mlsh invite {} --ttl 3600", cluster_name).bold()
     );
 
+    println!();
+    println!(
+        "{}",
+        format!(
+            "Warning: \"{}\" has only 1 admin. If you lose this machine, you lose \
+             admin access forever. Run `mlsh invite {} --role admin` to add a backup admin.",
+            cluster_name, cluster_name
+        )
+        .yellow()
+    );
+
     Ok(())
 }
 

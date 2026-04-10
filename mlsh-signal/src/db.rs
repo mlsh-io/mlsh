@@ -98,6 +98,21 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     .await
     .context("Failed to create setup_codes table")?;
 
+    // --- Audit log
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS audit_log (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp  TEXT NOT NULL,
+            cluster_id TEXT NOT NULL,
+            action     TEXT NOT NULL,
+            node_id    TEXT NOT NULL DEFAULT '',
+            details    TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create audit_log table")?;
+
     Ok(pool)
 }
 
@@ -208,6 +223,32 @@ pub async fn verify_and_burn_setup_code(
         .context("Failed to burn setup code")?;
 
     Ok(true)
+}
+
+// --- Audit log
+
+/// Record an audit event.
+pub async fn audit(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    action: &str,
+    node_id: &str,
+    details: &str,
+) {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
+    let _ = sqlx::query(
+        "INSERT INTO audit_log (timestamp, cluster_id, action, node_id, details) VALUES (?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(&now)
+    .bind(cluster_id)
+    .bind(action)
+    .bind(node_id)
+    .bind(details)
+    .execute(pool)
+    .await;
 }
 
 // --- Config key-value store
@@ -627,6 +668,15 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS setup_codes (
                 cluster_id TEXT NOT NULL, code_hash TEXT NOT NULL,
                 expires_at TEXT NOT NULL, PRIMARY KEY (cluster_id))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
+                cluster_id TEXT NOT NULL, action TEXT NOT NULL,
+                node_id TEXT NOT NULL DEFAULT '', details TEXT NOT NULL DEFAULT '')",
         )
         .execute(&pool)
         .await

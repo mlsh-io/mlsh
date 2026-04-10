@@ -37,4 +37,7 @@ pub struct NodeInfo {
     pub overlay_ip: String,
     pub role: String,
     pub online: bool,
+    /// Whether this node has a valid admission certificate stored.
+    #[serde(default)]
+    pub has_admission_cert: bool,
 }
