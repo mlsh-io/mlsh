@@ -74,30 +74,30 @@ impl CloudClient {
         loop {
             std::thread::sleep(interval);
 
-            let resp = self
+            let result = self
                 .agent
                 .post(format!("{}/auth/device/token", self.base_url))
-                .send_json(serde_json::json!({ "device_code": device_code }))
-                .context("Failed to poll device token")?;
+                .send_json(serde_json::json!({ "device_code": device_code }));
 
-            let status = resp.status();
-
-            if status == 200 {
-                let token: TokenResponse = resp
-                    .into_body()
-                    .read_json()
-                    .context("Invalid token response")?;
-                return Ok(token);
+            match result {
+                Ok(resp) => {
+                    let token: TokenResponse = resp
+                        .into_body()
+                        .read_json()
+                        .context("Invalid token response")?;
+                    return Ok(token);
+                }
+                Err(ureq::Error::StatusCode(428)) => {
+                    // authorization_pending — keep polling
+                    continue;
+                }
+                Err(ureq::Error::StatusCode(code)) => {
+                    anyhow::bail!("Device token poll failed (HTTP {})", code);
+                }
+                Err(e) => {
+                    anyhow::bail!("Device token poll failed: {}", e);
+                }
             }
-
-            // 428 Precondition Required = authorization_pending (keep polling)
-            if status == 428 {
-                continue;
-            }
-
-            // Any other status is an error
-            let body = resp.into_body().read_to_string().unwrap_or_default();
-            anyhow::bail!("Device token poll failed ({}): {}", status, body);
         }
     }
 

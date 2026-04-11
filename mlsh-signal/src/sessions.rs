@@ -201,10 +201,7 @@ impl SessionStore {
     /// Return the number of active sessions in this cluster.
     pub async fn online_count(&self, cluster_id: &str) -> usize {
         let sessions = self.sessions.read().await;
-        sessions
-            .keys()
-            .filter(|(cid, _)| cid == cluster_id)
-            .count()
+        sessions.keys().filter(|(cid, _)| cid == cluster_id).count()
     }
 
     /// Return the set of node_ids that have an active session in this cluster.

@@ -115,8 +115,14 @@ async fn run_server() -> anyhow::Result<()> {
         let http_sessions = Arc::clone(&sessions);
         let http_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) =
-                mlsh_signal::http::run(http_bind, http_pool, http_token, http_sessions, http_shutdown).await
+            if let Err(e) = mlsh_signal::http::run(
+                http_bind,
+                http_pool,
+                http_token,
+                http_sessions,
+                http_shutdown,
+            )
+            .await
             {
                 error!("Internal HTTP API failed: {}", e);
             }
