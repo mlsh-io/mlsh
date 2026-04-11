@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use sha2::{Digest, Sha256};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -71,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Commands::Serve) {
         Commands::Serve => run_server().await,
         Commands::Cluster { action } => match action {
-            ClusterAction::Create { name, ttl } => create_cluster(&name, ttl).await,
+            ClusterAction::Create { name, ttl } => cmd_create_cluster(&name, ttl).await,
         },
     }
 }
@@ -104,6 +103,27 @@ async fn run_server() -> anyhow::Result<()> {
     info!("Overlay subnet: {}", overlay_subnet.cidr);
 
     let sessions = SessionStore::new();
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+    // Start internal HTTP API if cloud integration is configured
+    if let Some(ref api_token) = cfg.cloud_api_token {
+        let http_bind: std::net::SocketAddr = cfg
+            .http_bind
+            .parse()
+            .expect("Invalid http_bind address");
+        let http_pool = pool.clone();
+        let http_token = api_token.clone();
+        let http_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                mlsh_signal::http::run(http_bind, http_pool, http_token, http_shutdown).await
+            {
+                error!("Internal HTTP API failed: {}", e);
+            }
+        });
+    }
+
     let cfg = Arc::new(cfg);
 
     let state = Arc::new(quic::listener::QuicState {
@@ -112,8 +132,6 @@ async fn run_server() -> anyhow::Result<()> {
         config: cfg,
         overlay_subnet,
     });
-
-    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
     tokio::spawn(async move {
         shutdown_signal().await;
@@ -129,8 +147,8 @@ async fn run_server() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Create a cluster and generate a one-time setup code.
-async fn create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
+/// Create a cluster and generate a one-time setup code (CLI command).
+async fn cmd_create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env().add_directive("mlsh_signal=warn".parse()?))
         .init();
@@ -138,58 +156,19 @@ async fn create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
     let cfg = config::Config::load()?;
     let pool = db::init(&cfg.db_path).await?;
 
-    // Create the cluster
-    let cluster_id = db::create_cluster(&pool, name).await?;
-
-    // Generate a human-readable setup code
-    let code = generate_human_code(12);
-    let code_formatted = format!("{}-{}-{}", &code[..4], &code[4..8], &code[8..12]);
-
-    // Store SHA-256 hash (not the code itself)
-    let code_hash = format!("{:x}", Sha256::digest(code_formatted.as_bytes()));
-    let expires_at = (time::OffsetDateTime::now_utc()
-        + time::Duration::minutes(ttl_minutes as i64))
-    .format(&time::format_description::well_known::Rfc3339)
-    .unwrap();
-
-    db::store_setup_code(&pool, &cluster_id, &code_hash, &expires_at).await?;
-
-    // Load signal fingerprint for the full token
-    let signal_fingerprint = db::get_config(&pool, "signal_fingerprint")
-        .await?
-        .unwrap_or_else(|| "<unknown — start the server first>".to_string());
-
-    let setup_token = format!("{}@{}@{}", code_formatted, cluster_id, signal_fingerprint);
+    let result = mlsh_signal::cluster::create_cluster(&pool, name, ttl_minutes).await?;
 
     eprintln!("Cluster created:");
     eprintln!("  Name:  {}", name);
-    eprintln!("  ID:    {}", cluster_id);
-    eprintln!(
-        "  Code:  {} (valid {} min, single use)",
-        code_formatted, ttl_minutes
-    );
+    eprintln!("  ID:    {}", result.cluster_id);
     eprintln!();
-    eprintln!("  Setup token: {}", setup_token);
+    eprintln!("  Setup token: {}", result.setup_token);
     eprintln!();
     eprintln!("  On a new machine:");
     eprintln!(
         "    mlsh setup {} --signal-host <host> --token {}",
-        name, setup_token
+        name, result.setup_token
     );
 
     Ok(())
-}
-
-/// Generate a human-readable code of the given length.
-///
-/// Uses charset `0123456789ABCDEFGHJKLMNPQRSTUVWXYZ` (34 chars, no I/O to avoid
-/// confusion with 1/0). 12 chars ~ 61 bits of entropy.
-fn generate_human_code(len: usize) -> String {
-    const CHARSET: &[u8] = b"0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-    let mut raw = vec![0u8; len];
-    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut raw)
-        .expect("Failed to generate random bytes");
-    raw.iter()
-        .map(|b| CHARSET[(*b as usize) % CHARSET.len()] as char)
-        .collect()
 }

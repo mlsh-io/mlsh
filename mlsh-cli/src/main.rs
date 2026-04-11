@@ -4,7 +4,7 @@ use mlsh_cli::commands;
 
 #[derive(Parser)]
 #[command(name = "mlsh")]
-#[command(about = "MLSH CLI - Manage your MLSH infrastructure from the command line", long_about = None)]
+#[command(about = "Create and manage your mlsh mesh network", long_about = None)]
 #[command(version = env!("GIT_VERSION"))]
 struct Cli {
     #[command(subcommand)]

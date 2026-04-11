@@ -18,10 +18,15 @@ pub struct Config {
     #[serde(default)]
     pub cloud_url: Option<String>,
 
-    /// API token for authenticating signal → mlsh-cloud requests.
-    /// Sent as `Authorization: Bearer <token>` header.
+    /// API token for authenticating signal ↔ mlsh-cloud requests.
+    /// Used as `X-Internal-Secret` for the internal HTTP API.
     #[serde(default)]
     pub cloud_api_token: Option<String>,
+
+    /// Bind address for the internal HTTP API (cluster provisioning).
+    /// Only started if `cloud_api_token` is set.
+    #[serde(default = "default_http_bind")]
+    pub http_bind: String,
 
     /// Overlay network subnet in CIDR notation (e.g. "10.0.10.0/24").
     /// Nodes are allocated sequential IPs from this range.
@@ -51,6 +56,10 @@ fn default_quic_bind() -> String {
     "0.0.0.0:4433".to_string()
 }
 
+fn default_http_bind() -> String {
+    "127.0.0.1:4434".to_string()
+}
+
 fn default_overlay_subnet() -> String {
     "100.64.0.0/10".to_string()
 }
@@ -72,6 +81,7 @@ impl Default for Config {
             quic: QuicConfig::default(),
             cloud_url: None,
             cloud_api_token: None,
+            http_bind: default_http_bind(),
             overlay_subnet: default_overlay_subnet(),
         }
     }
