@@ -24,8 +24,7 @@ pub async fn handle_export() -> Result<()> {
     let key_pem = std::fs::read_to_string(&key_path).context("Failed to read key.pem")?;
 
     let fingerprint = mlsh_crypto::identity::compute_fingerprint(
-        &mlsh_crypto::identity::pem_to_der_pub(&cert_pem)
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+        &mlsh_crypto::identity::pem_to_der_pub(&cert_pem).map_err(|e| anyhow::anyhow!("{}", e))?,
     );
 
     eprintln!("{}", "Identity exported".green().bold());
@@ -43,8 +42,9 @@ pub async fn handle_export() -> Result<()> {
 /// Import a node identity from a PEM file or stdin.
 pub async fn handle_import(file: Option<&str>) -> Result<()> {
     let pem_data = match file {
-        Some(path) => std::fs::read_to_string(path)
-            .with_context(|| format!("Failed to read {}", path))?,
+        Some(path) => {
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path))?
+        }
         None => {
             eprintln!("Reading identity from stdin (paste PEM, then Ctrl+D)...");
             let mut buf = String::new();
@@ -77,8 +77,14 @@ pub async fn handle_import(file: Option<&str>) -> Result<()> {
             target = 2;
         }
         match target {
-            1 => { key_pem.push_str(line); key_pem.push('\n'); }
-            2 => { cert_pem.push_str(line); cert_pem.push('\n'); }
+            1 => {
+                key_pem.push_str(line);
+                key_pem.push('\n');
+            }
+            2 => {
+                cert_pem.push_str(line);
+                cert_pem.push('\n');
+            }
             _ => {}
         }
         if line.contains("END") {
@@ -105,10 +111,8 @@ pub async fn handle_import(file: Option<&str>) -> Result<()> {
 
     if cert_path.exists() {
         let existing_fp = mlsh_crypto::identity::compute_fingerprint(
-            &mlsh_crypto::identity::pem_to_der_pub(
-                &std::fs::read_to_string(&cert_path)?,
-            )
-            .map_err(|e| anyhow::anyhow!("{}", e))?,
+            &mlsh_crypto::identity::pem_to_der_pub(&std::fs::read_to_string(&cert_path)?)
+                .map_err(|e| anyhow::anyhow!("{}", e))?,
         );
         if existing_fp != fingerprint {
             eprintln!(

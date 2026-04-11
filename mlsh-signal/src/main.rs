@@ -147,9 +147,10 @@ async fn create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
 
     // Store SHA-256 hash (not the code itself)
     let code_hash = format!("{:x}", Sha256::digest(code_formatted.as_bytes()));
-    let expires_at = (time::OffsetDateTime::now_utc() + time::Duration::minutes(ttl_minutes as i64))
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap();
+    let expires_at = (time::OffsetDateTime::now_utc()
+        + time::Duration::minutes(ttl_minutes as i64))
+    .format(&time::format_description::well_known::Rfc3339)
+    .unwrap();
 
     db::store_setup_code(&pool, &cluster_id, &code_hash, &expires_at).await?;
 
@@ -163,12 +164,18 @@ async fn create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> {
     eprintln!("Cluster created:");
     eprintln!("  Name:  {}", name);
     eprintln!("  ID:    {}", cluster_id);
-    eprintln!("  Code:  {} (valid {} min, single use)", code_formatted, ttl_minutes);
+    eprintln!(
+        "  Code:  {} (valid {} min, single use)",
+        code_formatted, ttl_minutes
+    );
     eprintln!();
     eprintln!("  Setup token: {}", setup_token);
     eprintln!();
     eprintln!("  On a new machine:");
-    eprintln!("    mlsh setup {} --signal-host <host> --token {}", name, setup_token);
+    eprintln!(
+        "    mlsh setup {} --signal-host <host> --token {}",
+        name, setup_token
+    );
 
     Ok(())
 }

@@ -15,7 +15,13 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
     let addr = resolve_addr(&creds.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &creds.signal_endpoint, &creds.signal_fingerprint, &identity).await?;
+    let conn = connect_to_signal(
+        addr,
+        &creds.signal_endpoint,
+        &creds.signal_fingerprint,
+        &identity,
+    )
+    .await?;
 
     // Open a bidirectional stream
     let (mut send, mut recv) = conn

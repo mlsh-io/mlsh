@@ -67,6 +67,18 @@ impl SignalSessionHandle {
     }
 }
 
+/// Shared state for the signal session loop.
+struct SessionContext {
+    creds: SignalCredentials,
+    ip_tx: watch::Sender<Option<Ipv4Addr>>,
+    peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
+    conn_tx: watch::Sender<Option<quinn::Connection>>,
+    tun_device: Option<Arc<tun_rs::AsyncDevice>>,
+    peer_table: super::peer_table::PeerTable,
+    overlay_port: u16,
+    overlay_prefix_len: u8,
+}
+
 /// Spawn a persistent signal session as a background task.
 ///
 /// If `tun_device` is provided, incoming relay bi-streams from signal will be
@@ -76,7 +88,7 @@ pub fn spawn(
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
-    overlay_ip: Ipv4Addr,
+    _overlay_ip: Ipv4Addr,
     overlay_prefix_len: u8,
 ) -> SignalSessionHandle {
     let (ip_tx, ip_rx) = watch::channel(None);
@@ -84,18 +96,18 @@ pub fn spawn(
     let (conn_tx, conn_rx) = watch::channel(None);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    tokio::spawn(session_loop(
+    let ctx = SessionContext {
         creds,
         ip_tx,
         peers_tx,
         conn_tx,
-        shutdown_rx,
         tun_device,
         peer_table,
         overlay_port,
-        overlay_ip,
         overlay_prefix_len,
-    ));
+    };
+
+    tokio::spawn(session_loop(ctx, shutdown_rx));
 
     SignalSessionHandle {
         overlay_ip: ip_rx,
@@ -105,38 +117,14 @@ pub fn spawn(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn session_loop(
-    creds: SignalCredentials,
-    ip_tx: watch::Sender<Option<Ipv4Addr>>,
-    peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
-    conn_tx: watch::Sender<Option<quinn::Connection>>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    tun_device: Option<Arc<tun_rs::AsyncDevice>>,
-    peer_table: super::peer_table::PeerTable,
-    overlay_port: u16,
-    overlay_ip: Ipv4Addr,
-    overlay_prefix_len: u8,
-) {
+async fn session_loop(ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool>) {
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(30);
 
     shutdown_rx.borrow_and_update();
 
     loop {
-        match run_session(
-            &creds,
-            &ip_tx,
-            &peers_tx,
-            &conn_tx,
-            &mut shutdown_rx,
-            &tun_device,
-            &peer_table,
-            overlay_port,
-            overlay_ip,
-            overlay_prefix_len,
-        )
-        .await
+        match run_session(&ctx, &mut shutdown_rx).await
         {
             Ok(true) => {
                 tracing::info!("Signal session shut down by user");
@@ -169,21 +157,21 @@ async fn session_loop(
 
 /// Run a single session. Returns Ok(true) if user requested shutdown,
 /// Ok(false) if connection was lost, Err on failure.
-#[allow(clippy::too_many_arguments)]
 async fn run_session(
-    creds: &SignalCredentials,
-    ip_tx: &watch::Sender<Option<Ipv4Addr>>,
-    peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
-    conn_tx: &watch::Sender<Option<quinn::Connection>>,
+    ctx: &SessionContext,
     shutdown_rx: &mut watch::Receiver<bool>,
-    tun_device: &Option<Arc<tun_rs::AsyncDevice>>,
-    peer_table: &super::peer_table::PeerTable,
-    overlay_port: u16,
-    _overlay_ip: Ipv4Addr,
-    overlay_prefix_len: u8,
 ) -> Result<bool> {
+    let creds = &ctx.creds;
+    let ip_tx = &ctx.ip_tx;
+    let peers_tx = &ctx.peers_tx;
+    let conn_tx = &ctx.conn_tx;
+    let tun_device = &ctx.tun_device;
+    let peer_table = &ctx.peer_table;
+    let overlay_port = ctx.overlay_port;
+    let overlay_prefix_len = ctx.overlay_prefix_len;
+
     let addr = resolve_addr(&creds.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &creds.signal_endpoint, &creds).await?;
+    let conn = connect_to_signal(addr, &creds.signal_endpoint, creds).await?;
 
     // Expose connection to the tunnel for relay/direct streams
     let _ = conn_tx.send(Some(conn.clone()));
@@ -322,7 +310,10 @@ fn verify_admission(
 ) -> bool {
     if peer.admission_cert.is_empty() {
         // No admission cert — accept with warning (backward compat with pre-admission nodes)
-        tracing::warn!("Peer {} has no admission cert — accepting (legacy)", peer.node_id);
+        tracing::warn!(
+            "Peer {} has no admission cert — accepting (legacy)",
+            peer.node_id
+        );
         return true;
     }
 
@@ -349,7 +340,10 @@ fn verify_admission(
     if cert.sponsor_node_id == cert.node_id {
         // Self-signed — must be the root admin
         if root_fingerprint.is_empty() {
-            tracing::warn!("Cannot verify root admin {} — no root_fingerprint in config", peer.node_id);
+            tracing::warn!(
+                "Cannot verify root admin {} — no root_fingerprint in config",
+                peer.node_id
+            );
             return true; // accept if we don't have root_fingerprint yet
         }
         // Find the peer's public key to verify the signature
@@ -377,7 +371,10 @@ fn verify_admission(
             ) {
                 Ok(b) => b,
                 Err(_) => {
-                    tracing::warn!("Sponsor {} has invalid public key encoding", cert.sponsor_node_id);
+                    tracing::warn!(
+                        "Sponsor {} has invalid public key encoding",
+                        cert.sponsor_node_id
+                    );
                     return false;
                 }
             };
@@ -386,7 +383,8 @@ fn verify_admission(
                 Err(e) => {
                     tracing::warn!(
                         "Peer {} admission cert failed verification: {}",
-                        peer.node_id, e,
+                        peer.node_id,
+                        e,
                     );
                     false
                 }
@@ -396,7 +394,8 @@ fn verify_admission(
             // Sponsor known but has no public key — accept with warning
             tracing::warn!(
                 "Peer {} sponsor {} has no public key — cannot verify admission cert",
-                peer.node_id, cert.sponsor_node_id,
+                peer.node_id,
+                cert.sponsor_node_id,
             );
             true
         }
@@ -420,11 +419,8 @@ fn handle_push_message(
     match msg {
         ServerMessage::PeerJoined { peer } => {
             // Verify admission cert before accepting the peer
-            if !verify_admission(&peer, peers_tx, root_fingerprint) {
-                tracing::warn!(
-                    "Rejected peer {} — invalid admission cert",
-                    peer.node_id,
-                );
+            if !verify_admission(peer, peers_tx, root_fingerprint) {
+                tracing::warn!("Rejected peer {} — invalid admission cert", peer.node_id,);
                 return;
             }
             tracing::info!("Peer joined: {} ({})", peer.node_id, peer.overlay_ip);

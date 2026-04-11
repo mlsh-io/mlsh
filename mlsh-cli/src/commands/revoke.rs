@@ -19,7 +19,13 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity).await?;
+    let conn = connect_to_signal(
+        addr,
+        &config.signal_endpoint,
+        &config.signal_fingerprint,
+        &identity,
+    )
+    .await?;
 
     // Revoke is a one-shot message (no session needed)
     let (mut send, mut recv) = conn

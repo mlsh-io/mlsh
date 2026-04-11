@@ -19,7 +19,11 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
     let identity = mlsh_crypto::identity::load_or_generate(&config.identity_dir, &config.node_id)
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
-    let action = if role == "admin" { "Promoting" } else { "Demoting" };
+    let action = if role == "admin" {
+        "Promoting"
+    } else {
+        "Demoting"
+    };
     println!("{} node {} to {}...", action, target_node.bold(), role);
 
     // Build admission cert for the new role (signed by us as sponsor)
@@ -34,11 +38,18 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
     let admission_cert_json = serde_json::to_string(&admission_cert)?;
 
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn =
-        connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity)
-            .await?;
+    let conn = connect_to_signal(
+        addr,
+        &config.signal_endpoint,
+        &config.signal_fingerprint,
+        &identity,
+    )
+    .await?;
 
-    let (mut send, mut recv) = conn.open_bi().await.context("Failed to open signal stream")?;
+    let (mut send, mut recv) = conn
+        .open_bi()
+        .await
+        .context("Failed to open signal stream")?;
 
     let msg = serde_json::json!({
         "type": "promote",
@@ -59,7 +70,10 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
             } else {
                 "demoted to node"
             };
-            println!("{}", format!("Node '{}' {}.", target_node, done).green().bold());
+            println!(
+                "{}",
+                format!("Node '{}' {}.", target_node, done).green().bold()
+            );
             Ok(())
         }
         "error" => {

@@ -328,19 +328,17 @@ async fn tunnel_task(
             i.connected_at = None;
         }
 
-        match establish_and_run(
-            &config,
+        let run_ctx = TunnelRunContext {
+            config: &config,
             overlay_ip,
-            &device,
-            &session,
-            &peer_table,
-            &mut shutdown_rx,
-            &state_tx,
-            &info,
-            &bytes_tx,
-            &bytes_rx,
-        )
-        .await
+            device: &device,
+            session: &session,
+            peer_table: &peer_table,
+            state_tx: &state_tx,
+            info: &info,
+            bytes_tx: &bytes_tx,
+        };
+        match establish_and_run(&run_ctx, &mut shutdown_rx).await
         {
             Ok(ShutdownReason::UserRequested) => {
                 tracing::info!("Tunnel {} shut down by user", config.name);
@@ -404,20 +402,30 @@ enum ShutdownReason {
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_STAGGER: Duration = Duration::from_millis(100);
 
-/// Wait for signal session to be ready, then run the multi-peer forwarding loop.
-#[allow(clippy::too_many_arguments)]
-async fn establish_and_run(
-    config: &ClusterConfig,
+struct TunnelRunContext<'a> {
+    config: &'a ClusterConfig,
     overlay_ip: Ipv4Addr,
-    device: &Arc<tun_rs::AsyncDevice>,
-    session: &signal_session::SignalSessionHandle,
-    peer_table: &PeerTable,
+    device: &'a Arc<tun_rs::AsyncDevice>,
+    session: &'a signal_session::SignalSessionHandle,
+    peer_table: &'a PeerTable,
+    state_tx: &'a watch::Sender<TunnelState>,
+    info: &'a Arc<std::sync::Mutex<SharedInfo>>,
+    bytes_tx: &'a Arc<AtomicU64>,
+}
+
+/// Wait for signal session to be ready, then run the multi-peer forwarding loop.
+async fn establish_and_run(
+    ctx: &TunnelRunContext<'_>,
     shutdown_rx: &mut watch::Receiver<bool>,
-    state_tx: &watch::Sender<TunnelState>,
-    info: &Arc<std::sync::Mutex<SharedInfo>>,
-    bytes_tx: &Arc<AtomicU64>,
-    _bytes_rx: &Arc<AtomicU64>,
 ) -> Result<ShutdownReason> {
+    let config = ctx.config;
+    let overlay_ip = ctx.overlay_ip;
+    let device = ctx.device;
+    let session = ctx.session;
+    let peer_table = ctx.peer_table;
+    let state_tx = ctx.state_tx;
+    let info = ctx.info;
+    let bytes_tx = ctx.bytes_tx;
     // Wait for signal session to be authenticated (overlay IP assigned)
     let deadline = tokio::time::sleep(Duration::from_secs(30));
     tokio::pin!(deadline);
@@ -474,18 +482,17 @@ async fn establish_and_run(
     let cm_node_id = config.node_id.clone();
     let cm_cluster_id = config.cluster_id.clone();
     let cm_identity_dir = config.identity_dir.clone();
+    let cm_overlay_ip = overlay_ip;
     let conn_manager = tokio::spawn(async move {
-        run_connection_manager(
-            cm_session_peers,
-            cm_session_conn,
-            &cm_table,
-            &cm_device,
-            overlay_ip,
-            &cm_node_id,
-            &cm_cluster_id,
-            &cm_identity_dir,
-        )
-        .await;
+        let cm_ctx = ConnectionManagerContext {
+            peer_table: &cm_table,
+            device: &cm_device,
+            overlay_ip: cm_overlay_ip,
+            my_node_id: &cm_node_id,
+            cluster_id: &cm_cluster_id,
+            identity_dir: &cm_identity_dir,
+        };
+        run_connection_manager(cm_session_peers, cm_session_conn, &cm_ctx).await;
     });
 
     // Wait for shutdown or session death
@@ -706,16 +713,19 @@ async fn run_tun_outbound(
 
 /// Watches the peer list from signal and manages per-peer connections.
 /// For each peer: tries direct QUIC, falls back to relay, spawns inbound task.
-#[allow(clippy::too_many_arguments)]
+struct ConnectionManagerContext<'a> {
+    peer_table: &'a PeerTable,
+    device: &'a Arc<tun_rs::AsyncDevice>,
+    overlay_ip: Ipv4Addr,
+    my_node_id: &'a str,
+    cluster_id: &'a str,
+    identity_dir: &'a std::path::Path,
+}
+
 async fn run_connection_manager(
     mut peers_rx: watch::Receiver<Arc<Vec<PeerInfo>>>,
     conn_rx: watch::Receiver<Option<quinn::Connection>>,
-    peer_table: &PeerTable,
-    device: &Arc<tun_rs::AsyncDevice>,
-    overlay_ip: Ipv4Addr,
-    my_node_id: &str,
-    cluster_id: &str,
-    identity_dir: &std::path::Path,
+    ctx: &ConnectionManagerContext<'_>,
 ) {
     use std::collections::HashMap;
 
@@ -731,7 +741,7 @@ async fn run_connection_manager(
         // Find peers that left — cancel their tasks and remove routes
         let current_ids: std::collections::HashSet<&str> = peers
             .iter()
-            .filter(|p| p.node_id != my_node_id)
+            .filter(|p| p.node_id != ctx.my_node_id)
             .map(|p| p.node_id.as_str())
             .collect();
 
@@ -764,7 +774,7 @@ async fn run_connection_manager(
 
         // Find peers that need connections (new or finished tasks to retry)
         for peer in peers.iter() {
-            if peer.node_id == my_node_id || active_peers.contains_key(&peer.node_id) {
+            if peer.node_id == ctx.my_node_id || active_peers.contains_key(&peer.node_id) {
                 continue;
             }
 
@@ -774,31 +784,32 @@ async fn run_connection_manager(
             };
 
             // Skip if we already have a working route (e.g. from relay_handler or quic_server)
-            if peer_table.has_route(peer_ip).await {
+            if ctx.peer_table.has_route(peer_ip).await {
                 continue;
             }
 
             // Spawn a task to establish connection to this peer
             let peer_info = peer.clone();
-            let table = peer_table.clone();
-            let dev = device.clone();
-            let cid = cluster_id.to_string();
-            let nid = my_node_id.to_string();
+            let table = ctx.peer_table.clone();
+            let dev = ctx.device.clone();
+            let cid = ctx.cluster_id.to_string();
+            let nid = ctx.my_node_id.to_string();
             let signal_conn = conn_rx.borrow().clone();
-            let id_dir = identity_dir.to_path_buf();
+            let id_dir = ctx.identity_dir.to_path_buf();
+            let overlay_ip = ctx.overlay_ip;
 
             let handle = tokio::spawn(async move {
-                establish_peer_connection(
-                    peer_info,
+                establish_peer_connection(PeerConnectionContext {
+                    peer: peer_info,
                     peer_ip,
                     overlay_ip,
-                    table,
-                    dev,
+                    peer_table: table,
+                    device: dev,
                     signal_conn,
-                    &cid,
-                    &nid,
-                    &id_dir,
-                )
+                    cluster_id: cid,
+                    my_node_id: nid,
+                    identity_dir: id_dir,
+                })
                 .await;
             });
 
@@ -827,18 +838,27 @@ async fn run_connection_manager(
 
 /// Establish a connection to a single peer: try direct, fallback to relay.
 /// Runs until the connection drops.
-#[allow(clippy::too_many_arguments)]
-async fn establish_peer_connection(
+/// Owned context for a peer connection task (must be Send + 'static for tokio::spawn).
+struct PeerConnectionContext {
     peer: PeerInfo,
     peer_ip: Ipv4Addr,
     overlay_ip: Ipv4Addr,
     peer_table: PeerTable,
     device: Arc<tun_rs::AsyncDevice>,
     signal_conn: Option<quinn::Connection>,
-    cluster_id: &str,
-    my_node_id: &str,
-    identity_dir: &std::path::Path,
-) {
+    cluster_id: String,
+    my_node_id: String,
+    identity_dir: std::path::PathBuf,
+}
+
+async fn establish_peer_connection(ctx: PeerConnectionContext) {
+    let peer = &ctx.peer;
+    let peer_ip = ctx.peer_ip;
+    let overlay_ip = ctx.overlay_ip;
+    let peer_table = &ctx.peer_table;
+    let device = &ctx.device;
+    let identity_dir = &ctx.identity_dir;
+    let my_node_id = &ctx.my_node_id;
     // Try direct connection first if peer has candidates
     if !peer.candidates.is_empty() {
         let summary: Vec<String> = peer
@@ -872,7 +892,7 @@ async fn establish_peer_connection(
                 peer_table.insert_direct(peer_ip, conn.clone()).await;
 
                 // Run inbound task — reads from peer's QUIC streams, writes to TUN
-                spawn_peer_inbound(conn.clone(), device, peer_table.clone()).await;
+                spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()).await;
 
                 // Connection ended — remove route
                 peer_table.remove_route(peer_ip).await;
@@ -898,7 +918,7 @@ async fn establish_peer_connection(
         return;
     }
 
-    let signal_conn = match signal_conn {
+    let signal_conn = match &ctx.signal_conn {
         Some(c) => c,
         None => {
             tracing::warn!("No signal connection for relay to {}", peer.node_id);
@@ -906,14 +926,7 @@ async fn establish_peer_connection(
         }
     };
 
-    match open_relay_to_peer(
-        &signal_conn,
-        cluster_id,
-        my_node_id,
-        &peer.node_id,
-    )
-    .await
-    {
+    match open_relay_to_peer(signal_conn, &ctx.cluster_id, my_node_id, &peer.node_id).await {
         Ok((send, recv)) => {
             // Load identity for TLS
             let identity = match mlsh_crypto::identity::load_or_generate(identity_dir, my_node_id) {
@@ -925,20 +938,16 @@ async fn establish_peer_connection(
             };
 
             // Wrap relay in TLS (we are the initiator = TLS client)
-            let tls_stream = match super::relay_tls::wrap_initiator(
-                send,
-                recv,
-                &identity,
-                &peer.fingerprint,
-            )
-            .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!("Relay TLS handshake to {} failed: {}", peer.node_id, e);
-                    return;
-                }
-            };
+            let tls_stream =
+                match super::relay_tls::wrap_initiator(send, recv, &identity, &peer.fingerprint)
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!("Relay TLS handshake to {} failed: {}", peer.node_id, e);
+                        return;
+                    }
+                };
 
             tracing::info!("Relay to {} via signal (TLS E2E encrypted)", peer.node_id);
 

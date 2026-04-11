@@ -183,10 +183,9 @@ mod tests {
 
     #[test]
     fn deserialize_relay_open() {
-        let msg: StreamMessage = serde_json::from_str(
-            r#"{"type":"relay_open","cluster_id":"c1","node_id":"n1"}"#,
-        )
-        .unwrap();
+        let msg: StreamMessage =
+            serde_json::from_str(r#"{"type":"relay_open","cluster_id":"c1","node_id":"n1"}"#)
+                .unwrap();
         match msg {
             StreamMessage::RelayOpen {
                 cluster_id,

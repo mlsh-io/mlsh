@@ -43,10 +43,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            let rfp = inner["root_fingerprint"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
+            let rfp = inner["root_fingerprint"].as_str().unwrap_or("").to_string();
             (cid, payload.clone(), fp, rfp)
         } else {
             // cluster_secret direct token (from mlsh setup)

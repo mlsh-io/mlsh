@@ -67,7 +67,10 @@ pub async fn handle_incoming_relay(
         }
     }
 
-    tracing::info!("Relay TLS established with {} (E2E encrypted)", from_node_id);
+    tracing::info!(
+        "Relay TLS established with {} (E2E encrypted)",
+        from_node_id
+    );
 
     let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
 

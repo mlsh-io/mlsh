@@ -68,18 +68,19 @@ async fn handle_stream(
             fingerprint,
             node_id,
             public_key,
-            expires_at,
+            expires_at: _,
             admission_cert,
         } => {
             let resp = handle_adopt(
                 state,
-                &cluster_id,
-                &pre_auth_token,
-                &fingerprint,
-                &node_id,
-                &public_key,
-                expires_at,
-                &admission_cert,
+                &AdoptRequest {
+                    cluster_id,
+                    pre_auth_token,
+                    fingerprint,
+                    node_id,
+                    public_key,
+                    admission_cert,
+                },
             )
             .await;
             protocol::write_message(&mut send, &resp).await?;
@@ -161,7 +162,10 @@ async fn run_node_session(
     let fingerprint = match extract_peer_fingerprint(conn) {
         Some(fp) => fp,
         None => {
-            warn!(id, cluster_id, "No client certificate presented for NodeAuth");
+            warn!(
+                id,
+                cluster_id, "No client certificate presented for NodeAuth"
+            );
             let resp = ServerMessage::error("auth_failed", "Client certificate required");
             protocol::write_message(&mut send, &resp).await.ok();
             return Ok(());
@@ -180,19 +184,19 @@ async fn run_node_session(
 
     // Update public_key if the node sent one and it was previously empty
     if !public_key.is_empty() && node.public_key.is_empty() {
-        db::update_node_public_key(&state.db, &cluster_id, &node.node_id, &public_key)
+        db::update_node_public_key(&state.db, cluster_id, &node.node_id, public_key)
             .await
             .ok();
     }
 
     // Allocate a fresh overlay IP from the current subnet (no persistent leases)
     let overlay_ip =
-        db::allocate_ip(&state.db, &cluster_id, &node.node_id, &state.overlay_subnet).await?;
+        db::allocate_ip(&state.db, cluster_id, &node.node_id, &state.overlay_subnet).await?;
 
     // Build peer list (excluding self)
     let peers = state
         .sessions
-        .get_peer_list(&cluster_id, &node.node_id)
+        .get_peer_list(cluster_id, &node.node_id)
         .await;
 
     // Send auth success
@@ -204,14 +208,21 @@ async fn run_node_session(
     };
     protocol::write_message(&mut send, &reply).await?;
     info!(id, cluster_id, node_id = %node.node_id, %overlay_ip, "Node session authenticated");
-    db::audit(&state.db, cluster_id, "auth", &node.node_id, "session started").await;
+    db::audit(
+        &state.db,
+        cluster_id,
+        "auth",
+        &node.node_id,
+        "session started",
+    )
+    .await;
 
     // Register session + push channel
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<ServerMessage>>();
     state
         .sessions
         .register(
-            &cluster_id,
+            cluster_id,
             crate::sessions::NodeSessionInfo {
                 node_id: node.node_id.clone(),
                 fingerprint: fingerprint.clone(),
@@ -236,7 +247,7 @@ async fn run_node_session(
     };
     state
         .sessions
-        .notify_peer_joined(&cluster_id, peer_info)
+        .notify_peer_joined(cluster_id, peer_info)
         .await;
 
     // Message loop
@@ -254,11 +265,11 @@ async fn run_node_session(
                                 let _ = protocol::write_message(&mut send, &ServerMessage::Pong).await;
                             }
                             StreamMessage::ReportCandidates { candidates } => {
-                                state.sessions.set_candidates(&cluster_id, &node.node_id, candidates).await;
+                                state.sessions.set_candidates(cluster_id, &node.node_id, candidates).await;
                             }
                             StreamMessage::ListNodes => {
-                                let online = state.sessions.online_node_ids(&cluster_id).await;
-                                let all_nodes = db::list_nodes(&state.db, &cluster_id).await.unwrap_or_default();
+                                let online = state.sessions.online_node_ids(cluster_id).await;
+                                let all_nodes = db::list_nodes(&state.db, cluster_id).await.unwrap_or_default();
                                 let nodes: Vec<protocol::NodeInfo> = all_nodes.into_iter().map(|n| {
                                     protocol::NodeInfo {
                                         node_id: n.node_id.clone(),
@@ -310,13 +321,13 @@ async fn run_node_session(
     // broadcast peer_left or it would cancel the new session's peer_joined.
     let was_active = state
         .sessions
-        .deregister(&cluster_id, &node.node_id, id)
+        .deregister(cluster_id, &node.node_id, id)
         .await;
 
     if was_active {
         state
             .sessions
-            .notify_peer_left(&cluster_id, &node.node_id)
+            .notify_peer_left(cluster_id, &node.node_id)
             .await;
     }
 
@@ -326,16 +337,22 @@ async fn run_node_session(
 
 // --- Adopt handler
 
-async fn handle_adopt(
-    state: &QuicState,
-    cluster_id: &str,
-    pre_auth_token: &str,
-    fingerprint: &str,
-    node_id: &str,
-    public_key: &str,
-    _expires_at: u64,
-    client_admission_cert: &str,
-) -> ServerMessage {
+struct AdoptRequest {
+    cluster_id: String,
+    pre_auth_token: String,
+    fingerprint: String,
+    node_id: String,
+    public_key: String,
+    admission_cert: String,
+}
+
+async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
+    let cluster_id = &req.cluster_id;
+    let pre_auth_token = &req.pre_auth_token;
+    let fingerprint = &req.fingerprint;
+    let node_id = &req.node_id;
+    let public_key = &req.public_key;
+    let client_admission_cert = &req.admission_cert;
     // Two adoption paths:
     // 1. One-time setup code → first node (role: admin), code is burned after use.
     // 2. Sponsor-signed invite → subsequent nodes (role from invite).
@@ -351,7 +368,11 @@ async fn handle_adopt(
     let (role, sponsored_by, admission_cert_json) = if is_setup_code {
         // First node — becomes admin via one-time setup code (now burned).
         // The client sends a self-signed admission cert.
-        ("admin".to_string(), String::new(), client_admission_cert.to_string())
+        (
+            "admin".to_string(),
+            String::new(),
+            client_admission_cert.to_string(),
+        )
     } else {
         // Sponsor-signed Ed25519 invite — build admission cert from it
         match verify_sponsor_invite(state, cluster_id, pre_auth_token).await {
@@ -376,13 +397,15 @@ async fn handle_adopt(
     // Register the node with role, sponsor, and admission cert
     let overlay_ip = match db::register_node_full(
         &state.db,
-        cluster_id,
-        node_id,
-        fingerprint,
-        public_key,
-        &role,
-        &sponsored_by,
-        &admission_cert_json,
+        &db::NodeRegistration {
+            cluster_id,
+            node_id,
+            fingerprint,
+            public_key,
+            role: &role,
+            sponsored_by: &sponsored_by,
+            admission_cert: &admission_cert_json,
+        },
         &state.overlay_subnet,
     )
     .await
@@ -397,7 +420,14 @@ async fn handle_adopt(
     let peers = state.sessions.get_peer_list(cluster_id, node_id).await;
 
     info!(cluster_id, node_id, %overlay_ip, role, "Node adopted");
-    db::audit(&state.db, cluster_id, "adopt", node_id, &format!("role={}, sponsor={}", role, sponsored_by)).await;
+    db::audit(
+        &state.db,
+        cluster_id,
+        "adopt",
+        node_id,
+        &format!("role={}, sponsor={}", role, sponsored_by),
+    )
+    .await;
 
     ServerMessage::AdoptOk {
         cluster_id: cluster_id.to_string(),
@@ -499,7 +529,14 @@ async fn handle_revoke(
                 .notify_peer_left(cluster_id, target_node_id)
                 .await;
             info!(cluster_id, target_node_id, "Node revoked");
-            db::audit(&state.db, cluster_id, "revoke", target_node_id, &format!("by={}", caller.node_id)).await;
+            db::audit(
+                &state.db,
+                cluster_id,
+                "revoke",
+                target_node_id,
+                &format!("by={}", caller.node_id),
+            )
+            .await;
             ServerMessage::RevokeOk
         }
         Ok(false) => ServerMessage::error("not_found", "Node not found"),
@@ -562,8 +599,14 @@ async fn handle_promote(
     }
 
     // Update the node's role and admission cert
-    match db::update_node_role(&state.db, cluster_id, target_node_id, new_role, admission_cert)
-        .await
+    match db::update_node_role(
+        &state.db,
+        cluster_id,
+        target_node_id,
+        new_role,
+        admission_cert,
+    )
+    .await
     {
         Ok(true) => {
             info!(cluster_id, target_node_id, new_role, caller = %caller.node_id, "Node role updated");
@@ -583,10 +626,7 @@ async fn handle_promote(
                 new_role: new_role.to_string(),
                 admission_cert: admission_cert.to_string(),
             };
-            state
-                .sessions
-                .broadcast(cluster_id, msg)
-                .await;
+            state.sessions.broadcast(cluster_id, msg).await;
 
             ServerMessage::PromoteOk
         }

@@ -137,7 +137,10 @@ pub async fn create_cluster(pool: &SqlitePool, name: &str) -> Result<String> {
 }
 
 /// Look up a cluster by name.
-pub async fn get_cluster_by_name(pool: &SqlitePool, name: &str) -> Result<Option<(String, String)>> {
+pub async fn get_cluster_by_name(
+    pool: &SqlitePool,
+    name: &str,
+) -> Result<Option<(String, String)>> {
     let row: Option<(String, String)> =
         sqlx::query_as("SELECT id, name FROM clusters WHERE name = ?1")
             .bind(name)
@@ -149,12 +152,11 @@ pub async fn get_cluster_by_name(pool: &SqlitePool, name: &str) -> Result<Option
 
 /// Check whether a cluster_id exists in the clusters table.
 pub async fn cluster_exists(pool: &SqlitePool, cluster_id: &str) -> Result<bool> {
-    let row: Option<(String,)> =
-        sqlx::query_as("SELECT id FROM clusters WHERE id = ?1")
-            .bind(cluster_id)
-            .fetch_optional(pool)
-            .await
-            .context("Failed to check cluster")?;
+    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to check cluster")?;
     Ok(row.is_some())
 }
 
@@ -359,31 +361,45 @@ pub async fn register_node(
 ) -> Result<std::net::Ipv4Addr> {
     register_node_full(
         pool,
-        cluster_id,
-        node_id,
-        fingerprint,
-        "",
-        "node",
-        "",
-        "",
+        &NodeRegistration {
+            cluster_id,
+            node_id,
+            fingerprint,
+            public_key: "",
+            role: "node",
+            sponsored_by: "",
+            admission_cert: "",
+        },
         subnet,
     )
     .await
 }
 
-/// Register a node with full details (public key, role, sponsor, admission cert).
-#[allow(clippy::too_many_arguments)]
+/// Fields for registering a new node.
+pub struct NodeRegistration<'a> {
+    pub cluster_id: &'a str,
+    pub node_id: &'a str,
+    pub fingerprint: &'a str,
+    pub public_key: &'a str,
+    pub role: &'a str,
+    pub sponsored_by: &'a str,
+    pub admission_cert: &'a str,
+}
+
+/// Register a node with full details. Idempotent: updates fingerprint/role on conflict.
 pub async fn register_node_full(
     pool: &SqlitePool,
-    cluster_id: &str,
-    node_id: &str,
-    fingerprint: &str,
-    public_key: &str,
-    role: &str,
-    sponsored_by: &str,
-    admission_cert: &str,
+    reg: &NodeRegistration<'_>,
     subnet: &OverlaySubnet,
 ) -> Result<std::net::Ipv4Addr> {
+    let cluster_id = reg.cluster_id;
+    let node_id = reg.node_id;
+    let fingerprint = reg.fingerprint;
+    let public_key = reg.public_key;
+    let role = reg.role;
+    let sponsored_by = reg.sponsored_by;
+    let admission_cert = reg.admission_cert;
+
     // Check if this node already exists
     let existing: Option<(String, String)> = sqlx::query_as(
         "SELECT overlay_ip, fingerprint FROM nodes WHERE cluster_id = ?1 AND node_id = ?2",
@@ -544,17 +560,19 @@ pub async fn lookup_node_by_fingerprint(
         .await
         .context("Failed to lookup node by fingerprint")?;
 
-    Ok(row.map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
-        cluster_id: cid,
-        node_id: nid,
-        fingerprint: fp,
-        public_key: pk,
-        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-        role,
-        sponsored_by: sb,
-        admission_cert: ac,
-        created_at: ca,
-    }))
+    Ok(
+        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
+            cluster_id: cid,
+            node_id: nid,
+            fingerprint: fp,
+            public_key: pk,
+            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+            role,
+            sponsored_by: sb,
+            admission_cert: ac,
+            created_at: ca,
+        }),
+    )
 }
 
 /// Update a node's public key (backfill for nodes registered before public_key existed).
@@ -807,12 +825,36 @@ mod tests {
     async fn register_with_role_and_sponsor() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip = register_node_full(&pool, "c1", "nas", "fp-1", "pk-1", "admin", "", "", &s)
-            .await
-            .unwrap();
+        let ip = register_node_full(
+            &pool,
+            &NodeRegistration {
+                cluster_id: "c1",
+                node_id: "nas",
+                fingerprint: "fp-1",
+                public_key: "pk-1",
+                role: "admin",
+                sponsored_by: "",
+                admission_cert: "",
+            },
+            &s,
+        )
+        .await
+        .unwrap();
         assert_eq!(ip, std::net::Ipv4Addr::new(100, 64, 0, 1));
 
-        let ip2 = register_node_full(&pool, "c1", "rack", "fp-2", "pk-2", "node", "nas", "", &s)
+        let ip2 = register_node_full(
+            &pool,
+            &NodeRegistration {
+                cluster_id: "c1",
+                node_id: "rack",
+                fingerprint: "fp-2",
+                public_key: "pk-2",
+                role: "node",
+                sponsored_by: "nas",
+                admission_cert: "",
+            },
+            &s,
+        )
             .await
             .unwrap();
         assert_eq!(ip2, std::net::Ipv4Addr::new(100, 64, 0, 2));

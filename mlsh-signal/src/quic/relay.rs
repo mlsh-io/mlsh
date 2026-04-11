@@ -44,23 +44,27 @@ pub async fn handle_relay(
     };
 
     // Verify the claimed node_id matches the TLS cert fingerprint
-    let caller_node = match crate::db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp)
-        .await
-    {
-        Ok(Some(n)) if n.node_id == node_id => n,
-        Ok(Some(_)) => {
-            reject(&mut cli_send, "auth_failed", "Node ID does not match certificate").await?;
-            return Ok(());
-        }
-        Ok(None) => {
-            reject(&mut cli_send, "auth_failed", "Unknown fingerprint").await?;
-            return Ok(());
-        }
-        Err(_) => {
-            reject(&mut cli_send, "internal", "Database error").await?;
-            return Ok(());
-        }
-    };
+    let caller_node =
+        match crate::db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
+            Ok(Some(n)) if n.node_id == node_id => n,
+            Ok(Some(_)) => {
+                reject(
+                    &mut cli_send,
+                    "auth_failed",
+                    "Node ID does not match certificate",
+                )
+                .await?;
+                return Ok(());
+            }
+            Ok(None) => {
+                reject(&mut cli_send, "auth_failed", "Unknown fingerprint").await?;
+                return Ok(());
+            }
+            Err(_) => {
+                reject(&mut cli_send, "internal", "Database error").await?;
+                return Ok(());
+            }
+        };
 
     let caller_node_id = &caller_node.node_id;
 

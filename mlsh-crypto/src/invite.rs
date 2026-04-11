@@ -552,14 +552,9 @@ mod tests {
         let sponsor = crate::identity::generate_identity("sponsor").unwrap();
         let sponsor_pubkey = extract_public_key_from_cert_pem(&sponsor.cert_pem).unwrap();
 
-        let invite = generate_signed_invite(
-            &sponsor.key_pem,
-            "test-cluster",
-            "sponsor",
-            "node",
-            3600,
-        )
-        .unwrap();
+        let invite =
+            generate_signed_invite(&sponsor.key_pem, "test-cluster", "sponsor", "node", 3600)
+                .unwrap();
 
         let cert = build_sponsored_admission_cert(
             "new-node",
@@ -579,14 +574,9 @@ mod tests {
         let attacker = crate::identity::generate_identity("attacker").unwrap();
         let attacker_pubkey = extract_public_key_from_cert_pem(&attacker.cert_pem).unwrap();
 
-        let invite = generate_signed_invite(
-            &sponsor.key_pem,
-            "test-cluster",
-            "sponsor",
-            "node",
-            3600,
-        )
-        .unwrap();
+        let invite =
+            generate_signed_invite(&sponsor.key_pem, "test-cluster", "sponsor", "node", 3600)
+                .unwrap();
 
         let cert = build_sponsored_admission_cert(
             "new-node",
