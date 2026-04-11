@@ -855,8 +855,8 @@ mod tests {
             },
             &s,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert_eq!(ip2, std::net::Ipv4Addr::new(100, 64, 0, 2));
 
         let nodes = list_nodes(&pool, "c1").await.unwrap();

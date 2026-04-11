@@ -338,8 +338,7 @@ async fn tunnel_task(
             info: &info,
             bytes_tx: &bytes_tx,
         };
-        match establish_and_run(&run_ctx, &mut shutdown_rx).await
-        {
+        match establish_and_run(&run_ctx, &mut shutdown_rx).await {
             Ok(ShutdownReason::UserRequested) => {
                 tracing::info!("Tunnel {} shut down by user", config.name);
                 let _ = state_tx.send(TunnelState::Disconnected);

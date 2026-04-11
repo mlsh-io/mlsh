@@ -124,8 +124,7 @@ async fn session_loop(ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool
     shutdown_rx.borrow_and_update();
 
     loop {
-        match run_session(&ctx, &mut shutdown_rx).await
-        {
+        match run_session(&ctx, &mut shutdown_rx).await {
             Ok(true) => {
                 tracing::info!("Signal session shut down by user");
                 break;
