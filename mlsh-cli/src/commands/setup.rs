@@ -164,6 +164,50 @@ pub async fn handle_setup(
     Ok(())
 }
 
+/// Managed mode: authenticate via mlsh.io device flow, create cluster, then
+/// delegate to the existing `handle_setup` with the token from cloud.
+pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str>) -> Result<()> {
+    use crate::cloud::CloudClient;
+
+    println!("{}", "MLSH Managed Setup".cyan().bold());
+    println!("  Cluster: {}", cluster_name);
+
+    let cloud = CloudClient::new();
+
+    // Step 1: Device flow
+    println!("{}", "Authenticating with mlsh.io...".cyan());
+    let device = cloud.request_device_code()?;
+
+    println!();
+    println!(
+        "  Open {} and enter code: {}",
+        device.verification_uri,
+        device.user_code.bold()
+    );
+    println!();
+    println!("{}", "Waiting for authorization...".dimmed());
+
+    let tokens = cloud.poll_device_token(&device.device_code, device.interval)?;
+    println!("{}", "Authenticated!".green());
+
+    // Step 2: Create cluster via cloud → signal
+    println!("{}", "Creating cluster...".cyan());
+    let cluster = cloud.create_cluster(&tokens.access_token, cluster_name)?;
+
+    let setup_token = cluster
+        .setup_token
+        .context("Cloud did not return a setup token")?;
+
+    // Step 3: Delegate to the existing self-hosted setup flow
+    handle_setup(
+        cluster_name,
+        &cluster.signal_endpoint,
+        &setup_token,
+        name_override,
+    )
+    .await
+}
+
 // --- Token parsing
 
 /// Parse a setup token: `CODE@CLUSTER_ID@FINGERPRINT`.

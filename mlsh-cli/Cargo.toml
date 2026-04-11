@@ -49,6 +49,8 @@ qrcode = "0.14"
 base64 = "0.22"
 # TLS over relay stream for E2E encryption
 tokio-rustls = "0.26"
+# HTTP client for cloud API (device flow, cluster creation)
+ureq = { version = "3", features = ["json"] }
 # Username detection
 whoami = "2"
 

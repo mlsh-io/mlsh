@@ -13,18 +13,18 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Bootstrap a cluster using the signal server's setup token
+    /// Bootstrap a cluster (managed: mlsh.io, self-hosted: --signal-host + --token)
     Setup {
         /// Cluster name
         cluster: String,
 
-        /// Signal host (e.g. signal.example.com)
+        /// Signal host for self-hosted mode (e.g. signal.example.com)
         #[arg(long)]
-        signal_host: String,
+        signal_host: Option<String>,
 
-        /// Setup token from signal server (format: SECRET@FINGERPRINT)
+        /// Setup token for self-hosted mode (format: CODE@UUID@FINGERPRINT)
         #[arg(long)]
-        token: String,
+        token: Option<String>,
 
         /// Node name (defaults to hostname)
         #[arg(long)]
@@ -221,7 +221,17 @@ async fn run_cli() -> Result<()> {
             signal_host,
             token,
             name,
-        } => commands::setup::handle_setup(&cluster, &signal_host, &token, name.as_deref()).await,
+        } => match (signal_host, token) {
+            (Some(host), Some(tok)) => {
+                commands::setup::handle_setup(&cluster, &host, &tok, name.as_deref()).await
+            }
+            (None, None) => {
+                commands::setup::handle_managed_setup(&cluster, name.as_deref()).await
+            }
+            _ => anyhow::bail!(
+                "Provide both --signal-host and --token (self-hosted), or neither (managed mode)"
+            ),
+        },
         Commands::Adopt { url, name } => commands::adopt::handle_adopt(&url, name.as_deref()).await,
         Commands::Connect { name, foreground } => {
             commands::connect::handle_connect(&name, foreground).await
