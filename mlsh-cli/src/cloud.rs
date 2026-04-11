@@ -42,8 +42,8 @@ impl Default for CloudClient {
 
 impl CloudClient {
     pub fn new() -> Self {
-        let base_url = std::env::var("MLSH_CLOUD_URL")
-            .unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string());
+        let base_url =
+            std::env::var("MLSH_CLOUD_URL").unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string());
         Self {
             base_url,
             agent: ureq::Agent::new_with_defaults(),

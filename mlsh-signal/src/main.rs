@@ -108,10 +108,8 @@ async fn run_server() -> anyhow::Result<()> {
 
     // Start internal HTTP API if cloud integration is configured
     if let Some(ref api_token) = cfg.cloud_api_token {
-        let http_bind: std::net::SocketAddr = cfg
-            .http_bind
-            .parse()
-            .expect("Invalid http_bind address");
+        let http_bind: std::net::SocketAddr =
+            cfg.http_bind.parse().expect("Invalid http_bind address");
         let http_pool = pool.clone();
         let http_token = api_token.clone();
         let http_shutdown = shutdown_rx.clone();

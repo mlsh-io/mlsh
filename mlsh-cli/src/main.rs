@@ -225,9 +225,7 @@ async fn run_cli() -> Result<()> {
             (Some(host), Some(tok)) => {
                 commands::setup::handle_setup(&cluster, &host, &tok, name.as_deref()).await
             }
-            (None, None) => {
-                commands::setup::handle_managed_setup(&cluster, name.as_deref()).await
-            }
+            (None, None) => commands::setup::handle_managed_setup(&cluster, name.as_deref()).await,
             _ => anyhow::bail!(
                 "Provide both --signal-host and --token (self-hosted), or neither (managed mode)"
             ),
