@@ -13,8 +13,8 @@ use colored::Colorize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-/// Default QUIC port for signal connections.
-const DEFAULT_SIGNAL_PORT: u16 = 4433;
+/// Default QUIC port for mlsh:// URLs (same as HTTPS).
+const DEFAULT_SIGNAL_PORT: u16 = 443;
 
 /// Handle `mlsh adopt <url> [--name <name>]`.
 pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> {
