@@ -445,17 +445,12 @@ async fn verify_sponsor_invite(
     cluster_id: &str,
     invite_token: &str,
 ) -> Result<(String, String), String> {
-    // Try to decode and verify the signed invite
-    // First, we need to extract the sponsor_node_id to look up their public key
-    let invite_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(invite_token)
-        .map_err(|_| "Invalid invite encoding".to_string())?;
-
-    let signed: mlsh_crypto::invite::SignedInvite =
-        serde_json::from_slice(&invite_json).map_err(|_| "Invalid invite format".to_string())?;
+    // Decode the invite payload to extract sponsor_node_id (before signature verification)
+    let invite_payload = mlsh_crypto::invite::decode_invite_payload(invite_token)
+        .map_err(|e| format!("Invalid invite: {}", e))?;
 
     // Verify cluster_id matches
-    if signed.payload.cluster_id != cluster_id {
+    if invite_payload.cluster_id != cluster_id {
         return Err("Invite is for a different cluster".to_string());
     }
 
@@ -464,7 +459,7 @@ async fn verify_sponsor_invite(
         .await
         .map_err(|_| "Database error".to_string())?
         .into_iter()
-        .find(|n| n.node_id == signed.payload.sponsor_node_id);
+        .find(|n| n.node_id == invite_payload.sponsor_node_id);
 
     let sponsor = match sponsor {
         Some(s) => s,
@@ -490,7 +485,7 @@ async fn verify_sponsor_invite(
     mlsh_crypto::invite::verify_signed_invite(invite_token, &pubkey_bytes)
         .map_err(|e| format!("Invite signature verification failed: {}", e))?;
 
-    Ok((signed.payload.target_role, signed.payload.sponsor_node_id))
+    Ok((invite_payload.target_role, invite_payload.sponsor_node_id))
 }
 
 // --- Revoke handler

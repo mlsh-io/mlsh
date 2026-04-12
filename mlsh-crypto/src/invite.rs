@@ -86,11 +86,69 @@ pub struct InvitePayload {
     pub root_fingerprint: Option<String>,
 }
 
-/// A complete signed invite (payload + signature).
+/// Compact CBOR representation of an invite payload.
+/// Fingerprints are raw 32-byte arrays instead of 64-char hex strings.
+/// Nonce is raw 16 bytes instead of base64url.
+/// Field names use short integer keys via tuple struct.
 #[derive(serde::Serialize, serde::Deserialize)]
-pub struct SignedInvite {
-    pub payload: InvitePayload,
-    pub signature: String, // base64url-encoded Ed25519 signature
+struct CompactPayload(
+    String,                                 // 0: cluster_id
+    String,                                 // 1: cluster_name
+    String,                                 // 2: sponsor_node_id
+    String,                                 // 3: target_role
+    u64,                                    // 4: expires_at
+    #[serde(with = "serde_bytes")] Vec<u8>, // 5: nonce (raw 16 bytes)
+    #[serde(with = "serde_bytes")] Vec<u8>, // 6: signal_fingerprint (raw 32 bytes, empty if absent)
+    #[serde(with = "serde_bytes")] Vec<u8>, // 7: root_fingerprint (raw 32 bytes, empty if absent)
+);
+
+impl CompactPayload {
+    fn from_invite(p: &InvitePayload) -> Result<Self, Box<dyn std::error::Error>> {
+        let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&p.nonce)
+            .unwrap_or_else(|_| p.nonce.as_bytes().to_vec());
+        let sig_fp = p
+            .signal_fingerprint
+            .as_deref()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .unwrap_or_default();
+        let root_fp = p
+            .root_fingerprint
+            .as_deref()
+            .map(|h| hex::decode(h).unwrap_or_default())
+            .unwrap_or_default();
+        Ok(Self(
+            p.cluster_id.clone(),
+            p.cluster_name.clone(),
+            p.sponsor_node_id.clone(),
+            p.target_role.clone(),
+            p.expires_at,
+            nonce,
+            sig_fp,
+            root_fp,
+        ))
+    }
+
+    fn to_invite(&self) -> InvitePayload {
+        InvitePayload {
+            cluster_id: self.0.clone(),
+            cluster_name: self.1.clone(),
+            sponsor_node_id: self.2.clone(),
+            target_role: self.3.clone(),
+            expires_at: self.4,
+            nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&self.5),
+            signal_fingerprint: if self.6.is_empty() {
+                None
+            } else {
+                Some(hex::encode(&self.6))
+            },
+            root_fingerprint: if self.7.is_empty() {
+                None
+            } else {
+                Some(hex::encode(&self.7))
+            },
+        }
+    }
 }
 
 /// Parameters for generating a signed invite.
@@ -140,7 +198,6 @@ pub fn generate_signed_invite_full(
     let mut nonce_bytes = [0u8; 16];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut nonce_bytes)
         .map_err(|_| "Failed to generate nonce")?;
-    let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
 
     let payload = InvitePayload {
         cluster_id: params.cluster_id.to_string(),
@@ -148,19 +205,33 @@ pub fn generate_signed_invite_full(
         sponsor_node_id: params.sponsor_node_id.to_string(),
         target_role: params.target_role.to_string(),
         expires_at,
-        nonce,
+        nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes),
         signal_fingerprint: params.signal_fingerprint.map(String::from),
         root_fingerprint: params.root_fingerprint.map(String::from),
     };
 
-    // Serialize payload to canonical JSON for signing
-    let payload_json = serde_json::to_vec(&payload)?;
-    let sig = keypair.sign(&payload_json);
-    let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig.as_ref());
+    // Encode compact CBOR (raw bytes for fingerprints and nonce)
+    let compact = CompactPayload::from_invite(&payload)?;
+    let payload_cbor = {
+        let mut buf = Vec::new();
+        ciborium::into_writer(&compact, &mut buf)
+            .map_err(|e| format!("CBOR encode failed: {}", e))?;
+        buf
+    };
 
-    let signed = SignedInvite { payload, signature };
-    let signed_json = serde_json::to_vec(&signed)?;
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&signed_json);
+    let sig = keypair.sign(&payload_cbor);
+
+    let mut cbor_buf = Vec::new();
+    ciborium::into_writer(
+        &ciborium::value::Value::Array(vec![
+            ciborium::value::Value::Bytes(payload_cbor),
+            ciborium::value::Value::Bytes(sig.as_ref().to_vec()),
+        ]),
+        &mut cbor_buf,
+    )
+    .map_err(|e| format!("CBOR encode failed: {}", e))?;
+
+    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&cbor_buf);
 
     Ok(encoded)
 }
@@ -184,6 +255,32 @@ pub fn verify_signed_invite(
     Ok(payload)
 }
 
+/// Decode an invite payload without verifying the signature.
+///
+/// Used when you need to extract fields (e.g., sponsor_node_id) before you have
+/// the public key to verify. Always call verify after obtaining the key.
+pub fn decode_invite_payload(
+    invite_b64: &str,
+) -> Result<InvitePayload, Box<dyn std::error::Error>> {
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(invite_b64)
+        .map_err(|_| "Invalid base64 encoding")?;
+
+    let value: ciborium::value::Value =
+        ciborium::from_reader(&raw[..]).map_err(|_| "Invalid CBOR encoding")?;
+    let arr = value.as_array().ok_or("Expected CBOR array")?;
+    let payload_cbor = arr
+        .first()
+        .and_then(|v| v.as_bytes())
+        .ok_or("Expected payload bytes")?;
+
+    let compact: CompactPayload =
+        ciborium::from_reader(&payload_cbor[..]).map_err(|_| "Invalid payload CBOR")?;
+    let payload = compact.to_invite();
+
+    Ok(payload)
+}
+
 /// Verify a sponsor-signed invite signature only (no expiry check).
 ///
 /// Used for admission cert verification — the invite was valid at admission time,
@@ -192,24 +289,29 @@ pub fn verify_signed_invite_signature(
     invite_b64: &str,
     public_key_bytes: &[u8],
 ) -> Result<InvitePayload, Box<dyn std::error::Error>> {
-    let invite_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(invite_b64)
         .map_err(|_| "Invalid base64 encoding")?;
 
-    let signed: SignedInvite =
-        serde_json::from_slice(&invite_json).map_err(|_| "Invalid invite JSON")?;
+    // CBOR format: [payload_cbor_bytes, signature_bytes]
+    let value: ciborium::value::Value =
+        ciborium::from_reader(&raw[..]).map_err(|_| "Invalid CBOR encoding")?;
+    let arr = value.as_array().ok_or("Expected CBOR array")?;
+    if arr.len() < 2 {
+        return Err("CBOR array too short".into());
+    }
+    let payload_cbor = arr[0].as_bytes().ok_or("Expected bytes for payload")?;
+    let sig_bytes = arr[1].as_bytes().ok_or("Expected bytes for signature")?;
 
-    let payload_json = serde_json::to_vec(&signed.payload)?;
-    let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&signed.signature)
-        .map_err(|_| "Invalid signature encoding")?;
+    let compact: CompactPayload =
+        ciborium::from_reader(&payload_cbor[..]).map_err(|_| "Invalid payload CBOR")?;
 
     let public_key = signature::UnparsedPublicKey::new(&signature::ED25519, public_key_bytes);
     public_key
-        .verify(&payload_json, &sig_bytes)
+        .verify(payload_cbor, sig_bytes)
         .map_err(|_| "Invalid signature")?;
 
-    Ok(signed.payload)
+    Ok(compact.to_invite())
 }
 
 /// Load an Ed25519 keypair from a PEM-encoded private key.
@@ -475,6 +577,35 @@ mod tests {
         assert_eq!(payload.cluster_id, "test-cluster");
         assert_eq!(payload.sponsor_node_id, "sponsor");
         assert_eq!(payload.target_role, "node");
+    }
+
+    #[test]
+    fn signed_invite_size_with_fingerprints() {
+        let id = crate::identity::generate_identity("sponsor").unwrap();
+        let invite = generate_signed_invite_full(&InviteParams {
+            key_pem: &id.key_pem,
+            cluster_id: "550e8400-e29b-41d4-a716-446655440000",
+            cluster_name: "homelab",
+            sponsor_node_id: "nicolas-macbook",
+            target_role: "node",
+            ttl_seconds: 3600,
+            signal_fingerprint: Some(
+                "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+            ),
+            root_fingerprint: Some(
+                "f6e5d4c3b2a1f0e9d8c7b6a5f4e3d2c1b0a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5",
+            ),
+        })
+        .unwrap();
+
+        let url = format!("mlsh://signal.mlsh.io/adopt/{}", invite);
+        eprintln!("CBOR invite base64url: {} chars", invite.len());
+        eprintln!("Full URL: {} chars", url.len());
+
+        // Verify it still works
+        let pubkey = extract_public_key_from_cert_pem(&id.cert_pem).unwrap();
+        let payload = verify_signed_invite(&invite, &pubkey).unwrap();
+        assert_eq!(payload.cluster_name, "homelab");
     }
 
     #[test]
