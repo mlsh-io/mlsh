@@ -33,18 +33,19 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         serde_json::from_slice(&payload_bytes).context("Invalid invite payload format")?;
 
     // Extract fields from signed invite
-    let (cluster_id, invite_token, signal_fingerprint, root_fingerprint) =
+    let (cluster_id, cluster_name, invite_token, signal_fingerprint, root_fingerprint) =
         if let Some(inner) = payload_json.get("payload") {
             let cid = inner["cluster_id"]
                 .as_str()
                 .context("Missing cluster_id in signed invite")?
                 .to_string();
+            let cname = inner["cluster_name"].as_str().unwrap_or(&cid).to_string();
             let fp = inner["signal_fingerprint"]
                 .as_str()
                 .unwrap_or("")
                 .to_string();
             let rfp = inner["root_fingerprint"].as_str().unwrap_or("").to_string();
-            (cid, payload.clone(), fp, rfp)
+            (cid, cname, payload.clone(), fp, rfp)
         } else {
             // cluster_secret direct token (from mlsh setup)
             let cid = payload_json["cluster_id"]
@@ -59,7 +60,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
                 .as_str()
                 .unwrap_or("")
                 .to_string();
-            (cid, token, fp, String::new())
+            (cid.clone(), cid, token, fp, String::new())
         };
 
     if signal_fingerprint.is_empty() {
@@ -142,7 +143,6 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     let clusters_dir = config_dir.join("clusters");
     std::fs::create_dir_all(&clusters_dir)?;
 
-    let cluster_name = &resp_cluster_id;
     let cluster_toml = format!(
         "[cluster]\n\
          name = \"{cluster_name}\"\n\
@@ -173,7 +173,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
 
     println!();
     println!("{}", "Cluster joined successfully!".green().bold());
-    println!("  Cluster:  {}", resp_cluster_id);
+    println!("  Cluster:  {}", cluster_name);
     println!("  Overlay:  {}", overlay_ip);
     println!("  Identity: {}", identity_dir.display());
     println!();

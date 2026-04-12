@@ -78,10 +78,18 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
     } else {
         Some(root_fingerprint)
     };
-    let invite_token = mlsh_crypto::invite::generate_signed_invite_with_fingerprint(
-        &key_pem, cluster_id, node_id, role, ttl, fp, rfp,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to generate invite: {}", e))?;
+    let invite_token =
+        mlsh_crypto::invite::generate_signed_invite_full(&mlsh_crypto::invite::InviteParams {
+            key_pem: &key_pem,
+            cluster_id,
+            cluster_name,
+            sponsor_node_id: node_id,
+            target_role: role,
+            ttl_seconds: ttl,
+            signal_fingerprint: fp,
+            root_fingerprint: rfp,
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to generate invite: {}", e))?;
 
     // Build the URL
     let host = signal_endpoint.split(':').next().unwrap_or(signal_endpoint);

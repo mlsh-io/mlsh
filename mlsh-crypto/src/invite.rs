@@ -73,6 +73,7 @@ fn now_secs() -> u64 {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct InvitePayload {
     pub cluster_id: String,
+    pub cluster_name: String,
     pub sponsor_node_id: String,
     pub target_role: String,
     pub expires_at: u64,
@@ -92,41 +93,48 @@ pub struct SignedInvite {
     pub signature: String, // base64url-encoded Ed25519 signature
 }
 
+/// Parameters for generating a signed invite.
+pub struct InviteParams<'a> {
+    pub key_pem: &'a str,
+    pub cluster_id: &'a str,
+    pub cluster_name: &'a str,
+    pub sponsor_node_id: &'a str,
+    pub target_role: &'a str,
+    pub ttl_seconds: u64,
+    pub signal_fingerprint: Option<&'a str>,
+    pub root_fingerprint: Option<&'a str>,
+}
+
 /// Generate a sponsor-signed invite.
 ///
 /// The sponsor signs the payload with their Ed25519 private key.
-/// `key_pem` is the sponsor's private key in PEM format.
 pub fn generate_signed_invite(
     key_pem: &str,
     cluster_id: &str,
+    cluster_name: &str,
     sponsor_node_id: &str,
     target_role: &str,
     ttl_seconds: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    generate_signed_invite_with_fingerprint(
+    generate_signed_invite_full(&InviteParams {
         key_pem,
         cluster_id,
+        cluster_name,
         sponsor_node_id,
         target_role,
         ttl_seconds,
-        None,
-        None,
-    )
+        signal_fingerprint: None,
+        root_fingerprint: None,
+    })
 }
 
-/// Generate a sponsor-signed invite with optional signal and root fingerprints.
-pub fn generate_signed_invite_with_fingerprint(
-    key_pem: &str,
-    cluster_id: &str,
-    sponsor_node_id: &str,
-    target_role: &str,
-    ttl_seconds: u64,
-    signal_fingerprint: Option<&str>,
-    root_fingerprint: Option<&str>,
+/// Generate a sponsor-signed invite with full parameters.
+pub fn generate_signed_invite_full(
+    params: &InviteParams<'_>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let keypair = load_ed25519_from_pem(key_pem)?;
+    let keypair = load_ed25519_from_pem(params.key_pem)?;
 
-    let expires_at = now_secs() + ttl_seconds;
+    let expires_at = now_secs() + params.ttl_seconds;
 
     // Random nonce to prevent replay
     let mut nonce_bytes = [0u8; 16];
@@ -135,13 +143,14 @@ pub fn generate_signed_invite_with_fingerprint(
     let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
 
     let payload = InvitePayload {
-        cluster_id: cluster_id.to_string(),
-        sponsor_node_id: sponsor_node_id.to_string(),
-        target_role: target_role.to_string(),
+        cluster_id: params.cluster_id.to_string(),
+        cluster_name: params.cluster_name.to_string(),
+        sponsor_node_id: params.sponsor_node_id.to_string(),
+        target_role: params.target_role.to_string(),
         expires_at,
         nonce,
-        signal_fingerprint: signal_fingerprint.map(String::from),
-        root_fingerprint: root_fingerprint.map(String::from),
+        signal_fingerprint: params.signal_fingerprint.map(String::from),
+        root_fingerprint: params.root_fingerprint.map(String::from),
     };
 
     // Serialize payload to canonical JSON for signing
@@ -458,7 +467,8 @@ mod tests {
     fn signed_invite_roundtrip() {
         let id = crate::identity::generate_identity("sponsor").unwrap();
         let invite =
-            generate_signed_invite(&id.key_pem, "test-cluster", "sponsor", "node", 3600).unwrap();
+            generate_signed_invite(&id.key_pem, "test-cluster", "test", "sponsor", "node", 3600)
+                .unwrap();
 
         let pubkey = extract_public_key_from_cert_pem(&id.cert_pem).unwrap();
         let payload = verify_signed_invite(&invite, &pubkey).unwrap();
@@ -473,7 +483,8 @@ mod tests {
         let other = crate::identity::generate_identity("other").unwrap();
 
         let invite =
-            generate_signed_invite(&sponsor.key_pem, "cluster", "sponsor", "node", 3600).unwrap();
+            generate_signed_invite(&sponsor.key_pem, "cluster", "test", "sponsor", "node", 3600)
+                .unwrap();
 
         let other_pubkey = extract_public_key_from_cert_pem(&other.cert_pem).unwrap();
         assert!(verify_signed_invite(&invite, &other_pubkey).is_err());
@@ -483,7 +494,8 @@ mod tests {
     fn signed_invite_tampered_fails() {
         let id = crate::identity::generate_identity("sponsor").unwrap();
         let mut invite =
-            generate_signed_invite(&id.key_pem, "cluster", "sponsor", "node", 3600).unwrap();
+            generate_signed_invite(&id.key_pem, "cluster", "test", "sponsor", "node", 3600)
+                .unwrap();
 
         // Tamper with the payload
         invite.push('X');
@@ -563,9 +575,15 @@ mod tests {
         let sponsor = crate::identity::generate_identity("sponsor").unwrap();
         let sponsor_pubkey = extract_public_key_from_cert_pem(&sponsor.cert_pem).unwrap();
 
-        let invite =
-            generate_signed_invite(&sponsor.key_pem, "test-cluster", "sponsor", "node", 3600)
-                .unwrap();
+        let invite = generate_signed_invite(
+            &sponsor.key_pem,
+            "test-cluster",
+            "test",
+            "sponsor",
+            "node",
+            3600,
+        )
+        .unwrap();
 
         let cert = build_sponsored_admission_cert(
             "new-node",
@@ -585,9 +603,15 @@ mod tests {
         let attacker = crate::identity::generate_identity("attacker").unwrap();
         let attacker_pubkey = extract_public_key_from_cert_pem(&attacker.cert_pem).unwrap();
 
-        let invite =
-            generate_signed_invite(&sponsor.key_pem, "test-cluster", "sponsor", "node", 3600)
-                .unwrap();
+        let invite = generate_signed_invite(
+            &sponsor.key_pem,
+            "test-cluster",
+            "test",
+            "sponsor",
+            "node",
+            3600,
+        )
+        .unwrap();
 
         let cert = build_sponsored_admission_cert(
             "new-node",
