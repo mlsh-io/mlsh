@@ -186,6 +186,24 @@ impl SessionStore {
         None
     }
 
+    /// Force-disconnect all nodes in a cluster.
+    pub async fn kick_all(&self, cluster_id: &str) {
+        let mut sessions = self.sessions.write().await;
+        let keys: Vec<_> = sessions
+            .keys()
+            .filter(|(cid, _)| cid == cluster_id)
+            .cloned()
+            .collect();
+        for key in keys {
+            if let Some(session) = sessions.remove(&key) {
+                session
+                    .connection
+                    .close(quinn::VarInt::from_u32(2), b"cluster deleted");
+            }
+        }
+        tracing::info!(cluster_id, "All nodes kicked (cluster deleted)");
+    }
+
     /// Force-disconnect a node: remove its session and close its QUIC connection.
     pub async fn kick_node(&self, cluster_id: &str, node_id: &str) {
         let key = (cluster_id.to_string(), node_id.to_string());

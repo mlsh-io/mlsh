@@ -136,6 +136,36 @@ pub async fn create_cluster(pool: &SqlitePool, name: &str) -> Result<String> {
     Ok(id)
 }
 
+/// Delete a cluster and all associated data.
+pub async fn delete_cluster(pool: &SqlitePool, cluster_id: &str) -> Result<bool> {
+    // Delete nodes first (no FK cascade in SQLite by default)
+    sqlx::query("DELETE FROM nodes WHERE cluster_id = ?1")
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to delete cluster nodes")?;
+
+    sqlx::query("DELETE FROM setup_codes WHERE cluster_id = ?1")
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to delete cluster setup codes")?;
+
+    sqlx::query("DELETE FROM audit_log WHERE cluster_id = ?1")
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to delete cluster audit log")?;
+
+    let result = sqlx::query("DELETE FROM clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to delete cluster")?;
+
+    Ok(result.rows_affected() > 0)
+}
+
 /// Look up a cluster by name.
 pub async fn get_cluster_by_name(
     pool: &SqlitePool,

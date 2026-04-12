@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
@@ -170,6 +170,33 @@ async fn list_nodes(
     Ok(Json(nodes))
 }
 
+// -- Delete cluster ----------------------------------------------------------
+
+async fn delete_cluster(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+    Path(cluster_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    verify_token(&headers, &state.api_token)?;
+
+    // Kick all connected nodes in this cluster
+    state.sessions.kick_all(&cluster_id).await;
+
+    // Delete from DB
+    let deleted = crate::db::delete_cluster(&state.pool, &cluster_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to delete cluster: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 // -- Server ------------------------------------------------------------------
 
 /// Start the internal HTTP server. Runs until the shutdown receiver fires.
@@ -189,6 +216,7 @@ pub async fn run(
     let app = Router::new()
         .route("/internal/clusters", post(create_cluster))
         .route("/internal/clusters", get(list_clusters))
+        .route("/internal/clusters/{cluster_id}", delete(delete_cluster))
         .route("/internal/clusters/{cluster_id}/nodes", get(list_nodes))
         .with_state(state);
 
