@@ -122,17 +122,5 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
     println!("On the new machine, run:");
     println!("  {} \"{}\"", "mlsh adopt".bold(), url);
 
-    // Render QR code
-    if let Ok(qr) = qrcode::QrCode::new(url.as_bytes()) {
-        use qrcode::render::unicode;
-        let image = qr
-            .render::<unicode::Dense1x2>()
-            .dark_color(unicode::Dense1x2::Light)
-            .light_color(unicode::Dense1x2::Dark)
-            .build();
-        println!();
-        println!("{image}");
-    }
-
     Ok(())
 }
