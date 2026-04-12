@@ -23,44 +23,15 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     println!("{}", "Joining cluster via QUIC...".cyan().bold());
     println!("  Signal: {}", signal_host);
 
-    // Decode the invite to extract cluster_id and signal_fingerprint.
-    use base64::Engine;
-    let payload_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&payload)
-        .context("Invalid invite payload encoding")?;
-    let payload_json: serde_json::Value =
-        serde_json::from_slice(&payload_bytes).context("Invalid invite payload format")?;
+    // Decode the invite payload (CBOR format) to extract fields
+    let invite_payload = mlsh_crypto::invite::decode_invite_payload(&payload)
+        .map_err(|e| anyhow::anyhow!("Invalid invite: {}", e))?;
 
-    // Extract fields from signed invite
-    let (cluster_id, cluster_name, invite_token, signal_fingerprint, root_fingerprint) =
-        if let Some(inner) = payload_json.get("payload") {
-            let cid = inner["cluster_id"]
-                .as_str()
-                .context("Missing cluster_id in signed invite")?
-                .to_string();
-            let cname = inner["cluster_name"].as_str().unwrap_or(&cid).to_string();
-            let fp = inner["signal_fingerprint"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            let rfp = inner["root_fingerprint"].as_str().unwrap_or("").to_string();
-            (cid, cname, payload.clone(), fp, rfp)
-        } else {
-            // cluster_secret direct token (from mlsh setup)
-            let cid = payload_json["cluster_id"]
-                .as_str()
-                .context("Missing cluster_id in invite")?
-                .to_string();
-            let token = payload_json["token"]
-                .as_str()
-                .context("Missing token in invite")?
-                .to_string();
-            let fp = payload_json["signal_fingerprint"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            (cid.clone(), cid, token, fp, String::new())
-        };
+    let cluster_id = invite_payload.cluster_id;
+    let cluster_name = invite_payload.cluster_name;
+    let invite_token = payload.clone();
+    let signal_fingerprint = invite_payload.signal_fingerprint.unwrap_or_default();
+    let root_fingerprint = invite_payload.root_fingerprint.unwrap_or_default();
 
     if signal_fingerprint.is_empty() {
         anyhow::bail!(
@@ -82,6 +53,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     println!("  Fingerprint: {}...", &identity.fingerprint[..16]);
 
     // Extract public key from cert
+    use base64::Engine;
     let public_key = mlsh_crypto::invite::extract_public_key_from_cert_pem(&identity.cert_pem)
         .map(|pk| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pk))
         .unwrap_or_default();
