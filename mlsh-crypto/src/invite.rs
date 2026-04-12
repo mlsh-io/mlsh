@@ -156,13 +156,30 @@ pub fn generate_signed_invite_with_fingerprint(
     Ok(encoded)
 }
 
-/// Verify a sponsor-signed invite.
+/// Verify a sponsor-signed invite (checks expiry).
 ///
 /// `invite_b64` is the base64url-encoded signed invite.
 /// `public_key_der` is the sponsor's Ed25519 public key in raw format (32 bytes).
 ///
 /// Returns the payload if valid and not expired, or an error.
 pub fn verify_signed_invite(
+    invite_b64: &str,
+    public_key_bytes: &[u8],
+) -> Result<InvitePayload, Box<dyn std::error::Error>> {
+    let payload = verify_signed_invite_signature(invite_b64, public_key_bytes)?;
+
+    if now_secs() > payload.expires_at {
+        return Err("Invite expired".into());
+    }
+
+    Ok(payload)
+}
+
+/// Verify a sponsor-signed invite signature only (no expiry check).
+///
+/// Used for admission cert verification — the invite was valid at admission time,
+/// so expiry is irrelevant for ongoing membership proof.
+pub fn verify_signed_invite_signature(
     invite_b64: &str,
     public_key_bytes: &[u8],
 ) -> Result<InvitePayload, Box<dyn std::error::Error>> {
@@ -173,12 +190,6 @@ pub fn verify_signed_invite(
     let signed: SignedInvite =
         serde_json::from_slice(&invite_json).map_err(|_| "Invalid invite JSON")?;
 
-    // Check expiry
-    if now_secs() > signed.payload.expires_at {
-        return Err("Invite expired".into());
-    }
-
-    // Verify signature
     let payload_json = serde_json::to_vec(&signed.payload)?;
     let sig_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(&signed.signature)
@@ -372,7 +383,7 @@ pub fn verify_sponsored_admission_cert(
         return Err("This is a self-signed cert, use verify_self_signed_admission_cert".into());
     }
 
-    let payload = verify_signed_invite(&cert.proof, sponsor_public_key_bytes)?;
+    let payload = verify_signed_invite_signature(&cert.proof, sponsor_public_key_bytes)?;
 
     if payload.cluster_id != cert.cluster_id {
         return Err("Invite cluster_id does not match admission cert".into());
