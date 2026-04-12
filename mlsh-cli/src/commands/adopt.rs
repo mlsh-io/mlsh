@@ -10,7 +10,6 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -98,46 +97,37 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         .await
         .context("Failed to open signal stream")?;
 
-    let adopt_msg = serde_json::json!({
-        "type": "adopt",
-        "cluster_id": cluster_id,
-        "pre_auth_token": invite_token,
-        "fingerprint": identity.fingerprint,
-        "node_id": node_id,
-        "public_key": public_key,
-    });
-    write_msg(&mut send, &adopt_msg).await?;
+    use mlsh_protocol::framing;
+    use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
-    // Read response
-    let resp: serde_json::Value = read_msg(&mut recv).await?;
+    let adopt_msg = StreamMessage::Adopt {
+        cluster_id: cluster_id.clone(),
+        pre_auth_token: invite_token,
+        fingerprint: identity.fingerprint.clone(),
+        node_id: node_id.clone(),
+        public_key,
+        expires_at: 0,
+        admission_cert: String::new(),
+    };
+    framing::write_msg(&mut send, &adopt_msg).await?;
+
+    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
-    let msg_type = resp.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if msg_type == "error" {
-        let code = resp.get("code").and_then(|c| c.as_str()).unwrap_or("");
-        let message = resp
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown");
-        anyhow::bail!("Adopt failed: {} ({})", message, code);
-    }
-
-    if msg_type != "adopt_ok" {
-        anyhow::bail!("Unexpected response: {}", msg_type);
-    }
-
-    let overlay_ip = resp["overlay_ip"]
-        .as_str()
-        .context("Missing overlay_ip")?
-        .to_string();
-    let overlay_subnet = resp["overlay_subnet"]
-        .as_str()
-        .unwrap_or("100.64.0.0/10")
-        .to_string();
-    let resp_cluster_id = resp["cluster_id"]
-        .as_str()
-        .unwrap_or(&cluster_id)
-        .to_string();
+    let (overlay_ip, overlay_subnet, resp_cluster_id) = match resp {
+        ServerMessage::AdoptOk {
+            overlay_ip,
+            overlay_subnet,
+            cluster_id: cid,
+            ..
+        } => (overlay_ip, overlay_subnet, cid),
+        ServerMessage::Error { code, message } => {
+            anyhow::bail!("Adopt failed: {} ({})", message, code);
+        }
+        other => {
+            anyhow::bail!("Unexpected response: {:?}", other);
+        }
+    };
 
     // Save cluster config
     let clusters_dir = config_dir.join("clusters");
@@ -277,26 +267,6 @@ fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
                 .and_then(|mut a| a.next())
         })
         .context(format!("Failed to resolve: {}", endpoint))
-}
-
-async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> Result<()> {
-    let json = serde_json::to_vec(msg)?;
-    let len = (json.len() as u32).to_be_bytes();
-    send.write_all(&len).await?;
-    send.write_all(&json).await?;
-    Ok(())
-}
-
-async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut quinn::RecvStream) -> Result<T> {
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1_048_576 {
-        anyhow::bail!("Message too large: {} bytes", len);
-    }
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await?;
-    Ok(serde_json::from_slice(&buf)?)
 }
 
 #[cfg(test)]

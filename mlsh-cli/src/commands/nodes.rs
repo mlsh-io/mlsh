@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use serde::Deserialize;
 
 use crate::tund::tunnel::load_cluster_config;
 
@@ -29,65 +28,40 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         .await
         .context("Failed to open signal stream")?;
 
-    // Authenticate
-    let auth_msg = serde_json::json!({
-        "type": "node_auth",
-        "cluster_id": creds.cluster_id,
-        "public_key": creds.public_key,
-    });
-    write_msg(&mut send, &auth_msg).await?;
+    use mlsh_protocol::framing;
+    use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
-    // Read auth response
-    let resp: serde_json::Value = read_msg(&mut recv).await?;
-    let msg_type = resp.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    if msg_type == "error" {
-        let msg = resp
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("unknown");
-        anyhow::bail!("Signal auth failed: {}", msg);
-    }
-    if msg_type != "node_auth_ok" {
-        anyhow::bail!("Unexpected signal response: {}", msg_type);
+    // Authenticate
+    let auth_msg = StreamMessage::NodeAuth {
+        cluster_id: creds.cluster_id.clone(),
+        public_key: creds.public_key.clone(),
+    };
+    framing::write_msg(&mut send, &auth_msg).await?;
+
+    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
+    match &resp {
+        ServerMessage::NodeAuthOk { .. } => {}
+        ServerMessage::Error { code, message } => {
+            anyhow::bail!("Signal auth failed: {} ({})", message, code);
+        }
+        other => anyhow::bail!("Unexpected signal response: {:?}", other),
     }
 
     // Send list_nodes request
-    write_msg(&mut send, &serde_json::json!({"type": "list_nodes"})).await?;
+    framing::write_msg(&mut send, &StreamMessage::ListNodes).await?;
 
-    // Read response — skip push messages (peer_joined, peer_left, pong) that
-    // signal sends on the session stream before our node_list reply arrives.
-    let resp = loop {
-        let msg: serde_json::Value = read_msg(&mut recv).await?;
-        let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        match msg_type {
-            "node_list" => break msg,
-            "error" => {
-                let err = msg
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown");
-                anyhow::bail!("Failed to list nodes: {}", err);
+    // Read response — skip push messages (peer_joined, peer_left, pong)
+    let nodes = loop {
+        let msg: ServerMessage = framing::read_msg(&mut recv).await?;
+        match msg {
+            ServerMessage::NodeList { nodes } => break nodes,
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("Failed to list nodes: {} ({})", message, code);
             }
-            // Ignore push messages (peer_joined, peer_left, pong, etc.)
+            // Ignore push messages
             _ => continue,
         }
     };
-
-    #[derive(Deserialize)]
-    struct NodeInfo {
-        node_id: String,
-        overlay_ip: String,
-        role: String,
-        online: bool,
-        #[serde(default)]
-        has_admission_cert: bool,
-    }
-
-    let nodes: Vec<NodeInfo> = serde_json::from_value(
-        resp.get("nodes")
-            .cloned()
-            .unwrap_or(serde_json::Value::Array(vec![])),
-    )?;
 
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
@@ -133,8 +107,6 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-
-use serde::Serialize;
 
 async fn connect_to_signal(
     addr: SocketAddr,
@@ -201,24 +173,4 @@ fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
                 .and_then(|mut a| a.next())
         })
         .context(format!("Failed to resolve: {}", endpoint))
-}
-
-async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> Result<()> {
-    let json = serde_json::to_vec(msg)?;
-    let len = (json.len() as u32).to_be_bytes();
-    send.write_all(&len).await?;
-    send.write_all(&json).await?;
-    Ok(())
-}
-
-async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut quinn::RecvStream) -> Result<T> {
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1_048_576 {
-        anyhow::bail!("Message too large: {} bytes", len);
-    }
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await?;
-    Ok(serde_json::from_slice(&buf)?)
 }

@@ -33,34 +33,30 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         .await
         .context("Failed to open signal stream")?;
 
-    let msg = serde_json::json!({
-        "type": "revoke",
-        "cluster_id": config.cluster_id,
-        "target_node_id": target_node,
-    });
-    write_msg(&mut send, &msg).await?;
+    use mlsh_protocol::framing;
+    use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
-    let resp: serde_json::Value = read_msg(&mut recv).await?;
+    let msg = StreamMessage::Revoke {
+        cluster_id: config.cluster_id.clone(),
+        target_node_id: target_node.to_string(),
+    };
+    framing::write_msg(&mut send, &msg).await?;
+
+    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
-    let msg_type = resp.get("type").and_then(|t| t.as_str()).unwrap_or("");
-    match msg_type {
-        "revoke_ok" => {
+    match resp {
+        ServerMessage::RevokeOk => {
             println!(
                 "{}",
                 format!("Node '{}' revoked.", target_node).green().bold()
             );
             Ok(())
         }
-        "error" => {
-            let code = resp.get("code").and_then(|c| c.as_str()).unwrap_or("");
-            let message = resp
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
+        ServerMessage::Error { code, message } => {
             anyhow::bail!("{} ({})", message, code)
         }
-        _ => anyhow::bail!("Unexpected response: {}", msg_type),
+        other => anyhow::bail!("Unexpected response: {:?}", other),
     }
 }
 
@@ -68,8 +64,6 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-
-use serde::Serialize;
 
 async fn connect_to_signal(
     addr: SocketAddr,
@@ -136,24 +130,4 @@ fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
                 .and_then(|mut a| a.next())
         })
         .context(format!("Failed to resolve: {}", endpoint))
-}
-
-async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> Result<()> {
-    let json = serde_json::to_vec(msg)?;
-    let len = (json.len() as u32).to_be_bytes();
-    send.write_all(&len).await?;
-    send.write_all(&json).await?;
-    Ok(())
-}
-
-async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut quinn::RecvStream) -> Result<T> {
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1_048_576 {
-        anyhow::bail!("Message too large: {} bytes", len);
-    }
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await?;
-    Ok(serde_json::from_slice(&buf)?)
 }

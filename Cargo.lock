@@ -1839,6 +1839,7 @@ name = "mlsh-protocol"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ciborium",
  "serde",
  "serde_json",
  "tokio",

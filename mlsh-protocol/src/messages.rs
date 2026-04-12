@@ -11,7 +11,7 @@ use crate::types::{Candidate, NodeInfo, PeerInfo};
 
 /// Union of all client-to-server message types.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum StreamMessage {
     Ping,
 
@@ -78,7 +78,7 @@ pub enum StreamMessage {
 // --- Server → Client
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum ServerMessage {
     Pong,
 
@@ -145,7 +145,7 @@ impl ServerMessage {
 
 /// Messages exchanged on relay bi-streams between signal and peers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
 pub enum RelayMessage {
     /// Signal → target peer: incoming relay from another node.
     RelayIncoming { from_node_id: String },
@@ -159,20 +159,34 @@ pub enum RelayMessage {
 mod tests {
     use super::*;
 
-    #[test]
-    fn serialize_error() {
-        let msg = ServerMessage::error("E01", "bad");
-        let v = serde_json::to_value(&msg).unwrap();
-        assert_eq!(v["type"], "error");
-        assert_eq!(v["code"], "E01");
+    fn cbor_roundtrip<T: serde::Serialize + serde::de::DeserializeOwned>(msg: &T) -> T {
+        let mut buf = Vec::new();
+        ciborium::into_writer(msg, &mut buf).unwrap();
+        ciborium::from_reader(&buf[..]).unwrap()
     }
 
     #[test]
-    fn deserialize_report_candidates() {
-        let msg: StreamMessage = serde_json::from_str(
-            r#"{"type":"report_candidates","candidates":[{"kind":"host","addr":"192.168.1.10:4433","priority":100}]}"#
-        ).unwrap();
-        match msg {
+    fn error_roundtrip() {
+        let msg = ServerMessage::error("E01", "bad");
+        match cbor_roundtrip(&msg) {
+            ServerMessage::Error { code, message } => {
+                assert_eq!(code, "E01");
+                assert_eq!(message, "bad");
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    #[test]
+    fn report_candidates_roundtrip() {
+        let msg = StreamMessage::ReportCandidates {
+            candidates: vec![Candidate {
+                kind: "host".into(),
+                addr: "192.168.1.10:4433".into(),
+                priority: 100,
+            }],
+        };
+        match cbor_roundtrip(&msg) {
             StreamMessage::ReportCandidates { candidates } => {
                 assert_eq!(candidates.len(), 1);
                 assert_eq!(candidates[0].kind, "host");
@@ -182,29 +196,31 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_relay_open() {
-        let msg: StreamMessage =
-            serde_json::from_str(r#"{"type":"relay_open","cluster_id":"c1","node_id":"n1"}"#)
-                .unwrap();
-        match msg {
+    fn relay_open_roundtrip() {
+        let msg = StreamMessage::RelayOpen {
+            cluster_id: "c1".into(),
+            node_id: "n1".into(),
+            target_node_id: String::new(),
+        };
+        match cbor_roundtrip(&msg) {
             StreamMessage::RelayOpen {
                 cluster_id,
                 node_id,
-                target_node_id,
+                ..
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(node_id, "n1");
-                assert!(target_node_id.is_empty());
             }
             _ => panic!("expected RelayOpen"),
         }
     }
 
     #[test]
-    fn serialize_relay_ready() {
-        let msg = ServerMessage::RelayReady;
-        let v = serde_json::to_value(&msg).unwrap();
-        assert_eq!(v["type"], "relay_ready");
+    fn relay_ready_roundtrip() {
+        match cbor_roundtrip(&ServerMessage::RelayReady) {
+            ServerMessage::RelayReady => {}
+            _ => panic!("expected RelayReady"),
+        }
     }
 
     #[test]
@@ -212,9 +228,7 @@ mod tests {
         let msg = RelayMessage::RelayIncoming {
             from_node_id: "node1".into(),
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let parsed: RelayMessage = serde_json::from_str(&json).unwrap();
-        match parsed {
+        match cbor_roundtrip(&msg) {
             RelayMessage::RelayIncoming { from_node_id } => {
                 assert_eq!(from_node_id, "node1");
             }
@@ -223,16 +237,14 @@ mod tests {
     }
 
     #[test]
-    fn server_message_deserialize_roundtrip() {
+    fn server_message_roundtrip() {
         let msg = ServerMessage::NodeAuthOk {
             cluster_id: "c1".into(),
             overlay_ip: "100.64.0.1".into(),
             overlay_subnet: "100.64.0.0/10".into(),
             peers: vec![],
         };
-        let json = serde_json::to_string(&msg).unwrap();
-        let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
-        match parsed {
+        match cbor_roundtrip(&msg) {
             ServerMessage::NodeAuthOk { overlay_ip, .. } => {
                 assert_eq!(overlay_ip, "100.64.0.1");
             }

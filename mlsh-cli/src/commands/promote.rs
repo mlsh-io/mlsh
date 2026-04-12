@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
-use serde::Serialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -51,20 +50,22 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
         .await
         .context("Failed to open signal stream")?;
 
-    let msg = serde_json::json!({
-        "type": "promote",
-        "cluster_id": config.cluster_id,
-        "target_node_id": target_node,
-        "new_role": role,
-        "admission_cert": admission_cert_json,
-    });
-    write_msg(&mut send, &msg).await?;
+    use mlsh_protocol::framing;
+    use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
-    let resp: serde_json::Value = read_msg(&mut recv).await?;
+    let msg = StreamMessage::Promote {
+        cluster_id: config.cluster_id.clone(),
+        target_node_id: target_node.to_string(),
+        new_role: role.to_string(),
+        admission_cert: admission_cert_json,
+    };
+    framing::write_msg(&mut send, &msg).await?;
+
+    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
-    match resp.get("type").and_then(|t| t.as_str()).unwrap_or("") {
-        "promote_ok" => {
+    match resp {
+        ServerMessage::PromoteOk => {
             let done = if role == "admin" {
                 "promoted to admin"
             } else {
@@ -76,15 +77,10 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
             );
             Ok(())
         }
-        "error" => {
-            let code = resp.get("code").and_then(|c| c.as_str()).unwrap_or("");
-            let message = resp
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("unknown error");
+        ServerMessage::Error { code, message } => {
             anyhow::bail!("{} ({})", message, code)
         }
-        other => anyhow::bail!("Unexpected response: {}", other),
+        other => anyhow::bail!("Unexpected response: {:?}", other),
     }
 }
 
@@ -155,24 +151,4 @@ fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
                 .and_then(|mut a| a.next())
         })
         .context(format!("Failed to resolve: {}", endpoint))
-}
-
-async fn write_msg<T: Serialize>(send: &mut quinn::SendStream, msg: &T) -> Result<()> {
-    let json = serde_json::to_vec(msg)?;
-    let len = (json.len() as u32).to_be_bytes();
-    send.write_all(&len).await?;
-    send.write_all(&json).await?;
-    Ok(())
-}
-
-async fn read_msg<T: serde::de::DeserializeOwned>(recv: &mut quinn::RecvStream) -> Result<T> {
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len > 1_048_576 {
-        anyhow::bail!("Message too large: {} bytes", len);
-    }
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await?;
-    Ok(serde_json::from_slice(&buf)?)
 }
