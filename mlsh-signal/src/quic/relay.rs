@@ -69,7 +69,7 @@ pub async fn handle_relay(
     let caller_node_id = &caller_node.node_id;
 
     // Find the target peer's connection
-    let target_conn = if !target_node_id.is_empty() {
+    let (target_conn, actual_target_id) = if !target_node_id.is_empty() {
         // Specific target requested
         match state
             .sessions
@@ -83,7 +83,7 @@ pub async fn handle_relay(
                     to = target_node_id,
                     "Opening relay stream to target peer"
                 );
-                conn
+                (conn, target_node_id.to_string())
             }
             None => {
                 reject(
@@ -109,7 +109,7 @@ pub async fn handle_relay(
                     to = %peer_id,
                     "Opening relay stream to peer (auto-selected)"
                 );
-                conn
+                (conn, peer_id)
             }
             None => {
                 reject(
@@ -176,7 +176,7 @@ pub async fn handle_relay(
         .metrics
         .record_relay(
             cluster_id,
-            target_node_id,
+            &actual_target_id,
             target_to_cli_bytes,
             cli_to_target_bytes,
         )
