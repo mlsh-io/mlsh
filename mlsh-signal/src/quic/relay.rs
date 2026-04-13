@@ -150,38 +150,41 @@ pub async fn handle_relay(
     crate::protocol::write_message(&mut cli_send, &crate::protocol::ServerMessage::RelayReady)
         .await?;
 
-    // Splice: copy bytes bidirectionally — use join! to drain both directions
-    let cli_to_target = tokio::io::copy(&mut cli_recv, &mut target_send);
-    let target_to_cli = tokio::io::copy(&mut target_recv, &mut cli_send);
+    // Set up real-time byte counters
+    // caller → target direction: caller TX, target RX
+    let (caller_tx, _) = state.metrics.node_counters(cluster_id, node_id).await;
+    let (_, target_rx) = state
+        .metrics
+        .node_counters(cluster_id, &actual_target_id)
+        .await;
+    // target → caller direction: target TX, caller RX
+    let (target_tx, _) = state
+        .metrics
+        .node_counters(cluster_id, &actual_target_id)
+        .await;
+    let (_, caller_rx) = state.metrics.node_counters(cluster_id, node_id).await;
+
+    // Wrap writers to count bytes in real-time
+    let caller_tx_counter = crate::metrics::DualCounter(caller_tx, target_rx);
+    let target_tx_counter = crate::metrics::DualCounter(target_tx, caller_rx);
+    let mut counting_target_send =
+        crate::metrics::CountingWriter::new(&mut target_send, caller_tx_counter);
+    let mut counting_cli_send =
+        crate::metrics::CountingWriter::new(&mut cli_send, target_tx_counter);
+
+    let cli_to_target = tokio::io::copy(&mut cli_recv, &mut counting_target_send);
+    let target_to_cli = tokio::io::copy(&mut target_recv, &mut counting_cli_send);
 
     let (r1, r2) = tokio::join!(cli_to_target, target_to_cli);
-    let cli_to_target_bytes = r1.as_ref().copied().unwrap_or(0);
-    let target_to_cli_bytes = r2.as_ref().copied().unwrap_or(0);
     debug!(
         cluster_id,
-        cli_to_target_bytes, target_to_cli_bytes, "Relay splice finished"
+        cli_to_target = ?r1.ok(),
+        target_to_cli = ?r2.ok(),
+        "Relay splice finished"
     );
 
-    // Record bandwidth for both peers
-    state
-        .metrics
-        .record_relay(
-            cluster_id,
-            node_id,
-            cli_to_target_bytes,
-            target_to_cli_bytes,
-        )
-        .await;
-    state
-        .metrics
-        .record_relay(
-            cluster_id,
-            &actual_target_id,
-            target_to_cli_bytes,
-            cli_to_target_bytes,
-        )
-        .await;
-
+    drop(counting_target_send);
+    drop(counting_cli_send);
     let _ = cli_send.finish();
     let _ = target_send.finish();
 
