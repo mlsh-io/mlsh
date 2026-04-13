@@ -74,7 +74,7 @@ fn now_secs() -> u64 {
 pub struct InvitePayload {
     pub cluster_id: String,
     pub cluster_name: String,
-    pub sponsor_node_id: String,
+    pub sponsor_node_uuid: String,
     pub target_role: String,
     pub expires_at: u64,
     pub nonce: String,
@@ -94,7 +94,7 @@ pub struct InvitePayload {
 struct CompactPayload(
     String,                                 // 0: cluster_id
     String,                                 // 1: cluster_name
-    String,                                 // 2: sponsor_node_id
+    String,                                 // 2: sponsor_node_uuid
     String,                                 // 3: target_role
     u64,                                    // 4: expires_at
     #[serde(with = "serde_bytes")] Vec<u8>, // 5: nonce (raw 16 bytes)
@@ -120,7 +120,7 @@ impl CompactPayload {
         Ok(Self(
             p.cluster_id.clone(),
             p.cluster_name.clone(),
-            p.sponsor_node_id.clone(),
+            p.sponsor_node_uuid.clone(),
             p.target_role.clone(),
             p.expires_at,
             nonce,
@@ -133,7 +133,7 @@ impl CompactPayload {
         InvitePayload {
             cluster_id: self.0.clone(),
             cluster_name: self.1.clone(),
-            sponsor_node_id: self.2.clone(),
+            sponsor_node_uuid: self.2.clone(),
             target_role: self.3.clone(),
             expires_at: self.4,
             nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&self.5),
@@ -156,7 +156,7 @@ pub struct InviteParams<'a> {
     pub key_pem: &'a str,
     pub cluster_id: &'a str,
     pub cluster_name: &'a str,
-    pub sponsor_node_id: &'a str,
+    pub sponsor_node_uuid: &'a str,
     pub target_role: &'a str,
     pub ttl_seconds: u64,
     pub signal_fingerprint: Option<&'a str>,
@@ -170,7 +170,7 @@ pub fn generate_signed_invite(
     key_pem: &str,
     cluster_id: &str,
     cluster_name: &str,
-    sponsor_node_id: &str,
+    sponsor_node_uuid: &str,
     target_role: &str,
     ttl_seconds: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
@@ -178,7 +178,7 @@ pub fn generate_signed_invite(
         key_pem,
         cluster_id,
         cluster_name,
-        sponsor_node_id,
+        sponsor_node_uuid,
         target_role,
         ttl_seconds,
         signal_fingerprint: None,
@@ -202,7 +202,7 @@ pub fn generate_signed_invite_full(
     let payload = InvitePayload {
         cluster_id: params.cluster_id.to_string(),
         cluster_name: params.cluster_name.to_string(),
-        sponsor_node_id: params.sponsor_node_id.to_string(),
+        sponsor_node_uuid: params.sponsor_node_uuid.to_string(),
         target_role: params.target_role.to_string(),
         expires_at,
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes),
@@ -257,7 +257,7 @@ pub fn verify_signed_invite(
 
 /// Decode an invite payload without verifying the signature.
 ///
-/// Used when you need to extract fields (e.g., sponsor_node_id) before you have
+/// Used when you need to extract fields (e.g., sponsor_node_uuid) before you have
 /// the public key to verify. Always call verify after obtaining the key.
 pub fn decode_invite_payload(
     invite_b64: &str,
@@ -380,7 +380,7 @@ pub fn extract_public_key_from_cert_pem(
 // a valid cert is rejected by every peer.
 //
 // Two kinds:
-// - Root admin: self-signed (sponsor_node_id == node_id), verified against
+// - Root admin: self-signed (sponsor_node_uuid == node_id), verified against
 //   the root_fingerprint pinned in each node's local config.
 // - Sponsored node: the original signed invite serves as proof. Peers verify
 //   the invite signature against the sponsor's public key.
@@ -392,7 +392,7 @@ pub struct AdmissionCert {
     pub fingerprint: String,
     pub cluster_id: String,
     pub role: String,
-    pub sponsor_node_id: String,
+    pub sponsor_node_uuid: String,
     pub issued_at: u64,
     /// Self-signed: Ed25519 signature over the cert fields (base64url).
     /// Sponsored: the original base64url signed invite token.
@@ -418,7 +418,7 @@ pub fn generate_self_signed_admission_cert(
         fingerprint: fingerprint.to_string(),
         cluster_id: cluster_id.to_string(),
         role: "admin".to_string(),
-        sponsor_node_id: node_id.to_string(), // self-signed
+        sponsor_node_uuid: node_id.to_string(), // self-signed
         issued_at,
         proof: String::new(), // placeholder, filled below
     };
@@ -439,7 +439,7 @@ pub fn build_sponsored_admission_cert(
     fingerprint: &str,
     cluster_id: &str,
     role: &str,
-    sponsor_node_id: &str,
+    sponsor_node_uuid: &str,
     invite_token: &str,
 ) -> AdmissionCert {
     AdmissionCert {
@@ -447,7 +447,7 @@ pub fn build_sponsored_admission_cert(
         fingerprint: fingerprint.to_string(),
         cluster_id: cluster_id.to_string(),
         role: role.to_string(),
-        sponsor_node_id: sponsor_node_id.to_string(),
+        sponsor_node_uuid: sponsor_node_uuid.to_string(),
         issued_at: now_secs(),
         proof: invite_token.to_string(),
     }
@@ -462,7 +462,7 @@ pub fn verify_self_signed_admission_cert(
     public_key_bytes: &[u8],
     expected_root_fingerprint: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if cert.sponsor_node_id != cert.node_id {
+    if cert.sponsor_node_uuid != cert.node_id {
         return Err("Not a self-signed cert".into());
     }
     if cert.fingerprint != expected_root_fingerprint {
@@ -490,7 +490,7 @@ pub fn verify_sponsored_admission_cert(
     cert: &AdmissionCert,
     sponsor_public_key_bytes: &[u8],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if cert.sponsor_node_id == cert.node_id {
+    if cert.sponsor_node_uuid == cert.node_id {
         return Err("This is a self-signed cert, use verify_self_signed_admission_cert".into());
     }
 
@@ -508,7 +508,7 @@ pub fn verify_sponsored_admission_cert(
 
 /// Canonical byte payload for self-signed admission cert signatures.
 fn admission_cert_signing_payload(cert: &AdmissionCert) -> Vec<u8> {
-    // domain || node_id || fingerprint || cluster_id || role || sponsor || issued_at
+    // domain || node_id || fingerprint || cluster_id || role || sponsor_node_uuid || issued_at
     let mut buf = Vec::new();
     buf.extend_from_slice(b"mlsh-admission-v1\x00");
     buf.extend_from_slice(cert.node_id.as_bytes());
@@ -519,7 +519,7 @@ fn admission_cert_signing_payload(cert: &AdmissionCert) -> Vec<u8> {
     buf.push(0x00);
     buf.extend_from_slice(cert.role.as_bytes());
     buf.push(0x00);
-    buf.extend_from_slice(cert.sponsor_node_id.as_bytes());
+    buf.extend_from_slice(cert.sponsor_node_uuid.as_bytes());
     buf.push(0x00);
     buf.extend_from_slice(&cert.issued_at.to_be_bytes());
     buf
@@ -575,7 +575,7 @@ mod tests {
         let pubkey = extract_public_key_from_cert_pem(&id.cert_pem).unwrap();
         let payload = verify_signed_invite(&invite, &pubkey).unwrap();
         assert_eq!(payload.cluster_id, "test-cluster");
-        assert_eq!(payload.sponsor_node_id, "sponsor");
+        assert_eq!(payload.sponsor_node_uuid, "sponsor");
         assert_eq!(payload.target_role, "node");
     }
 
@@ -586,7 +586,7 @@ mod tests {
             key_pem: &id.key_pem,
             cluster_id: "550e8400-e29b-41d4-a716-446655440000",
             cluster_name: "homelab",
-            sponsor_node_id: "nicolas-macbook",
+            sponsor_node_uuid: "nicolas-macbook",
             target_role: "node",
             ttl_seconds: 3600,
             signal_fingerprint: Some(
@@ -662,7 +662,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(cert.sponsor_node_id, cert.node_id);
+        assert_eq!(cert.sponsor_node_uuid, cert.node_id);
         assert!(verify_self_signed_admission_cert(&cert, &pubkey, &id.fingerprint).is_ok());
     }
 

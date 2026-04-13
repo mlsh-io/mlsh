@@ -1,17 +1,18 @@
-//! `mlsh revoke <cluster> <node>` — remove a node from the cluster (admin only).
+//! `mlsh rename <cluster> <node> <name>` — change a node's display name (admin only).
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 
 use crate::tund::tunnel::load_cluster_config;
 
-pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> {
+pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str) -> Result<()> {
     let base_dir = crate::config::config_dir()?;
     let config = load_cluster_config(cluster_name, &base_dir)?;
 
     println!(
-        "Revoking node {} from cluster {}...",
+        "Renaming node {} to {} in cluster {}...",
         target_node.bold(),
+        new_name.bold(),
         config.name.bold()
     );
 
@@ -27,7 +28,6 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
     )
     .await?;
 
-    // Revoke is a one-shot message (no session needed)
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -36,9 +36,10 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
     use mlsh_protocol::framing;
     use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
-    let msg = StreamMessage::Revoke {
+    let msg = StreamMessage::Rename {
         cluster_id: config.cluster_id.clone(),
         target_name: target_node.to_string(),
+        new_display_name: new_name.to_string(),
     };
     framing::write_msg(&mut send, &msg).await?;
 
@@ -46,10 +47,12 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
     match resp {
-        ServerMessage::RevokeOk => {
+        ServerMessage::RenameOk { display_name } => {
             println!(
                 "{}",
-                format!("Node '{}' revoked.", target_node).green().bold()
+                format!("Node '{}' renamed to '{}'.", target_node, display_name)
+                    .green()
+                    .bold()
             );
             Ok(())
         }

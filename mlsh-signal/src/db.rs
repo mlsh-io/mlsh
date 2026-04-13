@@ -36,6 +36,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
             role           TEXT NOT NULL DEFAULT 'node',
             sponsored_by   TEXT NOT NULL DEFAULT '',
             admission_cert TEXT NOT NULL DEFAULT '',
+            display_name   TEXT NOT NULL DEFAULT '',
             created_at     TEXT NOT NULL,
             PRIMARY KEY (cluster_id, node_id)
         )",
@@ -54,6 +55,11 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     )
     .execute(&pool)
     .await;
+    let _ = sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_display_name ON nodes (cluster_id, display_name) WHERE display_name != ''",
+    )
+    .execute(&pool)
+    .await;
 
     // Migrations for existing databases
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN public_key TEXT NOT NULL DEFAULT ''")
@@ -66,6 +72,9 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN admission_cert TEXT NOT NULL DEFAULT ''")
+        .execute(&pool)
+        .await;
+    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         .execute(&pool)
         .await;
 
@@ -376,6 +385,7 @@ pub struct NodeRecord {
     pub role: String,
     pub sponsored_by: String,
     pub admission_cert: String,
+    pub display_name: String,
     pub created_at: String,
 }
 
@@ -399,6 +409,7 @@ pub async fn register_node(
             role: "node",
             sponsored_by: "",
             admission_cert: "",
+            display_name: "",
         },
         subnet,
     )
@@ -414,6 +425,7 @@ pub struct NodeRegistration<'a> {
     pub role: &'a str,
     pub sponsored_by: &'a str,
     pub admission_cert: &'a str,
+    pub display_name: &'a str,
 }
 
 /// Register a node with full details. Idempotent: updates fingerprint/role on conflict.
@@ -429,6 +441,7 @@ pub async fn register_node_full(
     let role = reg.role;
     let sponsored_by = reg.sponsored_by;
     let admission_cert = reg.admission_cert;
+    let display_name = reg.display_name;
 
     // Check if this node already exists
     let existing: Option<(String, String)> = sqlx::query_as(
@@ -445,16 +458,23 @@ pub async fn register_node_full(
             .parse()
             .map_err(|e| anyhow::anyhow!("Bad IP in DB: {}", e))?;
 
-        // Update fingerprint, public_key, role if changed (cert rotation or re-setup)
+        // Update fingerprint, public_key, role, and display_name if changed
+        // (cert rotation, re-setup, or initial name assignment).
+        // Only overwrite display_name if the caller provides a non-empty value;
+        // preserve an existing name when re-registering without a name.
         sqlx::query(
-            "UPDATE nodes SET fingerprint = ?1, public_key = ?2, role = ?3, sponsored_by = ?4, admission_cert = ?5
-             WHERE cluster_id = ?6 AND node_id = ?7",
+            "UPDATE nodes
+             SET fingerprint = ?1, public_key = ?2, role = ?3, sponsored_by = ?4,
+                 admission_cert = ?5,
+                 display_name = CASE WHEN ?6 != '' THEN ?6 ELSE display_name END
+             WHERE cluster_id = ?7 AND node_id = ?8",
         )
         .bind(fingerprint)
         .bind(public_key)
         .bind(role)
         .bind(sponsored_by)
         .bind(admission_cert)
+        .bind(display_name)
         .bind(cluster_id)
         .bind(node_id)
         .execute(pool)
@@ -501,8 +521,8 @@ pub async fn register_node_full(
         .unwrap_or_default();
 
     sqlx::query(
-        "INSERT INTO nodes (cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO nodes (cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
     )
     .bind(cluster_id)
     .bind(node_id)
@@ -512,6 +532,7 @@ pub async fn register_node_full(
     .bind(role)
     .bind(sponsored_by)
     .bind(admission_cert)
+    .bind(display_name)
     .bind(&now)
     .execute(pool)
     .await
@@ -579,19 +600,29 @@ pub async fn lookup_node_by_fingerprint(
     cluster_id: &str,
     fingerprint: &str,
 ) -> Result<Option<NodeRecord>> {
-    let row: Option<(String, String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at
-             FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2",
-        )
-        .bind(cluster_id)
-        .bind(fingerprint)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to lookup node by fingerprint")?;
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    )> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+         FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2",
+    )
+    .bind(cluster_id)
+    .bind(fingerprint)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to lookup node by fingerprint")?;
 
     Ok(
-        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
+        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
             cluster_id: cid,
             node_id: nid,
             fingerprint: fp,
@@ -600,6 +631,7 @@ pub async fn lookup_node_by_fingerprint(
             role,
             sponsored_by: sb,
             admission_cert: ac,
+            display_name: dn,
             created_at: ca,
         }),
     )
@@ -625,19 +657,29 @@ pub async fn update_node_public_key(
 /// List all nodes in a cluster.
 #[allow(clippy::type_complexity)]
 pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRecord>> {
-    let rows: Vec<(String, String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, created_at
-             FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip",
-        )
-        .bind(cluster_id)
-        .fetch_all(pool)
-        .await
-        .context("Failed to list nodes")?;
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    )> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+         FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip",
+    )
+    .bind(cluster_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list nodes")?;
 
     Ok(rows
         .into_iter()
-        .map(|(cid, nid, fp, pk, ip, role, sb, ac, ca)| NodeRecord {
+        .map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
             cluster_id: cid,
             node_id: nid,
             fingerprint: fp,
@@ -646,6 +688,7 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
             role,
             sponsored_by: sb,
             admission_cert: ac,
+            display_name: dn,
             created_at: ca,
         })
         .collect())
@@ -698,6 +741,101 @@ pub async fn remove_node(pool: &SqlitePool, cluster_id: &str, node_id: &str) -> 
     Ok(result.rows_affected() > 0)
 }
 
+/// Rename a node's display name within a cluster.
+///
+/// The uniqueness constraint `idx_nodes_display_name` (partial index on
+/// non-empty names) enforces that no two nodes in the same cluster share a
+/// display name.  If the new name is already in use, the UPDATE will fail with
+/// a UNIQUE constraint violation which is surfaced as `Ok(false)`.
+///
+/// Returns `true` if the node was found and renamed, `false` if the node
+/// wasn't found or the name was already taken.
+pub async fn rename_node(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    node_uuid: &str,
+    new_display_name: &str,
+) -> Result<bool> {
+    let result =
+        sqlx::query("UPDATE nodes SET display_name = ?1 WHERE cluster_id = ?2 AND node_id = ?3")
+            .bind(new_display_name)
+            .bind(cluster_id)
+            .bind(node_uuid)
+            .execute(pool)
+            .await;
+
+    match result {
+        Ok(r) => {
+            if r.rows_affected() > 0 {
+                tracing::info!(
+                    cluster_id,
+                    node_id = node_uuid,
+                    new_display_name,
+                    "Node renamed"
+                );
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => {
+            // display_name already taken in this cluster
+            Ok(false)
+        }
+        Err(e) => Err(e).context("Failed to rename node"),
+    }
+}
+
+/// Look up a node by its human-readable display name within a cluster.
+///
+/// Returns `None` when no node has that display name or if the name is empty.
+#[allow(clippy::type_complexity)]
+pub async fn lookup_node_by_display_name(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    display_name: &str,
+) -> Result<Option<NodeRecord>> {
+    if display_name.is_empty() {
+        return Ok(None);
+    }
+
+    let row: Option<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    )> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+         FROM nodes WHERE cluster_id = ?1 AND display_name = ?2",
+    )
+    .bind(cluster_id)
+    .bind(display_name)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to lookup node by display name")?;
+
+    Ok(
+        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
+            cluster_id: cid,
+            node_id: nid,
+            fingerprint: fp,
+            public_key: pk,
+            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+            role,
+            sponsored_by: sb,
+            admission_cert: ac,
+            display_name: dn,
+            created_at: ca,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -720,6 +858,7 @@ mod tests {
                 fingerprint TEXT NOT NULL, public_key TEXT NOT NULL DEFAULT '',
                 overlay_ip TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'node',
                 sponsored_by TEXT NOT NULL DEFAULT '', admission_cert TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL, PRIMARY KEY (cluster_id, node_id))",
         )
         .execute(&pool)
@@ -733,6 +872,12 @@ mod tests {
         .unwrap();
         sqlx::query(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_overlay_ip ON nodes (cluster_id, overlay_ip)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_nodes_display_name ON nodes (cluster_id, display_name) WHERE display_name != ''",
         )
         .execute(&pool)
         .await
@@ -865,6 +1010,7 @@ mod tests {
                 role: "admin",
                 sponsored_by: "",
                 admission_cert: "",
+                display_name: "",
             },
             &s,
         )
@@ -882,6 +1028,7 @@ mod tests {
                 role: "node",
                 sponsored_by: "nas",
                 admission_cert: "",
+                display_name: "",
             },
             &s,
         )
@@ -966,5 +1113,114 @@ mod tests {
         assert_eq!(get_config(&pool, "key1").await.unwrap().unwrap(), "value1");
         set_config(&pool, "key1", "value2").await.unwrap();
         assert_eq!(get_config(&pool, "key1").await.unwrap().unwrap(), "value2");
+    }
+
+    #[tokio::test]
+    async fn rename_node_basic() {
+        let pool = test_pool().await;
+        let s = default_subnet();
+        register_node(&pool, "c1", "uuid-aaa", "fp-aaa", &s)
+            .await
+            .unwrap();
+
+        // Rename succeeds and is reflected in lookup.
+        assert!(rename_node(&pool, "c1", "uuid-aaa", "my-node")
+            .await
+            .unwrap());
+        let node = lookup_node_by_display_name(&pool, "c1", "my-node")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.node_id, "uuid-aaa");
+        assert_eq!(node.display_name, "my-node");
+    }
+
+    #[tokio::test]
+    async fn rename_node_not_found() {
+        let pool = test_pool().await;
+        // Node does not exist — returns false, no error.
+        let ok = rename_node(&pool, "c1", "no-such-uuid", "name")
+            .await
+            .unwrap();
+        assert!(!ok);
+    }
+
+    #[tokio::test]
+    async fn rename_node_unique_per_cluster() {
+        let pool = test_pool().await;
+        let s = default_subnet();
+        register_node(&pool, "c1", "uuid-1", "fp-1", &s)
+            .await
+            .unwrap();
+        register_node(&pool, "c1", "uuid-2", "fp-2", &s)
+            .await
+            .unwrap();
+
+        assert!(rename_node(&pool, "c1", "uuid-1", "alpha").await.unwrap());
+        // Trying to assign the same name to a different node in the same cluster
+        // must fail (returns false due to unique constraint).
+        assert!(!rename_node(&pool, "c1", "uuid-2", "alpha").await.unwrap());
+
+        // But the same name is allowed in a different cluster.
+        register_node(&pool, "c2", "uuid-1", "fp-c2-1", &s)
+            .await
+            .unwrap();
+        assert!(rename_node(&pool, "c2", "uuid-1", "alpha").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn rename_preserves_existing_name_on_re_register() {
+        let pool = test_pool().await;
+        let s = default_subnet();
+        register_node(&pool, "c1", "uuid-aaa", "fp-aaa", &s)
+            .await
+            .unwrap();
+        rename_node(&pool, "c1", "uuid-aaa", "keeper")
+            .await
+            .unwrap();
+
+        // Re-register with empty display_name — should not overwrite existing name.
+        register_node_full(
+            &pool,
+            &NodeRegistration {
+                cluster_id: "c1",
+                node_id: "uuid-aaa",
+                fingerprint: "fp-new",
+                public_key: "",
+                role: "node",
+                sponsored_by: "",
+                admission_cert: "",
+                display_name: "",
+            },
+            &s,
+        )
+        .await
+        .unwrap();
+
+        let node = lookup_node_by_fingerprint(&pool, "c1", "fp-new")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(node.display_name, "keeper");
+    }
+
+    #[tokio::test]
+    async fn lookup_by_display_name_empty_returns_none() {
+        let pool = test_pool().await;
+        let result = lookup_node_by_display_name(&pool, "c1", "").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_by_display_name_missing_returns_none() {
+        let pool = test_pool().await;
+        let s = default_subnet();
+        register_node(&pool, "c1", "uuid-aaa", "fp-aaa", &s)
+            .await
+            .unwrap();
+        let result = lookup_node_by_display_name(&pool, "c1", "no-such-name")
+            .await
+            .unwrap();
+        assert!(result.is_none());
     }
 }

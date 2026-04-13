@@ -307,6 +307,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             }]))
             .await;
 

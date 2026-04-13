@@ -28,6 +28,8 @@ pub struct PeerInfo {
     /// Peers verify this locally before accepting the peer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub admission_cert: String,
+    #[serde(default)]
+    pub display_name: String,
 }
 
 /// Information about a registered node (returned by ListNodes).
@@ -40,4 +42,6 @@ pub struct NodeInfo {
     /// Whether this node has a valid admission certificate stored.
     #[serde(default)]
     pub has_admission_cert: bool,
+    #[serde(default)]
+    pub display_name: String,
 }

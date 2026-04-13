@@ -32,6 +32,12 @@ pub struct ClusterConfig {
     /// Overlay subnet in CIDR notation (e.g. "100.64.0.0/10" or "10.0.10.0/24").
     pub overlay_subnet: Option<String>,
     pub cluster_id: String,
+    /// UUID assigned by signal at adopt/setup time.
+    pub node_uuid: String,
+    /// Human-readable display name for this node (defaults to node_uuid when absent).
+    pub display_name: String,
+    /// Legacy field kept for backward compatibility with existing TOML files.
+    /// New files store `node_uuid` instead.
     pub node_id: String,
     pub fingerprint: String,
     pub public_key: String,
@@ -54,6 +60,7 @@ impl ClusterConfig {
             signal_fingerprint: self.signal_fingerprint.clone(),
             cluster_id: self.cluster_id.clone(),
             node_id: self.node_id.clone(),
+            display_name: self.display_name.clone(),
             fingerprint: self.fingerprint.clone(),
             public_key: self.public_key.clone(),
             cert_pem,
@@ -1238,11 +1245,23 @@ fn parse_cluster_config_from_toml(
         .get("node_auth")
         .context("Missing [node_auth] section. Is this cluster configured with 'mlsh setup' (mode 2) or 'mlsh adopt'?")?;
 
-    let node_id = node_auth
-        .get("node_id")
+    // Accept both `node_uuid` (new) and `node_id` (legacy) for backward compatibility.
+    let node_uuid = node_auth
+        .get("node_uuid")
         .and_then(|v| v.as_str())
-        .context("Missing node_auth.node_id")?
+        .or_else(|| node_auth.get("node_id").and_then(|v| v.as_str()))
+        .context("Missing node_auth.node_uuid (or legacy node_auth.node_id)")?
         .to_string();
+
+    // display_name falls back to node_uuid when absent (pre-rename TOML files).
+    let display_name = node_auth
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&node_uuid)
+        .to_string();
+
+    // Keep node_id as an alias pointing at node_uuid for code that hasn't migrated yet.
+    let node_id = node_uuid.clone();
 
     let fingerprint = node_auth
         .get("fingerprint")
@@ -1279,6 +1298,8 @@ fn parse_cluster_config_from_toml(
         overlay_ip,
         overlay_subnet,
         cluster_id,
+        node_uuid,
+        display_name,
         node_id,
         fingerprint,
         public_key,

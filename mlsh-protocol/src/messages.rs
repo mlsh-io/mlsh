@@ -44,7 +44,7 @@ pub enum StreamMessage {
         cluster_id: String,
         pre_auth_token: String,
         fingerprint: String,
-        node_id: String,
+        node_uuid: String,
         /// Ed25519 public key (base64url, 32 bytes) for signature verification.
         #[serde(default)]
         public_key: String,
@@ -53,13 +53,22 @@ pub enum StreamMessage {
         /// Self-signed admission cert (JSON, for root admin setup).
         #[serde(default)]
         admission_cert: String,
+        #[serde(default)]
+        display_name: String,
     },
 
     /// Admin revocation: remove a node from the cluster.
     /// Caller is authenticated via TLS client certificate.
     Revoke {
         cluster_id: String,
-        target_node_id: String,
+        target_name: String,
+    },
+
+    /// Rename a node's display label (admin only).
+    Rename {
+        cluster_id: String,
+        target_name: String,
+        new_display_name: String,
     },
 
     /// Change a node's role (admin only). The caller signs a new admission cert.
@@ -94,10 +103,11 @@ pub enum ServerMessage {
     },
     AdoptOk {
         cluster_id: String,
-        node_id: String,
+        node_uuid: String,
         overlay_ip: String,
         overlay_subnet: String,
         peers: Vec<PeerInfo>,
+        display_name: String,
     },
 
     /// Pushed to all connected peers when a new node joins.
@@ -118,6 +128,17 @@ pub enum ServerMessage {
         cluster_id: String,
         new_role: String,
         admission_cert: String,
+    },
+
+    /// Pushed to all connected peers when a node's display name changes.
+    PeerRenamed {
+        node_id: String,
+        new_display_name: String,
+    },
+
+    /// Confirmation that a rename was applied.
+    RenameOk {
+        display_name: String,
     },
 
     /// Response to ListNodes: all registered nodes with online/offline status.
@@ -281,28 +302,31 @@ mod tests {
             cluster_id: "c1".into(),
             pre_auth_token: "tok-123".into(),
             fingerprint: "sha256-abc".into(),
-            node_id: "n1".into(),
+            node_uuid: "n1".into(),
             public_key: "pk-xyz".into(),
             expires_at: 1700000000,
             admission_cert: r#"{"node_id":"n1"}"#.into(),
+            display_name: String::new(),
         };
         match cbor_roundtrip(&msg) {
             StreamMessage::Adopt {
                 cluster_id,
                 pre_auth_token,
                 fingerprint,
-                node_id,
+                node_uuid,
                 public_key,
                 expires_at,
                 admission_cert,
+                display_name,
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(pre_auth_token, "tok-123");
                 assert_eq!(fingerprint, "sha256-abc");
-                assert_eq!(node_id, "n1");
+                assert_eq!(node_uuid, "n1");
                 assert_eq!(public_key, "pk-xyz");
                 assert_eq!(expires_at, 1700000000);
                 assert!(admission_cert.contains("node_id"));
+                assert!(display_name.is_empty());
             }
             other => panic!("expected Adopt, got {:?}", other),
         }
@@ -312,15 +336,15 @@ mod tests {
     fn revoke_roundtrip() {
         let msg = StreamMessage::Revoke {
             cluster_id: "c1".into(),
-            target_node_id: "n2".into(),
+            target_name: "n2".into(),
         };
         match cbor_roundtrip(&msg) {
             StreamMessage::Revoke {
                 cluster_id,
-                target_node_id,
+                target_name,
             } => {
                 assert_eq!(cluster_id, "c1");
-                assert_eq!(target_node_id, "n2");
+                assert_eq!(target_name, "n2");
             }
             other => panic!("expected Revoke, got {:?}", other),
         }
@@ -405,6 +429,7 @@ mod tests {
                 }],
                 public_key: "pk".into(),
                 admission_cert: "cert".into(),
+                display_name: String::new(),
             }],
         };
         match cbor_roundtrip(&msg) {
@@ -429,24 +454,27 @@ mod tests {
     fn adopt_ok_roundtrip() {
         let msg = ServerMessage::AdoptOk {
             cluster_id: "c1".into(),
-            node_id: "n1".into(),
+            node_uuid: "n1".into(),
             overlay_ip: "100.64.0.5".into(),
             overlay_subnet: "100.64.0.0/10".into(),
             peers: vec![],
+            display_name: "my-node".into(),
         };
         match cbor_roundtrip(&msg) {
             ServerMessage::AdoptOk {
                 cluster_id,
-                node_id,
+                node_uuid,
                 overlay_ip,
                 overlay_subnet,
                 peers,
+                display_name,
             } => {
                 assert_eq!(cluster_id, "c1");
-                assert_eq!(node_id, "n1");
+                assert_eq!(node_uuid, "n1");
                 assert_eq!(overlay_ip, "100.64.0.5");
                 assert_eq!(overlay_subnet, "100.64.0.0/10");
                 assert!(peers.is_empty());
+                assert_eq!(display_name, "my-node");
             }
             other => panic!("expected AdoptOk, got {:?}", other),
         }
@@ -462,6 +490,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             },
         };
         match cbor_roundtrip(&msg) {
@@ -542,6 +571,7 @@ mod tests {
                     role: "admin".into(),
                     online: true,
                     has_admission_cert: true,
+                    display_name: String::new(),
                 },
                 NodeInfo {
                     node_id: "n2".into(),
@@ -549,6 +579,7 @@ mod tests {
                     role: "member".into(),
                     online: false,
                     has_admission_cert: false,
+                    display_name: String::new(),
                 },
             ],
         };
@@ -623,10 +654,11 @@ mod tests {
             cluster_id: "c1".into(),
             pre_auth_token: "tok".into(),
             fingerprint: "fp".into(),
-            node_id: "n1".into(),
+            node_uuid: "n1".into(),
             public_key: "pk".into(),
             expires_at: 999,
             admission_cert: "cert".into(),
+            display_name: String::new(),
         };
         let a = cbor_bytes(&msg);
         let b = cbor_bytes(&msg);
@@ -644,6 +676,7 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
+            display_name: String::new(),
         };
         let bytes = cbor_bytes(&peer);
         let decoded: PeerInfo = ciborium::from_reader(&bytes[..]).unwrap();
@@ -780,7 +813,7 @@ mod tests {
                     ciborium::Value::Text("fp".into()),
                 ),
                 (
-                    ciborium::Value::Text("node_id".into()),
+                    ciborium::Value::Text("node_uuid".into()),
                     ciborium::Value::Text("n1".into()),
                 ),
                 (
@@ -864,7 +897,7 @@ mod tests {
                     ciborium::Value::Text("c1".into()),
                 ),
                 (
-                    ciborium::Value::Text("target_node_id".into()),
+                    ciborium::Value::Text("target_name".into()),
                     ciborium::Value::Text("n2".into()),
                 ),
                 (
@@ -879,11 +912,11 @@ mod tests {
         let result: Result<StreamMessage, _> = ciborium::from_reader(&buf[..]);
         if let Ok(StreamMessage::Revoke {
             cluster_id,
-            target_node_id,
+            target_name,
         }) = result
         {
             assert_eq!(cluster_id, "c1");
-            assert_eq!(target_node_id, "n2");
+            assert_eq!(target_name, "n2");
         }
         // Error is also acceptable (strict mode).
     }

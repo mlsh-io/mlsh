@@ -72,7 +72,7 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     }
 
     println!(
-        "{:<20} {:<18} {:<8} {:<8} STATUS",
+        "{:<24} {:<18} {:<8} {:<8} STATUS",
         "NODE", "OVERLAY IP", "ROLE", "CERT"
     );
 
@@ -87,9 +87,15 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         } else {
             "none".yellow().to_string()
         };
+        // Show display_name when set, fall back to node_id.
+        let label = if node.display_name.is_empty() {
+            node.node_id.as_str()
+        } else {
+            node.display_name.as_str()
+        };
         println!(
-            "{:<20} {:<18} {:<8} {:<8} {}",
-            node.node_id, node.overlay_ip, node.role, cert, status
+            "{:<24} {:<18} {:<8} {:<8} {}",
+            label, node.overlay_ip, node.role, cert, status
         );
     }
 

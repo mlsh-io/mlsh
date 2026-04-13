@@ -83,7 +83,7 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
             key_pem: &key_pem,
             cluster_id,
             cluster_name,
-            sponsor_node_id: node_id,
+            sponsor_node_uuid: node_id,
             target_role: role,
             ttl_seconds: ttl,
             signal_fingerprint: fp,

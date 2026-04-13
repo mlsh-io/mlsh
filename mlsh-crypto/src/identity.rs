@@ -25,15 +25,18 @@ pub struct NodeIdentity {
 /// Generate a self-signed Ed25519 certificate for a node.
 ///
 /// The certificate has:
-/// - CN=`node_id`, O=MLSH
+/// - CN=`node_uuid`, O=MLSH
 /// - 10-year validity (identity certs are long-lived; auth is via fingerprint registry)
 /// - ServerAuth + ClientAuth extended key usage (node acts as both)
-pub fn generate_identity(node_id: &str) -> Result<NodeIdentity, Box<dyn std::error::Error>> {
+pub fn generate_identity(node_uuid: &str) -> Result<NodeIdentity, Box<dyn std::error::Error>> {
     let key_pair = KeyPair::generate_for(&PKCS_ED25519)?;
 
     let mut params = CertificateParams::default();
     let mut dn = DistinguishedName::new();
-    dn.push(DnType::CommonName, DnValue::Utf8String(node_id.to_string()));
+    dn.push(
+        DnType::CommonName,
+        DnValue::Utf8String(node_uuid.to_string()),
+    );
     dn.push(
         DnType::OrganizationName,
         DnValue::Utf8String("MLSH".to_string()),
@@ -74,7 +77,7 @@ pub fn compute_fingerprint(cert_der: &[u8]) -> String {
 /// File permissions: the key file is created with mode 0600 on Unix.
 pub fn load_or_generate(
     dir: &Path,
-    node_id: &str,
+    node_uuid: &str,
 ) -> Result<NodeIdentity, Box<dyn std::error::Error>> {
     let cert_path = dir.join("cert.pem");
     let key_path = dir.join("key.pem");
@@ -93,7 +96,7 @@ pub fn load_or_generate(
         });
     }
 
-    let identity = generate_identity(node_id)?;
+    let identity = generate_identity(node_uuid)?;
 
     std::fs::create_dir_all(dir)?;
     std::fs::write(&cert_path, &identity.cert_pem)?;

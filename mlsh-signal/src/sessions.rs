@@ -13,7 +13,7 @@ use crate::protocol::{Candidate, PeerInfo, ServerMessage};
 /// A connected node session.
 struct NodeSession {
     connection: quinn::Connection,
-    /// Channel for pushing messages (PeerJoined/PeerLeft).
+    /// Channel for pushing messages (PeerJoined/PeerLeft/PeerRenamed).
     push_tx: Option<tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>>,
     node_id: String,
     fingerprint: String,
@@ -21,6 +21,7 @@ struct NodeSession {
     host_candidates: Vec<Candidate>,
     public_key: String,
     admission_cert: String,
+    display_name: String,
     session_id: u64,
 }
 
@@ -33,6 +34,7 @@ pub struct NodeSessionInfo {
     pub push_tx: tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>,
     pub public_key: String,
     pub admission_cert: String,
+    pub display_name: String,
 }
 
 /// Thread-safe store of active node sessions, keyed by (cluster_id, node_id).
@@ -61,6 +63,7 @@ impl SessionStore {
             host_candidates: Vec::new(),
             public_key: info.public_key,
             admission_cert: info.admission_cert,
+            display_name: info.display_name,
             session_id,
         };
         self.sessions.write().await.insert(key, session);
@@ -117,6 +120,7 @@ impl SessionStore {
                     candidates,
                     public_key: s.public_key.clone(),
                     admission_cert: s.admission_cert.clone(),
+                    display_name: s.display_name.clone(),
                 }
             })
             .collect()
@@ -214,6 +218,44 @@ impl SessionStore {
                 .close(quinn::VarInt::from_u32(1), b"revoked");
             tracing::info!(cluster_id, node_id, "Node kicked (revoked)");
         }
+    }
+
+    /// Update the display_name of an active session in-place.
+    ///
+    /// This keeps the in-memory session in sync immediately after a rename so
+    /// that subsequent `get_peer_list` calls return the new name without
+    /// requiring a reconnect.  Returns `true` if the session was found.
+    pub async fn update_node_display_name(
+        &self,
+        cluster_id: &str,
+        node_id: &str,
+        new_name: &str,
+    ) -> bool {
+        let key = (cluster_id.to_string(), node_id.to_string());
+        let mut sessions = self.sessions.write().await;
+        if let Some(session) = sessions.get_mut(&key) {
+            session.display_name = new_name.to_string();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Broadcast a `PeerRenamed` message to all connected peers in a cluster.
+    pub async fn notify_peer_renamed(
+        &self,
+        cluster_id: &str,
+        node_id: &str,
+        new_display_name: &str,
+    ) {
+        self.broadcast(
+            cluster_id,
+            ServerMessage::PeerRenamed {
+                node_id: node_id.to_string(),
+                new_display_name: new_display_name.to_string(),
+            },
+        )
+        .await;
     }
 
     /// Return online counts for all clusters.

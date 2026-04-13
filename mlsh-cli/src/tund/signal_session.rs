@@ -27,6 +27,7 @@ pub struct SignalCredentials {
     pub signal_fingerprint: String,
     pub cluster_id: String,
     pub node_id: String,
+    pub display_name: String,
     pub fingerprint: String,
     pub public_key: String,
     /// PEM-encoded client certificate (for mTLS auth to signal).
@@ -351,7 +352,7 @@ fn verify_admission(
         return false;
     }
 
-    if cert.sponsor_node_id == cert.node_id {
+    if cert.sponsor_node_uuid == cert.node_id {
         // Self-signed — must be the root admin
         if root_fingerprint.is_empty() {
             tracing::warn!(
@@ -376,7 +377,7 @@ fn verify_admission(
 
     // Sponsored cert — verify the invite signature against the sponsor's public key
     let peers = peers_tx.borrow();
-    let sponsor = peers.iter().find(|p| p.node_id == cert.sponsor_node_id);
+    let sponsor = peers.iter().find(|p| p.node_id == cert.sponsor_node_uuid);
     match sponsor {
         Some(sponsor_peer) if !sponsor_peer.public_key.is_empty() => {
             let pubkey_bytes = match base64::Engine::decode(
@@ -387,7 +388,7 @@ fn verify_admission(
                 Err(_) => {
                     tracing::warn!(
                         "Sponsor {} has invalid public key encoding",
-                        cert.sponsor_node_id
+                        cert.sponsor_node_uuid
                     );
                     return false;
                 }
@@ -409,7 +410,7 @@ fn verify_admission(
             tracing::warn!(
                 "Peer {} sponsor {} has no public key — cannot verify admission cert",
                 peer.node_id,
-                cert.sponsor_node_id,
+                cert.sponsor_node_uuid,
             );
             true
         }
@@ -418,7 +419,7 @@ fn verify_admission(
             tracing::debug!(
                 "Peer {} sponsor {} not yet known — accepting provisionally",
                 peer.node_id,
-                cert.sponsor_node_id,
+                cert.sponsor_node_uuid,
             );
             true
         }
@@ -454,6 +455,26 @@ fn handle_push_message(
                 .iter()
                 .filter(|p| p.node_id != *node_id)
                 .cloned()
+                .collect();
+            let _ = peers_tx.send(Arc::new(new_peers));
+        }
+        ServerMessage::PeerRenamed {
+            node_id,
+            new_display_name,
+        } => {
+            tracing::info!("Peer renamed: {} → {}", node_id, new_display_name);
+            let new_peers: Vec<PeerInfo> = peers_tx
+                .borrow()
+                .iter()
+                .map(|p| {
+                    if p.node_id == *node_id {
+                        let mut updated = p.clone();
+                        updated.display_name = new_display_name.clone();
+                        updated
+                    } else {
+                        p.clone()
+                    }
+                })
                 .collect();
             let _ = peers_tx.send(Arc::new(new_peers));
         }
@@ -614,6 +635,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             },
         };
         handle_push_message(&msg, &tx, "");
@@ -630,6 +652,7 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
+            display_name: String::new(),
         }]));
         let msg = ServerMessage::PeerLeft {
             node_id: "nas".into(),
@@ -648,6 +671,7 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
+            display_name: String::new(),
         }]));
         let msg = ServerMessage::PeerJoined {
             peer: PeerInfo {
@@ -657,6 +681,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             },
         };
         handle_push_message(&msg, &tx, "");

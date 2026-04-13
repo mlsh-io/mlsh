@@ -62,6 +62,12 @@ struct PeerTableInner {
     routes: HashMap<Ipv4Addr, PeerRoute>,
 }
 
+impl Default for PeerTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerTable {
     pub fn new() -> Self {
         Self::with_tun_name(String::new())
@@ -240,6 +246,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             },
             PeerInfo {
                 node_id: "pi".into(),
@@ -248,6 +255,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                display_name: String::new(),
             },
         ];
         table.update_peers(Arc::new(peers)).await;

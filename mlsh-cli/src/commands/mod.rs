@@ -5,5 +5,6 @@ pub mod identity;
 pub mod invite;
 pub mod nodes;
 pub mod promote;
+pub mod rename;
 pub mod revoke;
 pub mod setup;

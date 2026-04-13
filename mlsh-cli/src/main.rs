@@ -96,6 +96,16 @@ enum Commands {
         node: String,
     },
 
+    /// Rename a node in a cluster (admin only)
+    Rename {
+        /// Cluster name
+        cluster: String,
+        /// Current node display name
+        node: String,
+        /// New display name
+        name: String,
+    },
+
     /// Export the node identity (private key) for backup
     #[command(name = "identity-export")]
     IdentityExport,
@@ -247,6 +257,11 @@ async fn run_cli() -> Result<()> {
         Commands::Revoke { cluster, node } => {
             commands::revoke::handle_revoke(&cluster, &node).await
         }
+        Commands::Rename {
+            cluster,
+            node,
+            name,
+        } => commands::rename::handle_rename(&cluster, &node, &name).await,
         Commands::IdentityExport => commands::identity::handle_export().await,
         Commands::IdentityImport { file } => {
             commands::identity::handle_import(file.as_deref()).await

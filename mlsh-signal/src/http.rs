@@ -130,6 +130,7 @@ async fn list_clusters(
 #[derive(Serialize)]
 struct NodeInfo {
     node_id: String,
+    display_name: String,
     fingerprint: String,
     overlay_ip: String,
     role: String,
@@ -144,8 +145,8 @@ async fn list_nodes(
 ) -> Result<Json<Vec<NodeInfo>>, StatusCode> {
     verify_token(&headers, &state.api_token)?;
 
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT node_id, fingerprint, overlay_ip, role, created_at FROM nodes WHERE cluster_id = ?1 ORDER BY created_at",
+    let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT node_id, display_name, fingerprint, overlay_ip, role, created_at FROM nodes WHERE cluster_id = ?1 ORDER BY created_at",
     )
     .bind(&cluster_id)
     .fetch_all(&state.pool)
@@ -156,17 +157,20 @@ async fn list_nodes(
 
     let nodes = rows
         .into_iter()
-        .map(|(node_id, fingerprint, overlay_ip, role, created_at)| {
-            let online = online_nodes.contains(&node_id);
-            NodeInfo {
-                node_id,
-                fingerprint,
-                overlay_ip,
-                role,
-                created_at,
-                online,
-            }
-        })
+        .map(
+            |(node_id, display_name, fingerprint, overlay_ip, role, created_at)| {
+                let online = online_nodes.contains(&node_id);
+                NodeInfo {
+                    node_id,
+                    display_name,
+                    fingerprint,
+                    overlay_ip,
+                    role,
+                    created_at,
+                    online,
+                }
+            },
+        )
         .collect();
 
     Ok(Json(nodes))
