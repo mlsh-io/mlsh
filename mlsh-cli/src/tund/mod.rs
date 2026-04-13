@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod quic_server;
 pub mod relay_handler;
 pub mod relay_tls;
+pub mod routes;
 pub mod signal_session;
 pub mod tunnel;
 pub mod tunnel_manager;

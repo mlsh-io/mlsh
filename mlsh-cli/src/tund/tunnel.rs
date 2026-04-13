@@ -202,18 +202,23 @@ async fn tunnel_task(
             .output();
     }
 
+    // Use /32 (point-to-point) on the TUN interface — like Tailscale.
+    // The overlay subnet prefix is only used for candidate filtering & IP allocation,
+    // not for the interface netmask. Per-peer /32 routes are added dynamically.
+    let tun_prefix_len: u8 = 32;
+
     #[cfg(target_os = "linux")]
     let device = {
         tun_rs::DeviceBuilder::new()
             .name("mlsh0")
-            .ipv4(overlay_ip.to_string(), overlay_prefix_len, None)
+            .ipv4(overlay_ip.to_string(), tun_prefix_len, None)
             .mtu(1400)
             .build_async()
             .map(Arc::new)
     };
     #[cfg(not(target_os = "linux"))]
     let device = tun_rs::DeviceBuilder::new()
-        .ipv4(overlay_ip.to_string(), overlay_prefix_len, None)
+        .ipv4(overlay_ip.to_string(), tun_prefix_len, None)
         .mtu(1400)
         .build_async()
         .map(Arc::new);
@@ -230,12 +235,26 @@ async fn tunnel_task(
         }
     };
 
-    tracing::info!(
-        "TUN device created for {} with overlay IP {}/{}",
-        config.name,
-        overlay_ip,
-        overlay_prefix_len
-    );
+    let tun_name = match device.name() {
+        Ok(name) => {
+            tracing::info!(
+                "TUN device {} created for {} with overlay IP {}/32 (subnet {})",
+                name,
+                config.name,
+                overlay_ip,
+                overlay_prefix_len
+            );
+            name
+        }
+        Err(e) => {
+            tracing::warn!("Could not get TUN device name: {}", e);
+            #[cfg(target_os = "linux")]
+            let fallback = "mlsh0".to_string();
+            #[cfg(not(target_os = "linux"))]
+            let fallback = "utun".to_string();
+            fallback
+        }
+    };
 
     // DNS bind address: macOS uses localhost:53535, Linux uses overlay_ip:53.
     // macOS: packets to TUN IP aren't delivered to local listeners.
@@ -253,7 +272,7 @@ async fn tunnel_task(
     }
 
     // Shared routing table — used by TUN outbound, quic_server, relay_handler, and DNS.
-    let mut peer_table = PeerTable::new();
+    let mut peer_table = PeerTable::with_tun_name(tun_name);
     peer_table.bytes_rx = bytes_rx.clone();
 
     // Cancellation token — cancelled on shutdown to stop all spawned tasks and release resources.

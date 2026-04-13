@@ -50,6 +50,8 @@ pub struct PeerTable {
     inner: Arc<RwLock<PeerTableInner>>,
     /// Shared RX byte counter (incremented when writing to TUN).
     pub bytes_rx: Arc<AtomicU64>,
+    /// TUN device name for OS-level /32 route management.
+    tun_name: Arc<String>,
 }
 
 struct PeerTableInner {
@@ -60,21 +62,21 @@ struct PeerTableInner {
     routes: HashMap<Ipv4Addr, PeerRoute>,
 }
 
-impl Default for PeerTable {
-    fn default() -> Self {
+impl PeerTable {
+    pub fn new() -> Self {
+        Self::with_tun_name(String::new())
+    }
+
+    /// Create a PeerTable bound to a specific TUN device for OS route management.
+    pub fn with_tun_name(tun_name: String) -> Self {
         Self {
             inner: Arc::new(RwLock::new(PeerTableInner {
                 known_peers: Arc::new(Vec::new()),
                 routes: HashMap::new(),
             })),
             bytes_rx: Arc::new(AtomicU64::new(0)),
+            tun_name: Arc::new(tun_name),
         }
-    }
-}
-
-impl PeerTable {
-    pub fn new() -> Self {
-        Self::default()
     }
 
     /// Record inbound bytes (called when writing received packets to TUN).
@@ -102,27 +104,38 @@ impl PeerTable {
             .cloned()
     }
 
-    /// Insert a direct connection route.
+    /// Insert a direct connection route and add OS-level /32 route.
     pub async fn insert_direct(&self, ip: Ipv4Addr, conn: quinn::Connection) {
+        let is_new = !self.inner.read().await.routes.contains_key(&ip);
         self.inner
             .write()
             .await
             .routes
             .insert(ip, PeerRoute::Direct(conn));
+        if is_new && !self.tun_name.is_empty() {
+            super::routes::add_peer_route(ip, &self.tun_name);
+        }
     }
 
-    /// Insert a relay route.
+    /// Insert a relay route and add OS-level /32 route.
     pub async fn insert_relay(&self, ip: Ipv4Addr, tx: mpsc::Sender<Vec<u8>>) {
+        let is_new = !self.inner.read().await.routes.contains_key(&ip);
         self.inner
             .write()
             .await
             .routes
             .insert(ip, PeerRoute::Relay(tx));
+        if is_new && !self.tun_name.is_empty() {
+            super::routes::add_peer_route(ip, &self.tun_name);
+        }
     }
 
-    /// Remove a route.
+    /// Remove a route and the OS-level /32 route.
     pub async fn remove_route(&self, ip: Ipv4Addr) {
-        self.inner.write().await.routes.remove(&ip);
+        let removed = self.inner.write().await.routes.remove(&ip).is_some();
+        if removed && !self.tun_name.is_empty() {
+            super::routes::remove_peer_route(ip);
+        }
     }
 
     /// Remove a route only if it is still a relay (not upgraded to direct).
@@ -131,6 +144,10 @@ impl PeerTable {
         let mut inner = self.inner.write().await;
         if matches!(inner.routes.get(&ip), Some(PeerRoute::Relay(_))) {
             inner.routes.remove(&ip);
+            drop(inner);
+            if !self.tun_name.is_empty() {
+                super::routes::remove_peer_route(ip);
+            }
             true
         } else {
             false
