@@ -258,7 +258,10 @@ mod tests {
         buf.extend_from_slice(&cbor);
         let mut cursor = Cursor::new(buf);
         let result: anyhow::Result<StreamMessage> = read_msg(&mut cursor).await;
-        assert!(result.is_err(), "bare integer must not decode as StreamMessage");
+        assert!(
+            result.is_err(),
+            "bare integer must not decode as StreamMessage"
+        );
     }
 
     /// Unknown variant through framing: valid CBOR map with fake tag.
@@ -275,7 +278,10 @@ mod tests {
         buf.extend_from_slice(&cbor);
         let mut cursor = Cursor::new(buf);
         let result: anyhow::Result<StreamMessage> = read_msg(&mut cursor).await;
-        assert!(result.is_err(), "unknown variant through framing must be rejected");
+        assert!(
+            result.is_err(),
+            "unknown variant through framing must be rejected"
+        );
     }
 
     /// Multiple attack payloads in sequence: first bad, second valid.

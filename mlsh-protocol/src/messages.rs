@@ -212,9 +212,7 @@ mod tests {
 
     #[test]
     fn report_candidates_empty() {
-        let msg = StreamMessage::ReportCandidates {
-            candidates: vec![],
-        };
+        let msg = StreamMessage::ReportCandidates { candidates: vec![] };
         match cbor_roundtrip(&msg) {
             StreamMessage::ReportCandidates { candidates } => {
                 assert!(candidates.is_empty());
@@ -252,9 +250,7 @@ mod tests {
             target_node_id: String::new(),
         };
         match cbor_roundtrip(&msg) {
-            StreamMessage::RelayOpen {
-                target_node_id, ..
-            } => {
+            StreamMessage::RelayOpen { target_node_id, .. } => {
                 assert!(target_node_id.is_empty());
             }
             other => panic!("expected RelayOpen, got {:?}", other),
@@ -693,9 +689,7 @@ mod tests {
     fn huge_array_allocation() {
         // 0x9B + 8 bytes = array with u64 length.
         // Claim 0x00000000FFFFFFFF items (~4 billion) but provide nothing.
-        let payload: Vec<u8> = vec![
-            0x9B, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
-        ];
+        let payload: Vec<u8> = vec![0x9B, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
         let result: Result<StreamMessage, _> = ciborium::from_reader(&payload[..]);
         // Must fail without actually allocating 4B entries (OOM).
         assert!(result.is_err());
@@ -748,10 +742,7 @@ mod tests {
         use std::collections::BTreeMap;
         let mut inner = BTreeMap::new();
         inner.insert("cluster_id", ciborium::Value::Integer(42.into()));
-        inner.insert(
-            "public_key",
-            ciborium::Value::Text(String::new()),
-        );
+        inner.insert("public_key", ciborium::Value::Text(String::new()));
         let outer = ciborium::Value::Map(vec![(
             ciborium::Value::Text("node_auth".into()),
             ciborium::Value::Map(
@@ -764,7 +755,10 @@ mod tests {
         let mut buf = Vec::new();
         ciborium::into_writer(&outer, &mut buf).unwrap();
         let result: Result<StreamMessage, _> = ciborium::from_reader(&buf[..]);
-        assert!(result.is_err(), "integer in place of string must be rejected");
+        assert!(
+            result.is_err(),
+            "integer in place of string must be rejected"
+        );
     }
 
     /// Type confusion: string where an integer is expected (expires_at in Adopt).
@@ -773,13 +767,34 @@ mod tests {
         let outer = ciborium::Value::Map(vec![(
             ciborium::Value::Text("adopt".into()),
             ciborium::Value::Map(vec![
-                (ciborium::Value::Text("cluster_id".into()), ciborium::Value::Text("c1".into())),
-                (ciborium::Value::Text("pre_auth_token".into()), ciborium::Value::Text("tok".into())),
-                (ciborium::Value::Text("fingerprint".into()), ciborium::Value::Text("fp".into())),
-                (ciborium::Value::Text("node_id".into()), ciborium::Value::Text("n1".into())),
-                (ciborium::Value::Text("public_key".into()), ciborium::Value::Text("pk".into())),
-                (ciborium::Value::Text("expires_at".into()), ciborium::Value::Text("not-a-number".into())),
-                (ciborium::Value::Text("admission_cert".into()), ciborium::Value::Text("cert".into())),
+                (
+                    ciborium::Value::Text("cluster_id".into()),
+                    ciborium::Value::Text("c1".into()),
+                ),
+                (
+                    ciborium::Value::Text("pre_auth_token".into()),
+                    ciborium::Value::Text("tok".into()),
+                ),
+                (
+                    ciborium::Value::Text("fingerprint".into()),
+                    ciborium::Value::Text("fp".into()),
+                ),
+                (
+                    ciborium::Value::Text("node_id".into()),
+                    ciborium::Value::Text("n1".into()),
+                ),
+                (
+                    ciborium::Value::Text("public_key".into()),
+                    ciborium::Value::Text("pk".into()),
+                ),
+                (
+                    ciborium::Value::Text("expires_at".into()),
+                    ciborium::Value::Text("not-a-number".into()),
+                ),
+                (
+                    ciborium::Value::Text("admission_cert".into()),
+                    ciborium::Value::Text("cert".into()),
+                ),
             ]),
         )]);
         let mut buf = Vec::new();
@@ -795,9 +810,18 @@ mod tests {
         let outer = ciborium::Value::Map(vec![(
             ciborium::Value::Text("node_auth".into()),
             ciborium::Value::Map(vec![
-                (ciborium::Value::Text("cluster_id".into()), ciborium::Value::Text("first".into())),
-                (ciborium::Value::Text("cluster_id".into()), ciborium::Value::Text("second".into())),
-                (ciborium::Value::Text("public_key".into()), ciborium::Value::Text("pk".into())),
+                (
+                    ciborium::Value::Text("cluster_id".into()),
+                    ciborium::Value::Text("first".into()),
+                ),
+                (
+                    ciborium::Value::Text("cluster_id".into()),
+                    ciborium::Value::Text("second".into()),
+                ),
+                (
+                    ciborium::Value::Text("public_key".into()),
+                    ciborium::Value::Text("pk".into()),
+                ),
             ]),
         )]);
         let mut buf = Vec::new();
@@ -818,9 +842,10 @@ mod tests {
     fn unknown_variant_tag_rejected() {
         let outer = ciborium::Value::Map(vec![(
             ciborium::Value::Text("totally_fake_command".into()),
-            ciborium::Value::Map(vec![
-                (ciborium::Value::Text("payload".into()), ciborium::Value::Text("evil".into())),
-            ]),
+            ciborium::Value::Map(vec![(
+                ciborium::Value::Text("payload".into()),
+                ciborium::Value::Text("evil".into()),
+            )]),
         )]);
         let mut buf = Vec::new();
         ciborium::into_writer(&outer, &mut buf).unwrap();
@@ -834,9 +859,18 @@ mod tests {
         let outer = ciborium::Value::Map(vec![(
             ciborium::Value::Text("revoke".into()),
             ciborium::Value::Map(vec![
-                (ciborium::Value::Text("cluster_id".into()), ciborium::Value::Text("c1".into())),
-                (ciborium::Value::Text("target_node_id".into()), ciborium::Value::Text("n2".into())),
-                (ciborium::Value::Text("injected_field".into()), ciborium::Value::Text("evil".into())),
+                (
+                    ciborium::Value::Text("cluster_id".into()),
+                    ciborium::Value::Text("c1".into()),
+                ),
+                (
+                    ciborium::Value::Text("target_node_id".into()),
+                    ciborium::Value::Text("n2".into()),
+                ),
+                (
+                    ciborium::Value::Text("injected_field".into()),
+                    ciborium::Value::Text("evil".into()),
+                ),
             ]),
         )]);
         let mut buf = Vec::new();
@@ -895,6 +929,9 @@ mod tests {
         let decoded: NodeInfo = ciborium::from_reader(&cbor_map[..]).unwrap();
         assert_eq!(decoded.node_id, "n1");
         assert!(decoded.online);
-        assert!(!decoded.has_admission_cert, "has_admission_cert should default to false");
+        assert!(
+            !decoded.has_admission_cert,
+            "has_admission_cert should default to false"
+        );
     }
 }
