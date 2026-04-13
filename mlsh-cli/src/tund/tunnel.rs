@@ -131,11 +131,18 @@ impl ManagedTunnel {
 
     /// Shut down this tunnel.
     pub async fn stop(&mut self) {
-        // Signal shutdown — tunnel_task will clean up signal session + DNS
         let _ = self.shutdown_tx.send(true);
-        if let Some(task) = self.task.take() {
-            // Wait for graceful shutdown (don't abort — sub-tasks need cleanup)
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), task).await;
+        if let Some(mut task) = self.task.take() {
+            if tokio::time::timeout(std::time::Duration::from_millis(500), &mut task)
+                .await
+                .is_err()
+            {
+                tracing::warn!(
+                    "Tunnel '{}' didn't stop in 500ms, aborting",
+                    self.cluster_name
+                );
+                task.abort();
+            }
         }
         dns::remove_resolver(&self.cluster_name);
     }
@@ -249,12 +256,20 @@ async fn tunnel_task(
     let mut peer_table = PeerTable::new();
     peer_table.bytes_rx = bytes_rx.clone();
 
+    // Cancellation token — cancelled on shutdown to stop all spawned tasks and release resources.
+    let cancel = tokio_util::sync::CancellationToken::new();
+
     // Create a shared QUIC endpoint for overlay server + signal client + direct peer connections.
     // A single UDP socket ensures signal sees the correct remote_address for srflx candidates.
     let (endpoint, overlay_port) = match create_shared_endpoint(&config.identity_dir) {
         Ok((ep, port)) => {
             tracing::info!("QUIC endpoint listening on port {}", port);
-            super::quic_server::start(ep.clone(), device.clone(), peer_table.clone());
+            super::quic_server::start(
+                ep.clone(),
+                device.clone(),
+                peer_table.clone(),
+                cancel.clone(),
+            );
             (ep, port)
         }
         Err(e) => {
@@ -274,10 +289,10 @@ async fn tunnel_task(
             }
         },
         endpoint.clone(),
+        cancel.clone(),
         Some(device.clone()),
         peer_table.clone(),
         overlay_port,
-        overlay_ip,
         overlay_prefix_len,
     );
     let dns_config = super::overlay_dns::DnsConfig {
@@ -325,6 +340,7 @@ async fn tunnel_task(
 
         let run_ctx = TunnelRunContext {
             config: &config,
+            cancel: &cancel,
             endpoint: &endpoint,
             overlay_ip,
             device: &device,
@@ -384,8 +400,11 @@ async fn tunnel_task(
         backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 
-    let _ = dns_shutdown_tx.send(true);
+    // Shutdown: cancel all tasks, close endpoint, cleanup DNS
+    cancel.cancel();
+    endpoint.close(quinn::VarInt::from_u32(0), b"shutdown");
     session.shutdown();
+    let _ = dns_shutdown_tx.send(true);
     dns::remove_resolver(&config.name);
 }
 
@@ -399,6 +418,7 @@ const PROBE_STAGGER: Duration = Duration::from_millis(100);
 
 struct TunnelRunContext<'a> {
     config: &'a ClusterConfig,
+    cancel: &'a tokio_util::sync::CancellationToken,
     endpoint: &'a quinn::Endpoint,
     overlay_ip: Ipv4Addr,
     device: &'a Arc<tun_rs::AsyncDevice>,
@@ -473,6 +493,7 @@ async fn establish_and_run(
     // Connection manager — watches peer list, establishes connections per peer
     let cm_session_peers = session.peers.clone();
     let cm_session_conn = session.connection.clone();
+    let cm_cancel = ctx.cancel.clone();
     let cm_table = peer_table.clone();
     let cm_device = device.clone();
     let cm_node_id = config.node_id.clone();
@@ -482,6 +503,7 @@ async fn establish_and_run(
     let cm_endpoint = ctx.endpoint.clone();
     let conn_manager = tokio::spawn(async move {
         let cm_ctx = ConnectionManagerContext {
+            cancel: &cm_cancel,
             endpoint: &cm_endpoint,
             peer_table: &cm_table,
             device: &cm_device,
@@ -728,6 +750,7 @@ async fn run_tun_outbound(
 /// Watches the peer list from signal and manages per-peer connections.
 /// For each peer: tries direct QUIC, falls back to relay, spawns inbound task.
 struct ConnectionManagerContext<'a> {
+    cancel: &'a tokio_util::sync::CancellationToken,
     endpoint: &'a quinn::Endpoint,
     peer_table: &'a PeerTable,
     device: &'a Arc<tun_rs::AsyncDevice>,
@@ -805,6 +828,7 @@ async fn run_connection_manager(
 
             // Spawn a task to establish connection to this peer
             let peer_info = peer.clone();
+            let cancel = ctx.cancel.clone();
             let ep = ctx.endpoint.clone();
             let table = ctx.peer_table.clone();
             let dev = ctx.device.clone();
@@ -816,6 +840,7 @@ async fn run_connection_manager(
 
             let handle = tokio::spawn(async move {
                 establish_peer_connection(PeerConnectionContext {
+                    cancel,
                     endpoint: ep,
                     peer: peer_info,
                     peer_ip,
@@ -842,6 +867,7 @@ async fn run_connection_manager(
                 // Signal reconnected — retry peers with finished tasks
                 tracing::debug!("Signal connection changed, re-evaluating peer connections");
             }
+            _ = ctx.cancel.cancelled() => { break; }
             // Periodically check for finished tasks to retry
             _ = tokio::time::sleep(Duration::from_secs(30)) => {}
         }
@@ -857,6 +883,7 @@ async fn run_connection_manager(
 /// Runs until the connection drops.
 /// Owned context for a peer connection task (must be Send + 'static for tokio::spawn).
 struct PeerConnectionContext {
+    cancel: tokio_util::sync::CancellationToken,
     endpoint: quinn::Endpoint,
     peer: PeerInfo,
     peer_ip: Ipv4Addr,
@@ -910,7 +937,10 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
                 peer_table.insert_direct(peer_ip, conn.clone()).await;
 
                 // Run inbound task — reads from peer's QUIC streams, writes to TUN
-                spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()).await;
+                tokio::select! {
+                    _ = spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()) => {}
+                    _ = ctx.cancel.cancelled() => {}
+                }
 
                 // Connection ended — remove route
                 peer_table.remove_route(peer_ip).await;
@@ -1019,6 +1049,7 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
             tokio::select! {
                 _ = inbound => {}
                 _ = outbound => {}
+                _ = ctx.cancel.cancelled() => {}
             }
 
             if peer_table.remove_relay_only(peer_ip).await {

@@ -72,6 +72,7 @@ impl SignalSessionHandle {
 struct SessionContext {
     creds: SignalCredentials,
     endpoint: quinn::Endpoint,
+    cancel: tokio_util::sync::CancellationToken,
     ip_tx: watch::Sender<Option<Ipv4Addr>>,
     peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
     conn_tx: watch::Sender<Option<quinn::Connection>>,
@@ -88,10 +89,10 @@ struct SessionContext {
 pub fn spawn(
     creds: SignalCredentials,
     endpoint: quinn::Endpoint,
+    cancel: tokio_util::sync::CancellationToken,
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
-    _overlay_ip: Ipv4Addr,
     overlay_prefix_len: u8,
 ) -> SignalSessionHandle {
     let (ip_tx, ip_rx) = watch::channel(None);
@@ -102,6 +103,7 @@ pub fn spawn(
     let ctx = SessionContext {
         creds,
         endpoint,
+        cancel,
         ip_tx,
         peers_tx,
         conn_tx,
@@ -251,11 +253,17 @@ async fn run_session(
                                 key_pem: creds.key_pem.clone(),
                                 fingerprint: creds.fingerprint.clone(),
                             };
+                            let relay_cancel = ctx.cancel.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = super::relay_handler::handle_incoming_relay(
-                                    relay_send, relay_recv, dev, my_ip, table, relay_identity,
-                                ).await {
-                                    tracing::debug!("Incoming relay error: {}", e);
+                                tokio::select! {
+                                    result = super::relay_handler::handle_incoming_relay(
+                                        relay_send, relay_recv, dev, my_ip, table, relay_identity,
+                                    ) => {
+                                        if let Err(e) = result {
+                                            tracing::debug!("Incoming relay error: {}", e);
+                                        }
+                                    }
+                                    _ = relay_cancel.cancelled() => {}
                                 }
                             });
                         } else {

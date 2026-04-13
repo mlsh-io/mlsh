@@ -15,8 +15,13 @@ use super::peer_table::{self, PeerTable};
 use mlsh_protocol::alpn::ALPN_OVERLAY;
 
 /// Start the overlay accept loop on a shared QUIC endpoint.
-pub fn start(endpoint: quinn::Endpoint, device: Arc<tun_rs::AsyncDevice>, peer_table: PeerTable) {
-    tokio::spawn(accept_loop(endpoint, device, peer_table));
+pub fn start(
+    endpoint: quinn::Endpoint,
+    device: Arc<tun_rs::AsyncDevice>,
+    peer_table: PeerTable,
+    cancel: tokio_util::sync::CancellationToken,
+) {
+    tokio::spawn(accept_loop(endpoint, device, peer_table, cancel));
 }
 
 const MAX_OVERLAY_CONNECTIONS: usize = 64;
@@ -25,12 +30,17 @@ async fn accept_loop(
     endpoint: quinn::Endpoint,
     device: Arc<tun_rs::AsyncDevice>,
     peer_table: PeerTable,
+    cancel: tokio_util::sync::CancellationToken,
 ) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_OVERLAY_CONNECTIONS));
 
     loop {
-        let Some(incoming) = endpoint.accept().await else {
-            break;
+        let incoming = tokio::select! {
+            incoming = endpoint.accept() => match incoming {
+                Some(i) => i,
+                None => break,
+            },
+            _ = cancel.cancelled() => break,
         };
         let permit = match semaphore.clone().try_acquire_owned() {
             Ok(p) => p,
@@ -75,6 +85,7 @@ async fn accept_loop(
 
         // Spawn per-connection handler — no TUN reader, only inbound (peer → TUN).
         // Outbound is handled by the single TUN reader via PeerTable.
+        let conn_cancel = cancel.clone();
         tokio::spawn(async move {
             let _permit = permit; // held for the lifetime of this connection
 
@@ -90,7 +101,10 @@ async fn accept_loop(
                 tracing::info!("Inserted direct route to {}", ip);
 
                 // Inbound only: read packets from peer, write to TUN
-                run_inbound(conn.clone(), &device, &table).await;
+                tokio::select! {
+                    _ = run_inbound(conn.clone(), &device, &table) => {}
+                    _ = conn_cancel.cancelled() => {}
+                }
 
                 table.remove_route(ip).await;
                 tracing::info!("Direct connection from {} ended", ip);
