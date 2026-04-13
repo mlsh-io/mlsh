@@ -18,6 +18,7 @@ use mlsh_protocol::types::{Candidate, PeerInfo};
 const PING_INTERVAL: Duration = Duration::from_secs(15);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 /// Credentials for connecting to signal.
 #[derive(Clone)]
@@ -118,9 +119,6 @@ pub fn spawn(
 }
 
 async fn session_loop(ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool>) {
-    let mut backoff = Duration::from_secs(1);
-    let max_backoff = Duration::from_secs(30);
-
     shutdown_rx.borrow_and_update();
 
     loop {
@@ -130,27 +128,19 @@ async fn session_loop(ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool
                 break;
             }
             Ok(false) => {
-                tracing::info!("Signal session closed, reconnecting in {:?}...", backoff);
-                // Don't reset backoff — if we're being evicted by ourselves
-                // (duplicate session), the backoff prevents a reconnection storm.
+                tracing::info!("Signal session closed, reconnecting in {RECONNECT_DELAY:?}...");
             }
             Err(e) => {
-                tracing::warn!(
-                    "Signal session error: {:#}, reconnecting in {:?}",
-                    e,
-                    backoff
-                );
+                tracing::warn!("Signal session error: {e:#}, reconnecting in {RECONNECT_DELAY:?}");
             }
         }
 
         tokio::select! {
-            _ = tokio::time::sleep(backoff) => {}
+            _ = tokio::time::sleep(RECONNECT_DELAY) => {}
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() { break; }
             }
         }
-
-        backoff = (backoff * 2).min(max_backoff);
     }
 }
 
@@ -229,6 +219,7 @@ async fn run_session(
 
     // Message loop — also accept incoming bi-streams (relay from signal)
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    let mut last_ping = std::time::Instant::now();
     let conn_for_accept = conn.clone();
 
     loop {
@@ -290,6 +281,19 @@ async fn run_session(
                 }
             }
             _ = ping_interval.tick() => {
+                let elapsed = last_ping.elapsed();
+                last_ping = std::time::Instant::now();
+
+                // If a 15s tick took >45s, system likely slept — reconnect
+                if elapsed > Duration::from_secs(45) {
+                    tracing::warn!(
+                        "Detected system sleep (ping drift: {:.0}s) — forcing reconnection",
+                        elapsed.as_secs_f64()
+                    );
+                    conn.close(quinn::VarInt::from_u32(1), b"sleep-detected");
+                    return Ok(false);
+                }
+
                 if framing::write_msg(&mut send, &StreamMessage::Ping).await.is_err() {
                     return Ok(false);
                 }
