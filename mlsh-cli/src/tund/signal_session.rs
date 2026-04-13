@@ -71,6 +71,7 @@ impl SignalSessionHandle {
 /// Shared state for the signal session loop.
 struct SessionContext {
     creds: SignalCredentials,
+    endpoint: quinn::Endpoint,
     ip_tx: watch::Sender<Option<Ipv4Addr>>,
     peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
     conn_tx: watch::Sender<Option<quinn::Connection>>,
@@ -86,6 +87,7 @@ struct SessionContext {
 /// accepted and forwarded via the shared `peer_table`.
 pub fn spawn(
     creds: SignalCredentials,
+    endpoint: quinn::Endpoint,
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
@@ -99,6 +101,7 @@ pub fn spawn(
 
     let ctx = SessionContext {
         creds,
+        endpoint,
         ip_tx,
         peers_tx,
         conn_tx,
@@ -160,7 +163,7 @@ async fn run_session(
     let overlay_prefix_len = ctx.overlay_prefix_len;
 
     let addr = resolve_addr(&creds.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &creds.signal_endpoint, creds).await?;
+    let conn = connect_to_signal(&ctx.endpoint, addr, &creds.signal_endpoint, creds).await?;
 
     // Expose connection to the tunnel for relay/direct streams
     let _ = conn_tx.send(Some(conn.clone()));
@@ -456,6 +459,7 @@ fn handle_push_message(
 // --- QUIC connection helpers
 
 async fn connect_to_signal(
+    endpoint: &quinn::Endpoint,
     addr: SocketAddr,
     endpoint_str: &str,
     creds: &SignalCredentials,
@@ -494,20 +498,15 @@ async fn connect_to_signal(
     transport.keep_alive_interval(Some(PING_INTERVAL));
     client_config.transport_config(Arc::new(transport));
 
-    let bind_addr: SocketAddr = if addr.is_ipv6() {
-        "[::]:0".parse().unwrap()
-    } else {
-        "0.0.0.0:0".parse().unwrap()
-    };
-    let mut endpoint = quinn::Endpoint::client(bind_addr)?;
-    endpoint.set_default_client_config(client_config);
-
     let sni_host = endpoint_str.split(':').next().unwrap_or(endpoint_str);
 
-    let conn = tokio::time::timeout(CONNECT_TIMEOUT, endpoint.connect(addr, sni_host)?)
-        .await
-        .map_err(|_| anyhow::anyhow!("Timed out connecting to signal"))?
-        .context("Failed to connect to signal")?;
+    let conn = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        endpoint.connect_with(client_config, addr, sni_host)?,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timed out connecting to signal"))?
+    .context("Failed to connect to signal")?;
 
     Ok(conn)
 }

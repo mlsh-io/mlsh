@@ -249,23 +249,17 @@ async fn tunnel_task(
     let mut peer_table = PeerTable::new();
     peer_table.bytes_rx = bytes_rx.clone();
 
-    // Start QUIC overlay server on a random port (for direct peer connections).
-    let overlay_port = match super::quic_server::start(
-        overlay_ip,
-        device.clone(),
-        peer_table.clone(),
-        &config.identity_dir,
-    ) {
-        Ok(server) => {
-            tracing::info!("QUIC overlay server listening on port {}", server.port);
-            server.port
+    // Create a shared QUIC endpoint for overlay server + signal client + direct peer connections.
+    // A single UDP socket ensures signal sees the correct remote_address for srflx candidates.
+    let (endpoint, overlay_port) = match create_shared_endpoint(&config.identity_dir) {
+        Ok((ep, port)) => {
+            tracing::info!("QUIC endpoint listening on port {}", port);
+            super::quic_server::start(ep.clone(), device.clone(), peer_table.clone());
+            (ep, port)
         }
         Err(e) => {
-            tracing::warn!(
-                "Failed to start QUIC overlay server: {} (direct connections disabled)",
-                e
-            );
-            0
+            tracing::error!("Failed to create QUIC endpoint: {} — cannot continue", e);
+            return;
         }
     };
 
@@ -279,6 +273,7 @@ async fn tunnel_task(
                 return;
             }
         },
+        endpoint.clone(),
         Some(device.clone()),
         peer_table.clone(),
         overlay_port,
@@ -330,6 +325,7 @@ async fn tunnel_task(
 
         let run_ctx = TunnelRunContext {
             config: &config,
+            endpoint: &endpoint,
             overlay_ip,
             device: &device,
             session: &session,
@@ -403,6 +399,7 @@ const PROBE_STAGGER: Duration = Duration::from_millis(100);
 
 struct TunnelRunContext<'a> {
     config: &'a ClusterConfig,
+    endpoint: &'a quinn::Endpoint,
     overlay_ip: Ipv4Addr,
     device: &'a Arc<tun_rs::AsyncDevice>,
     session: &'a signal_session::SignalSessionHandle,
@@ -482,8 +479,10 @@ async fn establish_and_run(
     let cm_cluster_id = config.cluster_id.clone();
     let cm_identity_dir = config.identity_dir.clone();
     let cm_overlay_ip = overlay_ip;
+    let cm_endpoint = ctx.endpoint.clone();
     let conn_manager = tokio::spawn(async move {
         let cm_ctx = ConnectionManagerContext {
+            endpoint: &cm_endpoint,
             peer_table: &cm_table,
             device: &cm_device,
             overlay_ip: cm_overlay_ip,
@@ -530,11 +529,30 @@ struct ProbeResult {
     via: String,
 }
 
+/// Create a shared QUIC endpoint that serves as both overlay server and client
+/// for signal + direct peer connections. A single UDP socket ensures signal
+/// observes the correct remote_address for srflx candidates.
+fn create_shared_endpoint(identity_dir: &std::path::Path) -> Result<(quinn::Endpoint, u16)> {
+    let cert_pem =
+        std::fs::read_to_string(identity_dir.join("cert.pem")).context("Missing identity cert")?;
+    let key_pem =
+        std::fs::read_to_string(identity_dir.join("key.pem")).context("Missing identity key")?;
+    let cert_der = super::quic_server::pem_to_der(&cert_pem)?;
+    let server_config = super::quic_server::build_server_config(&cert_der, &key_pem)?;
+
+    let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let endpoint = quinn::Endpoint::server(server_config, bind_addr)
+        .context("Failed to bind QUIC endpoint")?;
+    let port = endpoint.local_addr()?.port();
+
+    Ok((endpoint, port))
+}
+
 /// Try direct QUIC connection to peer candidates (happy eyeballs).
 async fn probe_candidates(
+    endpoint: &quinn::Endpoint,
     candidates: &[Candidate],
     expected_fingerprint: &str,
-    _overlay_ip: Ipv4Addr,
     identity_dir: &std::path::Path,
 ) -> Result<ProbeResult> {
     use std::net::SocketAddr;
@@ -557,6 +575,7 @@ async fn probe_candidates(
         let kind = candidate.kind.clone();
         let fp = expected_fingerprint.to_string();
         let id_dir = identity_dir.to_path_buf();
+        let ep = endpoint.clone();
         let tx = winner_tx.clone();
         let token = cancel.clone();
 
@@ -578,7 +597,7 @@ async fn probe_candidates(
 
             tracing::debug!("Probing {} candidate {}", kind, addr);
 
-            match connect_overlay_direct(addr, &fp, &id_dir).await {
+            match connect_overlay_direct(&ep, addr, &fp, &id_dir).await {
                 Ok(conn) => {
                     let mut guard = tx.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(sender) = guard.take() {
@@ -611,6 +630,7 @@ async fn probe_candidates(
 
 /// Connect directly to a peer via QUIC with fingerprint verification.
 async fn connect_overlay_direct(
+    endpoint: &quinn::Endpoint,
     addr: std::net::SocketAddr,
     expected_fingerprint: &str,
     identity_dir: &std::path::Path,
@@ -655,18 +675,13 @@ async fn connect_overlay_direct(
     transport.keep_alive_interval(Some(Duration::from_secs(15)));
     client_config.transport_config(Arc::new(transport));
 
-    let bind: std::net::SocketAddr = if addr.is_ipv6() {
-        "[::]:0".parse().unwrap()
-    } else {
-        "0.0.0.0:0".parse().unwrap()
-    };
-    let mut endpoint = quinn::Endpoint::client(bind)?;
-    endpoint.set_default_client_config(client_config);
-
     let sni = addr.ip().to_string();
-    let conn = tokio::time::timeout(DIRECT_CONNECT_TIMEOUT, endpoint.connect(addr, &sni)?)
-        .await
-        .map_err(|_| anyhow::anyhow!("Timeout"))??;
+    let conn = tokio::time::timeout(
+        DIRECT_CONNECT_TIMEOUT,
+        endpoint.connect_with(client_config, addr, &sni)?,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timeout"))??;
 
     Ok(conn)
 }
@@ -713,6 +728,7 @@ async fn run_tun_outbound(
 /// Watches the peer list from signal and manages per-peer connections.
 /// For each peer: tries direct QUIC, falls back to relay, spawns inbound task.
 struct ConnectionManagerContext<'a> {
+    endpoint: &'a quinn::Endpoint,
     peer_table: &'a PeerTable,
     device: &'a Arc<tun_rs::AsyncDevice>,
     overlay_ip: Ipv4Addr,
@@ -789,6 +805,7 @@ async fn run_connection_manager(
 
             // Spawn a task to establish connection to this peer
             let peer_info = peer.clone();
+            let ep = ctx.endpoint.clone();
             let table = ctx.peer_table.clone();
             let dev = ctx.device.clone();
             let cid = ctx.cluster_id.to_string();
@@ -799,6 +816,7 @@ async fn run_connection_manager(
 
             let handle = tokio::spawn(async move {
                 establish_peer_connection(PeerConnectionContext {
+                    endpoint: ep,
                     peer: peer_info,
                     peer_ip,
                     overlay_ip,
@@ -839,6 +857,7 @@ async fn run_connection_manager(
 /// Runs until the connection drops.
 /// Owned context for a peer connection task (must be Send + 'static for tokio::spawn).
 struct PeerConnectionContext {
+    endpoint: quinn::Endpoint,
     peer: PeerInfo,
     peer_ip: Ipv4Addr,
     overlay_ip: Ipv4Addr,
@@ -873,9 +892,9 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
         );
 
         match probe_candidates(
+            &ctx.endpoint,
             &peer.candidates,
             &peer.fingerprint,
-            overlay_ip,
             identity_dir,
         )
         .await

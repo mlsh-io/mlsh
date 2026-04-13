@@ -5,7 +5,7 @@
 //! Each incoming connection is identified by its TLS fingerprint and inserted
 //! into the shared PeerTable for routing.
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -14,41 +14,9 @@ use super::peer_table::{self, PeerTable};
 
 use mlsh_protocol::alpn::ALPN_OVERLAY;
 
-/// Result of starting the overlay server.
-pub struct OverlayServer {
-    /// Port the server is listening on.
-    pub port: u16,
-}
-
-/// Start the QUIC overlay server on a random port.
-pub fn start(
-    _overlay_ip: Ipv4Addr,
-    device: Arc<tun_rs::AsyncDevice>,
-    peer_table: PeerTable,
-    identity_dir: &std::path::Path,
-) -> Result<OverlayServer> {
-    // Load identity
-    let cert_pem =
-        std::fs::read_to_string(identity_dir.join("cert.pem")).context("Missing identity cert")?;
-    let key_pem =
-        std::fs::read_to_string(identity_dir.join("key.pem")).context("Missing identity key")?;
-
-    // Parse cert DER from PEM
-    let cert_der = pem_to_der(&cert_pem)?;
-
-    let server_config = build_server_config(&cert_der, &key_pem)?;
-
-    // Bind to random port
-    let bind_addr: SocketAddr = "0.0.0.0:0".parse().unwrap();
-    let endpoint = quinn::Endpoint::server(server_config, bind_addr)
-        .context("Failed to bind QUIC overlay server")?;
-
-    let port = endpoint.local_addr()?.port();
-
-    // Spawn accept loop
+/// Start the overlay accept loop on a shared QUIC endpoint.
+pub fn start(endpoint: quinn::Endpoint, device: Arc<tun_rs::AsyncDevice>, peer_table: PeerTable) {
     tokio::spawn(accept_loop(endpoint, device, peer_table));
-
-    Ok(OverlayServer { port })
 }
 
 const MAX_OVERLAY_CONNECTIONS: usize = 64;
@@ -185,7 +153,7 @@ async fn find_peer_ip_by_fingerprint(table: &PeerTable, fingerprint: &str) -> Op
         .and_then(|p| p.overlay_ip.parse().ok())
 }
 
-fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerConfig> {
+pub(super) fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerConfig> {
     use rustls::pki_types::CertificateDer;
     use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 
@@ -279,7 +247,7 @@ fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerCo
     Ok(server_config)
 }
 
-fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
+pub(super) fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     use base64::Engine;
     let pem = pem.trim();
     let b64: String = pem
