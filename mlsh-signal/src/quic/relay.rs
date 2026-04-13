@@ -155,7 +155,32 @@ pub async fn handle_relay(
     let target_to_cli = tokio::io::copy(&mut target_recv, &mut cli_send);
 
     let (r1, r2) = tokio::join!(cli_to_target, target_to_cli);
-    debug!(cluster_id, initiator_to_target = ?r1.ok(), target_to_initiator = ?r2.ok(), "Relay splice finished");
+    let cli_to_target_bytes = r1.as_ref().copied().unwrap_or(0);
+    let target_to_cli_bytes = r2.as_ref().copied().unwrap_or(0);
+    debug!(
+        cluster_id,
+        cli_to_target_bytes, target_to_cli_bytes, "Relay splice finished"
+    );
+
+    // Record bandwidth for both peers
+    state
+        .metrics
+        .record_relay(
+            cluster_id,
+            node_id,
+            cli_to_target_bytes,
+            target_to_cli_bytes,
+        )
+        .await;
+    state
+        .metrics
+        .record_relay(
+            cluster_id,
+            target_node_id,
+            target_to_cli_bytes,
+            cli_to_target_bytes,
+        )
+        .await;
 
     let _ = cli_send.finish();
     let _ = target_send.finish();

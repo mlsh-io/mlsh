@@ -15,12 +15,14 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::cluster;
+use crate::metrics::Metrics;
 use crate::sessions::SessionStore;
 
 struct HttpState {
     pool: SqlitePool,
     api_token: String,
     sessions: Arc<SessionStore>,
+    metrics: Arc<Metrics>,
 }
 
 // -- Auth middleware ----------------------------------------------------------
@@ -197,6 +199,12 @@ async fn delete_cluster(
     }
 }
 
+// -- Prometheus metrics -------------------------------------------------------
+
+async fn metrics(State(state): State<Arc<HttpState>>) -> (StatusCode, String) {
+    (StatusCode::OK, state.metrics.prometheus().await)
+}
+
 // -- Server ------------------------------------------------------------------
 
 /// Start the internal HTTP server. Runs until the shutdown receiver fires.
@@ -205,15 +213,18 @@ pub async fn run(
     pool: SqlitePool,
     api_token: String,
     sessions: Arc<SessionStore>,
+    metrics_ref: Arc<Metrics>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let state = Arc::new(HttpState {
         pool,
         api_token,
         sessions,
+        metrics: metrics_ref,
     });
 
     let app = Router::new()
+        .route("/metrics", get(metrics))
         .route("/internal/clusters", post(create_cluster))
         .route("/internal/clusters", get(list_clusters))
         .route("/internal/clusters/{cluster_id}", delete(delete_cluster))

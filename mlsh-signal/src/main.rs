@@ -103,6 +103,7 @@ async fn run_server() -> anyhow::Result<()> {
     info!("Overlay subnet: {}", overlay_subnet.cidr);
 
     let sessions = SessionStore::new();
+    let metrics = mlsh_signal::metrics::Metrics::new(Arc::clone(&sessions));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -113,6 +114,7 @@ async fn run_server() -> anyhow::Result<()> {
         let http_pool = pool.clone();
         let http_token = api_token.clone();
         let http_sessions = Arc::clone(&sessions);
+        let http_metrics = Arc::clone(&metrics);
         let http_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             if let Err(e) = mlsh_signal::http::run(
@@ -120,6 +122,7 @@ async fn run_server() -> anyhow::Result<()> {
                 http_pool,
                 http_token,
                 http_sessions,
+                http_metrics,
                 http_shutdown,
             )
             .await
@@ -136,6 +139,7 @@ async fn run_server() -> anyhow::Result<()> {
         sessions,
         config: cfg,
         overlay_subnet,
+        metrics,
     });
 
     tokio::spawn(async move {

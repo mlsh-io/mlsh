@@ -216,6 +216,19 @@ impl SessionStore {
         }
     }
 
+    /// Return online counts for all clusters.
+    pub async fn all_online_counts(&self) -> Vec<(String, usize)> {
+        let sessions = self.sessions.read().await;
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for (cid, _) in sessions.keys() {
+            *counts.entry(cid.as_str()).or_default() += 1;
+        }
+        counts
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
     /// Return the number of active sessions in this cluster.
     pub async fn online_count(&self, cluster_id: &str) -> usize {
         let sessions = self.sessions.read().await;

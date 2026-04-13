@@ -15,6 +15,7 @@ pub struct QuicState {
     pub sessions: Arc<SessionStore>,
     pub config: Arc<crate::config::Config>,
     pub overlay_subnet: crate::db::OverlaySubnet,
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 /// QUIC accept loop. Runs until the endpoint is closed or the shutdown receiver fires.
