@@ -92,6 +92,8 @@ jobs:
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
         run: cargo build --release -p mlsh-cli --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
 
       - name: Create mlshtund symlink
         if: matrix.archive == 'tar.gz'
