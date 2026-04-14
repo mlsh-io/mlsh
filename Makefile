@@ -16,32 +16,49 @@ GIT_VERSION  := $(shell git describe --tags --always --dirty=-dirty 2>/dev/null 
 # Top-level targets
 # ---------------------------------------------------------------------------
 
-.PHONY: help fmt lint app app-universal cli cli-universal windows menubar menubar-universal signal signal-image clean
-
+.PHONY: help
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
+.PHONY: fmt
 fmt: ## Format all Rust code
 	cargo fmt --all
 
+.PHONY: lint
 lint: ## Run fmt check + clippy on all crates
 	cargo fmt --all --check
 	cargo clippy --all -- -D warnings -A clippy::uninlined_format_args
 
+.PHONY: app
 app: cli menubar bundle ## Build MLSH.app for current arch
 	@echo "\nDone: $(APP)  (run with: open $(APP))"
 
+.PHONY: app-universal
 app-universal: cli-universal menubar-universal bundle ## Build MLSH.app universal (x86_64 + arm64)
 	@echo "\nDone: $(APP)  — universal (run with: open $(APP))"
+
+.PHONY: pkg
+pkg: app-universal ## Build macOS .pkg installer (universal)
+	@installer/macos/build-pkg.sh "$(GIT_VERSION)" "$(APP)"
+
+.PHONY: deb
+deb: cli ## Build .deb package (current arch)
+	@installer/linux/build-deb.sh "$(GIT_VERSION)" "$$(dpkg --print-architecture)" target/release
+
+.PHONY: rpm
+rpm: cli ## Build .rpm package (current arch)
+	@installer/linux/build-rpm.sh "$(GIT_VERSION)" "$$(uname -m)" target/release
 
 # ---------------------------------------------------------------------------
 # Rust
 # ---------------------------------------------------------------------------
 
+.PHONY: cli
 cli: ## Build mlsh + mlshtund (current arch)
 	@echo "==> Building Rust binaries..."
 	cargo build --release -p mlsh-cli
 
+.PHONY: cli-universal
 cli-universal: ## Build mlsh + mlshtund universal (x86_64 + arm64)
 	@echo "==> Building Rust binaries (universal)..."
 	cargo build --release -p mlsh-cli --target aarch64-apple-darwin
@@ -51,6 +68,7 @@ cli-universal: ## Build mlsh + mlshtund universal (x86_64 + arm64)
 # Windows
 # ---------------------------------------------------------------------------
 
+.PHONY: windows
 windows: ## Build mlsh.exe + mlshtund.exe (cross-compile via cargo-xwin)
 	@echo "==> Building Windows binaries ($(WIN_TARGET))..."
 	PATH="/opt/homebrew/opt/llvm/bin:$$PATH" cargo xwin build --release -p mlsh-cli --target $(WIN_TARGET)
@@ -64,10 +82,12 @@ windows: ## Build mlsh.exe + mlshtund.exe (cross-compile via cargo-xwin)
 # Signal server
 # ---------------------------------------------------------------------------
 
+.PHONY: signal
 signal: ## Build mlsh-signal (current arch)
 	@echo "==> Building mlsh-signal..."
 	cargo build --release -p mlsh-signal
 
+.PHONY: signal-image
 signal-image: ## Build mlsh-signal Docker image (linux/amd64,arm64)
 	@echo "==> Building mlsh-signal Docker image..."
 	docker buildx build \
@@ -82,10 +102,12 @@ signal-image: ## Build mlsh-signal Docker image (linux/amd64,arm64)
 # Swift
 # ---------------------------------------------------------------------------
 
+.PHONY: menubar
 menubar: ## Build Swift menu bar app (current arch)
 	@echo "==> Building Swift menu bar app..."
 	cd $(SWIFT_DIR) && swift build -c release
 
+.PHONY: menubar-universal
 menubar-universal: ## Build Swift menu bar app universal (x86_64 + arm64)
 	@echo "==> Building Swift menu bar app (universal)..."
 	cd $(SWIFT_DIR) && swift build -c release --arch arm64 --arch x86_64
@@ -95,7 +117,7 @@ menubar-universal: ## Build Swift menu bar app universal (x86_64 + arm64)
 # ---------------------------------------------------------------------------
 
 .PHONY: bundle
-bundle:
+bundle: ## Assemble .app bundle from built binaries
 	@rm -rf $(APP)
 	@mkdir -p $(MACOS) $(RESOURCES)
 	@# Rust binary
@@ -122,6 +144,7 @@ bundle:
 # Clean
 # ---------------------------------------------------------------------------
 
+.PHONY: clean
 clean: ## Remove all build artifacts
 	cargo clean
 	rm -rf $(SWIFT_DIR)/.build

@@ -49,11 +49,11 @@ cat > "${WORK_DIR}/distribution.xml" <<DIST
 <installer-gui-script minSpecVersion="2">
     <title>mlsh ${VERSION}</title>
     <welcome language="en" mime-type="text/plain"><![CDATA[
-mlsh — mesh shell
+mlsh creates peer-to-peer encrypted overlay networks between your machines.
 
 This installer will place:
   - MLSH.app in /Applications
-  - mlsh and mlshtund symlinks in /usr/local/bin
+  - mlsh and mlshtund in /usr/local/bin
     ]]></welcome>
     <options customize="never" require-scripts="false" hostArchitectures="x86_64,arm64"/>
     <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>

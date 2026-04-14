@@ -39,8 +39,8 @@ Package: mlsh
 Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: mlsh.io <hello@mlsh.io>
-Description: mlsh — mesh shell
- Secure mesh networking CLI tool.
+Description: mlsh — peer-to-peer encrypted overlay networks
+ mlsh creates peer-to-peer encrypted overlay networks between your machines.
 Homepage: https://mlsh.io
 Section: net
 Priority: optional

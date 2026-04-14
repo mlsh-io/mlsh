@@ -36,13 +36,13 @@ cat > "$WORK_DIR/SPECS/mlsh.spec" <<SPEC
 Name:    mlsh
 Version: ${VERSION}
 Release: 1
-Summary: mlsh — mesh shell
+Summary: mlsh — peer-to-peer encrypted overlay networks
 License: Proprietary
 URL:     https://mlsh.io
 Group:   Applications/Internet
 
 %description
-Secure mesh networking CLI tool.
+mlsh creates peer-to-peer encrypted overlay networks between your machines.
 
 %install
 mkdir -p %{buildroot}/usr/local/bin
