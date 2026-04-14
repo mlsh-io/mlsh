@@ -8,7 +8,7 @@ SWIFT_DIR    := mlsh-menubar
 WIN_TARGET   := x86_64-pc-windows-msvc
 WIN_DIR      := target/windows
 SIGNAL_IMAGE := ghcr.io/$(shell git config --get remote.origin.url 2>/dev/null | sed -n 's|.*github.com[:/]\(.*\)\.git|\1|p' | tr '[:upper:]' '[:lower:]' | cut -d/ -f1)/mlsh-signal
-GIT_VERSION  := $(shell git describe --tags --always --dirty=-dirty 2>/dev/null || echo dev)
+GIT_VERSION  ?= $(shell git describe --tags --always --dirty=-dirty 2>/dev/null || echo dev)
 
 .DEFAULT_GOAL := help
 

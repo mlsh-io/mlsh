@@ -103,6 +103,35 @@ cat > "$PLIST" <<EOF
 EOF
 
 launchctl load "$PLIST"
+
+# Install LaunchAgent for the menubar app (runs as logged-in user)
+AGENT_LABEL="io.mlsh.menubar"
+AGENT_PLIST="/Library/LaunchAgents/${AGENT_LABEL}.plist"
+
+cat > "$AGENT_PLIST" <<AGENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/MLSH.app/Contents/MacOS/MLSHMenuBar</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+AGENT
+
+# Restart the menubar app with the new binary
+killall MLSHMenuBar 2>/dev/null || true
 POSTINSTALL
 chmod +x "$SCRIPTS_DIR/postinstall"
 
