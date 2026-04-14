@@ -581,7 +581,7 @@ async fn handle_revoke(
 /// `target_name` is the current display name used to locate the node.
 /// `new_display_name` must be 1–64 characters matching `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`.
 ///
-/// Only admin nodes may rename peers.  On success, the in-memory session and all
+/// Admin nodes may rename peers or peers themselves. On success, the in-memory session and all
 /// connected peers are updated via a `PeerRenamed` broadcast.
 async fn handle_rename(
     state: &QuicState,
@@ -604,10 +604,6 @@ async fn handle_rename(
             return ServerMessage::error("internal", "Database error");
         }
     };
-
-    if caller.role != "admin" {
-        return ServerMessage::error("forbidden", "Only admin nodes can rename peers");
-    }
 
     // Validate new_display_name: 1–64 chars, starts with alnum, rest alnum/._-
     if new_display_name.is_empty() || new_display_name.len() > 64 {
@@ -638,6 +634,11 @@ async fn handle_rename(
                 return ServerMessage::error("internal", "Database error");
             }
         };
+
+    // Only admins or the node itself can rename
+    if caller.role != "admin" && caller.node_id != target_uuid {
+        return ServerMessage::error("forbidden", "Only admin nodes can rename others; non-admin nodes can only rename themselves");
+    }
 
     // Persist the rename (unique constraint enforced by DB)
     match db::rename_node(&state.db, cluster_id, &target_uuid, new_display_name).await {
