@@ -23,7 +23,9 @@ struct MenuBarView: View {
             FooterView(
                 version: appState.appVersion,
                 lastMessage: appState.lastMessage,
-                onOpenConfig: { appState.openConfigFolder() }
+                availableUpdate: appState.availableUpdate,
+                onOpenConfig: { appState.openConfigFolder() },
+                onInstallUpdate: { appState.installUpdate() }
             )
         }
         .frame(width: Theme.Dimensions.popoverWidth)

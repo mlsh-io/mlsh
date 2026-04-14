@@ -18,8 +18,10 @@ final class AppState: ObservableObject {
     @Published var lastMessage: String?
     @Published var isConnecting: Set<String> = []
     @Published var copiedIP: String?
+    @Published var availableUpdate: UpdateChecker.Release?
 
     private var pollTask: Task<Void, Never>?
+    private var updateTask: Task<Void, Never>?
     private var messageDismissTask: Task<Void, Never>?
 
     let appVersion: String = {
@@ -86,11 +88,22 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: 3_000_000_000) // 3s
             }
         }
+
+        // Check for updates on launch, then every 6 hours
+        updateTask?.cancel()
+        updateTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkForUpdate()
+                try? await Task.sleep(nanoseconds: 6 * 3600 * 1_000_000_000) // 6h
+            }
+        }
     }
 
     func stopPolling() {
         pollTask?.cancel()
         pollTask = nil
+        updateTask?.cancel()
+        updateTask = nil
     }
 
     func connect(cluster: String) {
@@ -167,6 +180,41 @@ final class AppState: ObservableObject {
 
     func retryConnection() {
         Task { await poll() }
+    }
+
+    func installUpdate() {
+        guard let update = availableUpdate else { return }
+        if let pkgURL = update.pkgURL, let url = URL(string: pkgURL) {
+            // Download and open the .pkg installer
+            Task {
+                do {
+                    let (fileURL, _) = try await URLSession.shared.download(from: url)
+                    let dest = FileManager.default.temporaryDirectory
+                        .appendingPathComponent("mlsh-\(update.version)-macos-universal.pkg")
+                    try? FileManager.default.removeItem(at: dest)
+                    try FileManager.default.moveItem(at: fileURL, to: dest)
+                    await MainActor.run {
+                        NSWorkspace.shared.open(dest)
+                    }
+                } catch {
+                    await MainActor.run {
+                        // Fallback to release page
+                        if let url = URL(string: update.htmlURL) {
+                            NSWorkspace.shared.open(url)
+                        }
+                    }
+                }
+            }
+        } else if let url = URL(string: update.htmlURL) {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func checkForUpdate() async {
+        let release = await UpdateChecker.checkForUpdate(currentVersion: appVersion)
+        await MainActor.run {
+            availableUpdate = release
+        }
     }
 
     private func poll() async {

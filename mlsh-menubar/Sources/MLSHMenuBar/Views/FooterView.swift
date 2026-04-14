@@ -4,7 +4,9 @@ import AppKit
 struct FooterView: View {
     let version: String
     let lastMessage: String?
+    let availableUpdate: UpdateChecker.Release?
     let onOpenConfig: () -> Void
+    let onInstallUpdate: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,9 +37,23 @@ struct FooterView: View {
                 .buttonStyle(.plain)
                 .help("Open config folder")
 
-                Text("\(version)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                if let update = availableUpdate {
+                    Button(action: onInstallUpdate) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.caption2)
+                            Text(update.tag)
+                                .font(.caption2)
+                        }
+                        .foregroundStyle(Theme.Colors.connected)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Update available — click to install")
+                } else {
+                    Text("\(version)")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
 
                 Spacer()
 
