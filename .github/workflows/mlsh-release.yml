@@ -109,11 +109,14 @@ jobs:
       - name: Build MLSH.app (universal)
         run: make app-universal
 
+      - name: Archive MLSH.app
+        run: tar czfh MLSH.app.tar.gz -C target MLSH.app
+
       - name: Upload MLSH.app
         uses: actions/upload-artifact@v4
         with:
           name: MLSH.app
-          path: target/MLSH.app
+          path: MLSH.app.tar.gz
 
   # -- macOS .pkg installer (universal) ------------------------------------------
   macos-installer:
@@ -127,7 +130,10 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: MLSH.app
-          path: MLSH.app
+          path: artifacts
+
+      - name: Extract MLSH.app
+        run: tar xzf artifacts/MLSH.app.tar.gz
 
       - name: Build .pkg
         run: |
