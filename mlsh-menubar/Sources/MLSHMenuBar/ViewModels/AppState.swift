@@ -23,7 +23,26 @@ final class AppState: ObservableObject {
     private var messageDismissTask: Task<Void, Never>?
 
     let appVersion: String = {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        // Get version from the mlsh binary in the same app bundle
+        guard let mlshURL = Bundle.main.url(forAuxiliaryExecutable: "mlsh") else {
+            return "dev"
+        }
+        let process = Process()
+        process.executableURL = mlshURL
+        process.arguments = ["--version"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            // Output is typically "mlsh 0.0.4-g68c6b6c" — extract version part
+            return output.hasPrefix("mlsh ") ? String(output.dropFirst(5)) : output.isEmpty ? "dev" : output
+        } catch {
+            return "dev"
+        }
     }()
 
     var overallState: OverallState {
@@ -78,7 +97,25 @@ final class AppState: ObservableObject {
         isConnecting.insert(cluster)
         Task {
             do {
-                let response = try await DaemonClient.send(.connect(cluster: cluster))
+                let home = FileManager.default.homeDirectoryForCurrentUser
+                let configDir = home.appendingPathComponent(".config/mlsh")
+
+                let configToml = try String(
+                    contentsOf: configDir.appendingPathComponent("clusters/\(cluster).toml"),
+                    encoding: .utf8
+                )
+                let certPem = try String(
+                    contentsOf: configDir.appendingPathComponent("identity/cert.pem"),
+                    encoding: .utf8
+                )
+                let keyPem = try String(
+                    contentsOf: configDir.appendingPathComponent("identity/key.pem"),
+                    encoding: .utf8
+                )
+
+                let response = try await DaemonClient.send(
+                    .connect(cluster: cluster, configToml: configToml, certPem: certPem, keyPem: keyPem)
+                )
                 await MainActor.run {
                     isConnecting.remove(cluster)
                     handleCommandResponse(response)

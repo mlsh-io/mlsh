@@ -5,21 +5,27 @@ import Foundation
 /// Requests sent from the menu bar app to mlshtund.
 /// JSON: `{"type":"connect","cluster":"name"}`, `{"type":"disconnect","cluster":"name"}`, `{"type":"status"}`
 enum DaemonRequest: Encodable {
-    case connect(cluster: String)
+    case connect(cluster: String, configToml: String, certPem: String, keyPem: String)
     case disconnect(cluster: String)
     case status
 
     private enum CodingKeys: String, CodingKey {
         case type
         case cluster
+        case configToml = "config_toml"
+        case certPem = "cert_pem"
+        case keyPem = "key_pem"
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .connect(let cluster):
+        case .connect(let cluster, let configToml, let certPem, let keyPem):
             try container.encode("connect", forKey: .type)
             try container.encode(cluster, forKey: .cluster)
+            try container.encode(configToml, forKey: .configToml)
+            try container.encode(certPem, forKey: .certPem)
+            try container.encode(keyPem, forKey: .keyPem)
         case .disconnect(let cluster):
             try container.encode("disconnect", forKey: .type)
             try container.encode(cluster, forKey: .cluster)

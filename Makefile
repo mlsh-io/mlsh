@@ -139,6 +139,7 @@ bundle: ## Assemble .app bundle from built binaries
 		cp $(SWIFT_DIR)/.build/release/MLSHMenuBar $(MACOS)/MLSHMenuBar; \
 	fi
 	@cp $(SWIFT_DIR)/Info.plist $(CONTENTS)/Info.plist
+	@cp $(SWIFT_DIR)/Resources/AppIcon.icns $(RESOURCES)/AppIcon.icns
 
 # ---------------------------------------------------------------------------
 # Clean

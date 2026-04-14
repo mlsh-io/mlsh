@@ -7,7 +7,7 @@
     <key>CFBundleDisplayName</key>
     <string>MLSH</string>
     <key>CFBundleIdentifier</key>
-    <string>me.enna.mlsh.menubar</string>
+    <string>io.mlsh.menubar</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>
@@ -16,6 +16,8 @@
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>MLSHMenuBar</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>

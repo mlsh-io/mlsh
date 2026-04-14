@@ -35,7 +35,7 @@ struct FooterView: View {
                 .buttonStyle(.plain)
                 .help("Open config folder")
 
-                Text("v\(version)")
+                Text("\(version)")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
 

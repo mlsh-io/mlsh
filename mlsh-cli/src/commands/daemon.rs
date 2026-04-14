@@ -1,6 +1,6 @@
 //! `mlsh tunnel` — install/uninstall the `mlshtund` tunnel daemon as a system service.
 //!
-//! - macOS: LaunchDaemon plist at /Library/LaunchDaemons/me.enna.mlsh.tund.plist
+//! - macOS: LaunchDaemon plist at /Library/LaunchDaemons/io.mlsh.tund.plist
 //! - Linux: systemd system unit at /etc/systemd/system/mlshtund.service
 
 use anyhow::{Context, Result};
@@ -34,10 +34,10 @@ pub async fn handle(cmd: DaemonCommands) -> Result<()> {
 // --- macOS (launchd)
 
 #[cfg(target_os = "macos")]
-const PLIST_PATH: &str = "/Library/LaunchDaemons/me.enna.mlsh.tund.plist";
+const PLIST_PATH: &str = "/Library/LaunchDaemons/io.mlsh.tund.plist";
 
 #[cfg(target_os = "macos")]
-const LABEL: &str = "me.enna.mlsh.tund";
+const LABEL: &str = "io.mlsh.tund";
 
 #[cfg(target_os = "macos")]
 fn install_daemon(auto_connect: &[String]) -> Result<()> {

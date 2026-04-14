@@ -35,8 +35,81 @@ ls -la "$PAYLOAD/Applications/MLSH.app/Contents/MacOS/"
 
 # -- Build component pkg ------------------------------------------------------
 
+# Write a component plist that disables bundle relocation
+cat > "${WORK_DIR}/component.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<array>
+    <dict>
+        <key>BundleHasStrictIdentifier</key>
+        <true/>
+        <key>BundleIsRelocatable</key>
+        <false/>
+        <key>BundleIsVersionChecked</key>
+        <false/>
+        <key>BundleOverwriteAction</key>
+        <string>upgrade</string>
+        <key>RootRelativeBundlePath</key>
+        <string>Applications/MLSH.app</string>
+    </dict>
+</array>
+</plist>
+PLIST
+
+# Write postinstall script to install and start the LaunchDaemon
+SCRIPTS_DIR="${WORK_DIR}/scripts"
+mkdir -p "$SCRIPTS_DIR"
+cat > "$SCRIPTS_DIR/postinstall" <<'POSTINSTALL'
+#!/bin/bash
+set -e
+
+LABEL="io.mlsh.tund"
+PLIST="/Library/LaunchDaemons/${LABEL}.plist"
+MLSHTUND="/Applications/MLSH.app/Contents/MacOS/mlshtund"
+LOG_DIR="/var/log/mlsh"
+
+mkdir -p "$LOG_DIR"
+
+# Unload if already running
+launchctl unload "$PLIST" 2>/dev/null || true
+
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>${LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${MLSHTUND}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/mlshtund.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/mlshtund.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>mlsh_cli=info</string>
+    </dict>
+</dict>
+</plist>
+EOF
+
+launchctl load "$PLIST"
+POSTINSTALL
+chmod +x "$SCRIPTS_DIR/postinstall"
+
 pkgbuild \
   --root "$PAYLOAD" \
+  --component-plist "${WORK_DIR}/component.plist" \
+  --scripts "$SCRIPTS_DIR" \
   --identifier "$PKG_ID" \
   --version "${VERSION#v}" \
   --install-location "/" \
