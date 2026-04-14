@@ -637,7 +637,10 @@ async fn handle_rename(
 
     // Only admins or the node itself can rename
     if caller.role != "admin" && caller.node_id != target_uuid {
-        return ServerMessage::error("forbidden", "Only admin nodes can rename others; non-admin nodes can only rename themselves");
+        return ServerMessage::error(
+            "forbidden",
+            "Only admin nodes can rename others; non-admin nodes can only rename themselves",
+        );
     }
 
     // Persist the rename (unique constraint enforced by DB)
