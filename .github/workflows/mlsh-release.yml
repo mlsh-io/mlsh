@@ -65,12 +65,25 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: tar czfh mlsh-cli-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release mlsh mlshtund
 
+      - name: Download wintun
+        if: matrix.archive == 'zip'
+        shell: bash
+        run: |
+          curl -fsSL -o wintun.zip https://www.wintun.net/builds/wintun-0.14.1.zip
+          echo "07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51  wintun.zip" | sha256sum -c
+          7z e wintun.zip wintun/bin/amd64/wintun.dll -o./wintun-amd64 -y
+          7z e wintun.zip wintun/LICENSE.txt -o./wintun-license -y
+
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: bash
         run: |
           cp target/${{ matrix.target }}/release/mlsh.exe target/${{ matrix.target }}/release/mlshtund.exe
-          7z a mlsh-cli-${{ matrix.target }}.zip ./target/${{ matrix.target }}/release/mlsh.exe ./target/${{ matrix.target }}/release/mlshtund.exe
+          7z a mlsh-cli-${{ matrix.target }}.zip \
+            ./target/${{ matrix.target }}/release/mlsh.exe \
+            ./target/${{ matrix.target }}/release/mlshtund.exe \
+            ./wintun-amd64/wintun.dll \
+            ./wintun-license/LICENSE.txt
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -78,10 +91,42 @@ jobs:
           name: mlsh-cli-${{ matrix.target }}
           path: mlsh-cli-${{ matrix.target }}.${{ matrix.archive }}
 
+  # -- Windows Installer (Inno Setup) ---------------------------------------------
+  windows-installer:
+    name: windows-installer
+    needs: [build]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: mlsh-cli-x86_64-pc-windows-msvc
+          path: artifacts
+
+      - name: Prepare installer input
+        shell: bash
+        run: |
+          mkdir -p installer/windows/bin
+          cd artifacts
+          7z e mlsh-cli-x86_64-pc-windows-msvc.zip -o../installer/windows/bin -y -r
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          iscc /DAppVersion=${{ github.ref_name }} installer\windows\mlsh.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlsh-windows-installer
+          path: installer/windows/output/*.exe
+
   # -- Create GitHub Release -----------------------------------------------------
   release:
     name: release
-    needs: [build]
+    needs: [build, windows-installer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,7 +140,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum mlsh-cli-* > checksums.txt
+          sha256sum mlsh-* > checksums.txt
           cat checksums.txt
 
       - name: Create GitHub Release
@@ -104,4 +149,5 @@ jobs:
           generate_release_notes: true
           files: |
             artifacts/mlsh-cli-*
+            artifacts/mlsh-*-setup.exe
             artifacts/checksums.txt
