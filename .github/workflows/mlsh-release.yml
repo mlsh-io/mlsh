@@ -91,6 +91,55 @@ jobs:
           name: mlsh-cli-${{ matrix.target }}
           path: mlsh-cli-${{ matrix.target }}.${{ matrix.archive }}
 
+  # -- macOS .app bundle (universal) -----------------------------------------------
+  app-bundle:
+    name: MLSH.app (universal)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: app-bundle
+
+      - name: Build MLSH.app (universal)
+        run: make app-universal
+
+      - name: Upload MLSH.app
+        uses: actions/upload-artifact@v4
+        with:
+          name: MLSH.app
+          path: target/MLSH.app
+
+  # -- macOS .pkg installer (universal) ------------------------------------------
+  macos-installer:
+    name: macos-installer
+    needs: [app-bundle]
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download MLSH.app
+        uses: actions/download-artifact@v4
+        with:
+          name: MLSH.app
+          path: MLSH.app
+
+      - name: Build .pkg
+        run: |
+          chmod +x installer/macos/build-pkg.sh
+          installer/macos/build-pkg.sh "${{ github.ref_name }}" MLSH.app
+
+      - name: Upload .pkg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlsh-macos-installer
+          path: installer/macos/output/*.pkg
+
   # -- Windows Installer (Inno Setup) ---------------------------------------------
   windows-installer:
     name: windows-installer
@@ -126,7 +175,7 @@ jobs:
   # -- Create GitHub Release -----------------------------------------------------
   release:
     name: release
-    needs: [build, windows-installer]
+    needs: [build, macos-installer, windows-installer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -150,4 +199,5 @@ jobs:
           files: |
             artifacts/mlsh-cli-*
             artifacts/mlsh-*-setup.exe
+            artifacts/mlsh-*-universal.pkg
             artifacts/checksums.txt
