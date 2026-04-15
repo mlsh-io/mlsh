@@ -944,7 +944,10 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
             summary.join(", ")
         );
 
-        match probe_candidates(
+        // Try direct connection. On failure, retry once on srflx candidates only:
+        // both peers have been sending packets for ~3s at this point, so NAT
+        // mappings on both sides should be open (hole-punch rendezvous).
+        let probe_result = match probe_candidates(
             &ctx.endpoint,
             &peer.candidates,
             &peer.fingerprint,
@@ -952,30 +955,42 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
         )
         .await
         {
-            Ok(probe) => {
-                tracing::info!(
-                    "Direct connection to {} ({}) via {}",
-                    peer.node_id,
-                    peer_ip,
-                    probe.via
-                );
-                let conn = probe.conn;
-                peer_table.insert_direct(peer_ip, conn.clone()).await;
-
-                // Run inbound task — reads from peer's QUIC streams, writes to TUN
-                tokio::select! {
-                    _ = spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()) => {}
-                    _ = ctx.cancel.cancelled() => {}
-                }
-
-                // Connection ended — remove route
-                peer_table.remove_route(peer_ip).await;
-                tracing::info!("Direct connection to {} ended", peer.node_id);
-                return;
-            }
+            Ok(probe) => Some(probe),
             Err(e) => {
-                tracing::debug!("Direct to {} failed: {}, trying relay", peer.node_id, e);
+                tracing::debug!("Direct to {} failed: {} — retrying srflx (hole-punch)", peer.node_id, e);
+                let srflx: Vec<_> = peer.candidates.iter().filter(|c| c.kind == "srflx").cloned().collect();
+                if srflx.is_empty() {
+                    None
+                } else {
+                    probe_candidates(&ctx.endpoint, &srflx, &peer.fingerprint, identity_dir)
+                        .await
+                        .ok()
+                }
             }
+        };
+
+        if let Some(probe) = probe_result {
+            tracing::info!(
+                "Direct connection to {} ({}) via {}",
+                peer.node_id,
+                peer_ip,
+                probe.via
+            );
+            let conn = probe.conn;
+            peer_table.insert_direct(peer_ip, conn.clone()).await;
+
+            // Run inbound task — reads from peer's QUIC streams, writes to TUN
+            tokio::select! {
+                _ = spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()) => {}
+                _ = ctx.cancel.cancelled() => {}
+            }
+
+            // Connection ended — remove route
+            peer_table.remove_route(peer_ip).await;
+            tracing::info!("Direct connection to {} ended", peer.node_id);
+            return;
+        } else {
+            tracing::debug!("Direct to {} failed after hole-punch retry, trying relay", peer.node_id);
         }
     }
 
