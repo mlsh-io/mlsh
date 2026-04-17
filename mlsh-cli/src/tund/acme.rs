@@ -24,6 +24,8 @@
 //! 9. Send `TlsAlpnChallengeClear` to signal, invalidate the TLS acceptor cache.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use instant_acme::{
@@ -33,15 +35,30 @@ use instant_acme::{
 use mlsh_protocol::framing;
 use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 use rcgen::{CertificateParams, CustomExtension, KeyPair};
+use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
 use super::ingress;
+use super::tunnel_manager::TunnelManager;
 
 const ACME_DIR: &str = "/var/lib/mlsh/ingress/acme";
 const CERT_DIR: &str = "/var/lib/mlsh/ingress/certs";
 
+/// Let's Encrypt certificates are valid ~90 days. Renew ~30 days before
+/// expiry so we have a month of slack if an attempt fails.
+const CERT_VALIDITY: Duration = Duration::from_secs(90 * 24 * 3600);
+const RENEW_BEFORE: Duration = Duration::from_secs(30 * 24 * 3600);
+/// Back-off when we can't renew (no signal session, ACME failure).
+const RENEW_RETRY: Duration = Duration::from_secs(3600);
+/// Upper bound for a single sleep — we re-evaluate once per day so state
+/// changes (mtime updates from other paths, clock jumps) aren't missed.
+const MAX_SLEEP: Duration = Duration::from_secs(24 * 3600);
+
 /// Which ACME directory to use. Staging is strongly recommended for smoke
 /// tests — production has hard rate limits.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Directory {
     Production,
     Staging,
@@ -56,25 +73,198 @@ impl Directory {
     }
 }
 
+/// Sidecar state needed to renew a cert after daemon restart. Written
+/// alongside `{domain}.crt` as `{domain}.meta.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RenewalMeta {
+    cluster: String,
+    email: Option<String>,
+    directory: Directory,
+}
+
 /// Spawn a background task that acquires a Let's Encrypt certificate for
-/// `domain` via TLS-ALPN-01. The challenge cert is published via signal; the
-/// final cert is written locally and the TLS acceptor cache is invalidated
-/// so the next inbound request picks it up.
+/// `domain` via TLS-ALPN-01 and then keeps it fresh by scheduling a renewal
+/// ~30 days before expiry. Idempotent: if a non-stale cert already exists on
+/// disk (e.g. after a daemon restart), initial issuance is skipped and only
+/// the renewal loop is started.
 pub fn spawn_issuance(
+    manager: Arc<Mutex<TunnelManager>>,
+    cluster: String,
     domain: String,
-    signal_conn: quinn::Connection,
     email: Option<String>,
     directory: Directory,
 ) {
     tokio::spawn(async move {
-        match issue(&domain, &signal_conn, email.as_deref(), directory).await {
-            Ok(()) => {
-                ingress::reload_cert(&domain);
-                info!(%domain, "ACME certificate installed");
+        if cert_is_fresh(&domain) {
+            debug!(%domain, "Cert on disk is still fresh; skipping initial issuance");
+        } else {
+            let conn = match fetch_signal_conn(&manager, &cluster).await {
+                Some(c) => c,
+                None => {
+                    warn!(%cluster, %domain, "No active signal session — ACME issuance aborted");
+                    return;
+                }
+            };
+            match issue(&domain, &conn, email.as_deref(), directory).await {
+                Ok(()) => {
+                    ingress::reload_cert(&domain);
+                    if let Err(e) = write_metadata(&domain, &cluster, email.as_deref(), directory) {
+                        warn!(%domain, "Failed to persist ACME metadata: {:#}", e);
+                    }
+                    info!(%domain, "ACME certificate installed");
+                }
+                Err(e) => {
+                    warn!(%domain, "ACME issuance failed: {:#}", e);
+                    return;
+                }
             }
-            Err(e) => warn!(%domain, "ACME issuance failed: {:#}", e),
+        }
+        spawn_renewal_watcher(manager, cluster, domain, email, directory);
+    });
+}
+
+/// Scan the cert directory and resume a renewal watcher for every domain
+/// that has a sidecar metadata file. Called once at mlshtund startup so
+/// certs keep renewing even if the user never re-runs `mlsh expose`.
+pub fn resume_on_startup(manager: Arc<Mutex<TunnelManager>>) {
+    let dir = PathBuf::from(CERT_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            warn!(path = %dir.display(), "Failed to scan cert dir: {}", e);
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(domain) = name.strip_suffix(".meta.json") else {
+            continue;
+        };
+        match read_metadata(domain) {
+            Ok(meta) => {
+                info!(%domain, cluster = %meta.cluster, "Resuming ACME renewal watcher");
+                spawn_renewal_watcher(
+                    manager.clone(),
+                    meta.cluster,
+                    domain.to_string(),
+                    meta.email,
+                    meta.directory,
+                );
+            }
+            Err(e) => warn!(%domain, "Failed to load ACME metadata: {:#}", e),
+        }
+    }
+}
+
+fn spawn_renewal_watcher(
+    manager: Arc<Mutex<TunnelManager>>,
+    cluster: String,
+    domain: String,
+    email: Option<String>,
+    directory: Directory,
+) {
+    tokio::spawn(async move {
+        loop {
+            let wait = match next_renewal_delay(&domain) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!(%domain, "Cannot schedule renewal: {:#}; exiting watcher", e);
+                    return;
+                }
+            };
+            if !wait.is_zero() {
+                debug!(%domain, wait_secs = wait.as_secs(), "Next ACME renewal scheduled");
+                tokio::time::sleep(wait.min(MAX_SLEEP)).await;
+                continue;
+            }
+
+            info!(%domain, "ACME renewal triggered");
+            let conn = match fetch_signal_conn(&manager, &cluster).await {
+                Some(c) => c,
+                None => {
+                    warn!(%domain, "No signal session for renewal; retrying in 1h");
+                    tokio::time::sleep(RENEW_RETRY).await;
+                    continue;
+                }
+            };
+            match issue(&domain, &conn, email.as_deref(), directory).await {
+                Ok(()) => {
+                    ingress::reload_cert(&domain);
+                    if let Err(e) = write_metadata(&domain, &cluster, email.as_deref(), directory) {
+                        warn!(%domain, "Failed to persist ACME metadata: {:#}", e);
+                    }
+                    info!(%domain, "ACME certificate renewed");
+                }
+                Err(e) => {
+                    warn!(%domain, "ACME renewal failed: {:#}; retrying in 1h", e);
+                    tokio::time::sleep(RENEW_RETRY).await;
+                }
+            }
         }
     });
+}
+
+async fn fetch_signal_conn(
+    manager: &Arc<Mutex<TunnelManager>>,
+    cluster: &str,
+) -> Option<quinn::Connection> {
+    manager.lock().await.signal_connection_for(cluster)
+}
+
+/// True when a cert for `domain` exists and is not yet within its renewal
+/// window. Used to short-circuit redundant ACME calls on daemon restart or
+/// repeated `mlsh expose`.
+fn cert_is_fresh(domain: &str) -> bool {
+    match cert_age(domain) {
+        Ok(age) => age + RENEW_BEFORE < CERT_VALIDITY,
+        Err(_) => false,
+    }
+}
+
+/// Time until the next renewal attempt. Returns `Duration::ZERO` when the
+/// cert is already due or past due.
+fn next_renewal_delay(domain: &str) -> Result<Duration> {
+    let age = cert_age(domain)?;
+    let renew_at = CERT_VALIDITY.saturating_sub(RENEW_BEFORE);
+    Ok(renew_at.saturating_sub(age))
+}
+
+fn cert_age(domain: &str) -> Result<Duration> {
+    let path = PathBuf::from(CERT_DIR).join(format!("{}.crt", domain));
+    let meta = std::fs::metadata(&path)
+        .with_context(|| format!("Failed to stat cert {}", path.display()))?;
+    let mtime = meta.modified().context("Filesystem has no mtime")?;
+    Ok(mtime.elapsed().unwrap_or(Duration::ZERO))
+}
+
+fn metadata_path(domain: &str) -> PathBuf {
+    PathBuf::from(CERT_DIR).join(format!("{}.meta.json", domain))
+}
+
+fn write_metadata(
+    domain: &str,
+    cluster: &str,
+    email: Option<&str>,
+    directory: Directory,
+) -> Result<()> {
+    let meta = RenewalMeta {
+        cluster: cluster.to_string(),
+        email: email.map(|s| s.to_string()),
+        directory,
+    };
+    let json = serde_json::to_vec_pretty(&meta).context("Serialize ACME metadata")?;
+    write_restricted_bytes(&metadata_path(domain), &json, 0o600)
+}
+
+fn read_metadata(domain: &str) -> Result<RenewalMeta> {
+    let path = metadata_path(domain);
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
+    serde_json::from_slice(&bytes).context("Invalid ACME metadata JSON")
 }
 
 pub async fn issue(
@@ -308,5 +498,27 @@ mod tests {
         assert_eq!(cert_der[0], 0x30);
         // PKCS#8 private keys start with SEQUENCE too.
         assert_eq!(key_der[0], 0x30);
+    }
+
+    #[test]
+    fn renewal_meta_json_roundtrip() {
+        let meta = RenewalMeta {
+            cluster: "homelab".into(),
+            email: Some("me@example.com".into()),
+            directory: Directory::Production,
+        };
+        let json = serde_json::to_string(&meta).unwrap();
+        let back: RenewalMeta = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cluster, "homelab");
+        assert_eq!(back.email.as_deref(), Some("me@example.com"));
+        assert!(matches!(back.directory, Directory::Production));
+    }
+
+    #[test]
+    fn directory_serializes_lowercase() {
+        // Using lowercase in the sidecar JSON keeps it readable and matches
+        // the values the CLI flag would use.
+        let json = serde_json::to_string(&Directory::Staging).unwrap();
+        assert_eq!(json, "\"staging\"");
     }
 }

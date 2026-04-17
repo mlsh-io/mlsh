@@ -176,27 +176,18 @@ async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -
         } => {
             crate::tund::ingress::add(&domain, &target);
             if !cluster.is_empty() {
-                let conn_opt = {
-                    let mgr = manager.lock().await;
-                    mgr.signal_connection_for(&cluster)
+                let directory = if acme_staging {
+                    crate::tund::acme::Directory::Staging
+                } else {
+                    crate::tund::acme::Directory::Production
                 };
-                match conn_opt {
-                    Some(conn) => {
-                        let directory = if acme_staging {
-                            crate::tund::acme::Directory::Staging
-                        } else {
-                            crate::tund::acme::Directory::Production
-                        };
-                        crate::tund::acme::spawn_issuance(domain.clone(), conn, email, directory);
-                    }
-                    None => {
-                        tracing::warn!(
-                            cluster,
-                            domain,
-                            "No active signal session — ACME deferred; using self-signed cert for now"
-                        );
-                    }
-                }
+                crate::tund::acme::spawn_issuance(
+                    manager.clone(),
+                    cluster,
+                    domain.clone(),
+                    email,
+                    directory,
+                );
             }
             DaemonResponse::Ok {
                 message: Some(format!("Ingress target registered for {}", domain)),

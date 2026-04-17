@@ -219,7 +219,7 @@ fn run_tund() {
         .expect("Failed to build tokio runtime");
 
     let code = match rt.block_on(async {
-        use mlsh_cli::tund::{control, tunnel_manager::TunnelManager};
+        use mlsh_cli::tund::{acme, control, tunnel_manager::TunnelManager};
 
         #[derive(Parser)]
         #[command(name = "mlshtund")]
@@ -237,6 +237,11 @@ fn run_tund() {
 
         let manager = Arc::new(Mutex::new(TunnelManager::new()));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+        // Resume ACME renewal watchers for every cert that has a sidecar
+        // `{domain}.meta.json`. Without this, certs issued before the daemon
+        // restart would silently expire.
+        acme::resume_on_startup(manager.clone());
 
         tokio::spawn(async move {
             shutdown_signal().await;
