@@ -129,10 +129,7 @@ pub async fn issue(
     }
 
     // Finalize: instant-acme generates a CSR and returns the PEM-encoded key.
-    let key_pem = order
-        .finalize()
-        .await
-        .context("ACME finalize failed")?;
+    let key_pem = order.finalize().await.context("ACME finalize failed")?;
     let cert_pem = order
         .poll_certificate(&retry)
         .await
@@ -248,9 +245,8 @@ fn write_restricted_bytes(path: &Path, content: &[u8], mode: u32) -> Result<()> 
     f.write_all(content)?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path).with_context(|| {
-        format!("Failed to rename {} to {}", tmp.display(), path.display())
-    })?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("Failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
 }
 

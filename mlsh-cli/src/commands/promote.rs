@@ -82,4 +82,3 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
         other => anyhow::bail!("Unexpected response: {:?}", other),
     }
 }
-

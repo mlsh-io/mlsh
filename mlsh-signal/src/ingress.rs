@@ -100,29 +100,30 @@ async fn handle_connection(
 
     // 2. Peek ClientHello for SNI
     let mut peek_buf = vec![0u8; CLIENT_HELLO_PEEK_MAX];
-    let sni = match tokio::time::timeout(
-        CLIENT_HELLO_DEADLINE,
-        peek_sni(&socket, &mut peek_buf),
-    )
-    .await
-    {
-        Ok(Ok(Some(sni))) => sni,
-        Ok(Ok(None)) => {
-            debug!(%remote, "No SNI in ClientHello");
-            return Ok(());
-        }
-        Ok(Err(e)) => {
-            debug!(%remote, error = %e, "ClientHello parse error");
-            return Ok(());
-        }
-        Err(_) => {
-            debug!(%remote, "Timed out reading ClientHello");
-            return Ok(());
-        }
-    };
+    let sni =
+        match tokio::time::timeout(CLIENT_HELLO_DEADLINE, peek_sni(&socket, &mut peek_buf)).await {
+            Ok(Ok(Some(sni))) => sni,
+            Ok(Ok(None)) => {
+                debug!(%remote, "No SNI in ClientHello");
+                return Ok(());
+            }
+            Ok(Err(e)) => {
+                debug!(%remote, error = %e, "ClientHello parse error");
+                return Ok(());
+            }
+            Err(_) => {
+                debug!(%remote, "Timed out reading ClientHello");
+                return Ok(());
+            }
+        };
 
     // 3. Admin SNI → internal HTTP API
-    if state.config.admin_hosts.iter().any(|h| h.eq_ignore_ascii_case(&sni)) {
+    if state
+        .config
+        .admin_hosts
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(&sni))
+    {
         forward_to_admin(socket, &state.config.http_bind).await?;
         return Ok(());
     }
@@ -232,9 +233,7 @@ const PROXY_V2_SIG: [u8; 12] = [
 /// Read and validate a PROXY v2 header, returning the upstream client address
 /// if a TCP-over-IPv4 or TCP-over-IPv6 PROXY command is carried. Returns
 /// `Ok(None)` for `LOCAL` commands (health checks).
-async fn read_proxy_v2_header(
-    socket: &mut TcpStream,
-) -> Result<Option<SocketAddr>> {
+async fn read_proxy_v2_header(socket: &mut TcpStream) -> Result<Option<SocketAddr>> {
     let mut header = [0u8; 16];
     socket
         .read_exact(&mut header)
@@ -274,12 +273,7 @@ async fn read_proxy_v2_header(
 
     match family {
         1 if addr_buf.len() >= 12 => {
-            let src = std::net::Ipv4Addr::new(
-                addr_buf[0],
-                addr_buf[1],
-                addr_buf[2],
-                addr_buf[3],
-            );
+            let src = std::net::Ipv4Addr::new(addr_buf[0], addr_buf[1], addr_buf[2], addr_buf[3]);
             let src_port = u16::from_be_bytes([addr_buf[8], addr_buf[9]]);
             Ok(Some(SocketAddr::new(std::net::IpAddr::V4(src), src_port)))
         }
@@ -305,10 +299,7 @@ async fn read_proxy_v2_header(
 async fn peek_sni(socket: &TcpStream, buf: &mut [u8]) -> Result<Option<String>> {
     let mut have = 0usize;
     loop {
-        let n = socket
-            .peek(&mut buf[have..])
-            .await
-            .context("peek failed")?;
+        let n = socket.peek(&mut buf[have..]).await.context("peek failed")?;
         if n == 0 {
             return Ok(None);
         }
@@ -357,8 +348,7 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
     if rec[0] != 0x01 {
         return ParseResult::Malformed("not a ClientHello");
     }
-    let hs_len =
-        ((rec[1] as usize) << 16) | ((rec[2] as usize) << 8) | (rec[3] as usize);
+    let hs_len = ((rec[1] as usize) << 16) | ((rec[2] as usize) << 8) | (rec[3] as usize);
     if rec.len() < 4 + hs_len {
         return ParseResult::NeedMore;
     }
@@ -424,8 +414,7 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
             let mut r = 2usize;
             while r + 3 <= 2 + list_len {
                 let name_type = ext[r];
-                let name_len =
-                    u16::from_be_bytes([ext[r + 1], ext[r + 2]]) as usize;
+                let name_len = u16::from_be_bytes([ext[r + 1], ext[r + 2]]) as usize;
                 r += 3;
                 if r + name_len > ext.len() {
                     return ParseResult::Malformed("bad SNI name length");
@@ -483,7 +472,11 @@ mod tests {
         let mut hs = Vec::new();
         hs.push(0x01); // ClientHello
         let hl = hello.len();
-        hs.extend_from_slice(&[((hl >> 16) & 0xff) as u8, ((hl >> 8) & 0xff) as u8, (hl & 0xff) as u8]);
+        hs.extend_from_slice(&[
+            ((hl >> 16) & 0xff) as u8,
+            ((hl >> 8) & 0xff) as u8,
+            (hl & 0xff) as u8,
+        ]);
         hs.extend_from_slice(&hello);
 
         // Record header

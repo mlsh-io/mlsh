@@ -38,22 +38,34 @@ fn targets() -> Arc<RwLock<HashMap<String, String>>> {
 pub fn add(domain: &str, target: &str) {
     let key = domain.to_ascii_lowercase();
     let reg = targets();
-    reg.write().expect("ingress registry poisoned").insert(key, target.to_string());
+    reg.write()
+        .expect("ingress registry poisoned")
+        .insert(key, target.to_string());
     info!(domain, target, "Ingress target registered");
 }
 
 /// Remove an ingress target for `domain` and invalidate its cached TLS context.
 pub fn remove(domain: &str) {
     let key = domain.to_ascii_lowercase();
-    targets().write().expect("ingress registry poisoned").remove(&key);
-    acceptors().write().expect("acceptor cache poisoned").remove(&key);
+    targets()
+        .write()
+        .expect("ingress registry poisoned")
+        .remove(&key);
+    acceptors()
+        .write()
+        .expect("acceptor cache poisoned")
+        .remove(&key);
     info!(domain, "Ingress target removed");
 }
 
 /// Look up an ingress target for `domain`.
 pub fn lookup(domain: &str) -> Option<String> {
     let key = domain.to_ascii_lowercase();
-    targets().read().expect("ingress registry poisoned").get(&key).cloned()
+    targets()
+        .read()
+        .expect("ingress registry poisoned")
+        .get(&key)
+        .cloned()
 }
 
 /// Snapshot the current registry (used for daemon status / debug).
@@ -80,15 +92,25 @@ fn acceptors() -> Arc<RwLock<HashMap<String, TlsAcceptor>>> {
 /// cert files from disk. Call after ACME issues/renews a cert.
 pub fn reload_cert(domain: &str) {
     let key = domain.to_ascii_lowercase();
-    acceptors().write().expect("acceptor cache poisoned").remove(&key);
-    info!(domain, "Ingress TLS acceptor invalidated; next stream will reload cert");
+    acceptors()
+        .write()
+        .expect("acceptor cache poisoned")
+        .remove(&key);
+    info!(
+        domain,
+        "Ingress TLS acceptor invalidated; next stream will reload cert"
+    );
 }
 
 /// Get or build the `TlsAcceptor` for `domain`, loading cert/key from disk or
 /// falling back to a freshly-generated self-signed pair.
 fn get_or_build_acceptor(domain: &str) -> Result<TlsAcceptor> {
     let key = domain.to_ascii_lowercase();
-    if let Some(a) = acceptors().read().expect("acceptor cache poisoned").get(&key) {
+    if let Some(a) = acceptors()
+        .read()
+        .expect("acceptor cache poisoned")
+        .get(&key)
+    {
         return Ok(a.clone());
     }
 
@@ -183,9 +205,8 @@ fn write_restricted(path: &Path, content: &str, mode: u32) -> Result<()> {
     f.write_all(content.as_bytes())?;
     f.sync_all()?;
     drop(f);
-    std::fs::rename(&tmp, path).with_context(|| {
-        format!("Failed to rename {} to {}", tmp.display(), path.display())
-    })?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("Failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
 }
 
@@ -570,8 +591,9 @@ mod tests {
         let (crt, key) = generate_self_signed("selfsigned.test.mlsh.io").unwrap();
         assert!(crt.contains("BEGIN CERTIFICATE"));
         assert!(key.contains("BEGIN PRIVATE KEY"));
-        let _certs: Vec<_> =
-            rustls_pemfile::certs(&mut crt.as_bytes()).collect::<Result<_, _>>().unwrap();
+        let _certs: Vec<_> = rustls_pemfile::certs(&mut crt.as_bytes())
+            .collect::<Result<_, _>>()
+            .unwrap();
         rustls_pemfile::private_key(&mut key.as_bytes())
             .unwrap()
             .unwrap();

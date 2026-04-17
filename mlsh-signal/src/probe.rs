@@ -101,7 +101,11 @@ async fn push_status(
 }
 
 /// Extract the first srflx IPv4 candidate from a node's session.
-pub async fn srflx_ip(sessions: &SessionStore, cluster_id: &str, node_id: &str) -> Option<Ipv4Addr> {
+pub async fn srflx_ip(
+    sessions: &SessionStore,
+    cluster_id: &str,
+    node_id: &str,
+) -> Option<Ipv4Addr> {
     let conn = sessions.get_node_connection(cluster_id, node_id).await?;
     match conn.remote_address().ip() {
         std::net::IpAddr::V4(v4) => Some(v4),
