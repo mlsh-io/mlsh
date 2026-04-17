@@ -82,7 +82,12 @@ pub fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
     (host, port)
         .to_socket_addrs()?
         .find(|a| a.is_ipv4())
-        .or_else(|| (host, port).to_socket_addrs().ok().and_then(|mut a| a.next()))
+        .or_else(|| {
+            (host, port)
+                .to_socket_addrs()
+                .ok()
+                .and_then(|mut a| a.next())
+        })
         .context(format!("Failed to resolve: {}", endpoint))
 }
 

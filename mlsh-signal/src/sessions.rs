@@ -128,12 +128,7 @@ impl SessionStore {
 
     /// Push a single message to one node's session, if it's online.
     /// Returns true if the push channel was still alive.
-    pub async fn push_to_node(
-        &self,
-        cluster_id: &str,
-        node_id: &str,
-        msg: ServerMessage,
-    ) -> bool {
+    pub async fn push_to_node(&self, cluster_id: &str, node_id: &str, msg: ServerMessage) -> bool {
         let key = (cluster_id.to_string(), node_id.to_string());
         let sessions = self.sessions.read().await;
         let Some(session) = sessions.get(&key) else {

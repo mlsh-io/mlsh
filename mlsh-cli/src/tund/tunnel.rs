@@ -192,6 +192,7 @@ impl ManagedTunnel {
 }
 
 /// Long-running task that manages the tunnel lifecycle with reconnection.
+#[allow(clippy::too_many_arguments)]
 async fn tunnel_task(
     config: ClusterConfig,
     overlay_ip: Ipv4Addr,
@@ -987,8 +988,17 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
         {
             Ok(probe) => Some(probe),
             Err(e) => {
-                tracing::debug!("Direct to {} failed: {} — retrying srflx (hole-punch)", peer.node_id, e);
-                let srflx: Vec<_> = peer.candidates.iter().filter(|c| c.kind == "srflx").cloned().collect();
+                tracing::debug!(
+                    "Direct to {} failed: {} — retrying srflx (hole-punch)",
+                    peer.node_id,
+                    e
+                );
+                let srflx: Vec<_> = peer
+                    .candidates
+                    .iter()
+                    .filter(|c| c.kind == "srflx")
+                    .cloned()
+                    .collect();
                 if srflx.is_empty() {
                     None
                 } else {
@@ -1020,7 +1030,10 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
             tracing::info!("Direct connection to {} ended", peer.node_id);
             return;
         } else {
-            tracing::debug!("Direct to {} failed after hole-punch retry, trying relay", peer.node_id);
+            tracing::debug!(
+                "Direct to {} failed after hole-punch retry, trying relay",
+                peer.node_id
+            );
         }
     }
 

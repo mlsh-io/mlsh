@@ -24,7 +24,9 @@ use hickory_proto::op::{Header, MessageType, OpCode, ResponseCode};
 use hickory_proto::rr::rdata::{NS, SOA, TXT};
 use hickory_proto::rr::{LowerName, Name, RData, Record, RecordType};
 use hickory_server::authority::MessageResponseBuilder;
-use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture};
+use hickory_server::server::{
+    Request, RequestHandler, ResponseHandler, ResponseInfo, ServerFuture,
+};
 use sqlx::SqlitePool;
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{debug, info, warn};
@@ -116,13 +118,8 @@ impl RequestHandler for MlshHandler {
         let info = match request.request_info() {
             Ok(i) => i,
             Err(_) => {
-                return reply_error(
-                    &mut response_handle,
-                    request,
-                    header,
-                    ResponseCode::FormErr,
-                )
-                .await
+                return reply_error(&mut response_handle, request, header, ResponseCode::FormErr)
+                    .await
             }
         };
         let qtype = info.query.query_type();
@@ -193,12 +190,7 @@ impl RequestHandler for MlshHandler {
             }
         }
 
-        debug!(
-            ?qname,
-            ?qtype,
-            answers = answers.len(),
-            "DNS response"
-        );
+        debug!(?qname, ?qtype, answers = answers.len(), "DNS response");
 
         let builder = MessageResponseBuilder::from_message_request(request);
         let msg = builder.build(
@@ -232,9 +224,7 @@ impl MlshHandler {
         let name = qname.to_ascii().trim_end_matches('.').to_ascii_lowercase();
 
         // Exact match against registered ingress routes.
-        if let Ok(Some(route)) =
-            db::lookup_ingress_route_by_domain(&self.pool, &name).await
-        {
+        if let Ok(Some(route)) = db::lookup_ingress_route_by_domain(&self.pool, &name).await {
             if route.public_mode == "direct" {
                 if let Ok(ip) = route.public_ip.parse::<Ipv4Addr>() {
                     return Some(ip);

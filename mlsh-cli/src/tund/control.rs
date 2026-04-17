@@ -190,12 +190,7 @@ async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -
                         } else {
                             crate::tund::acme::Directory::Production
                         };
-                        crate::tund::acme::spawn_issuance(
-                            domain.clone(),
-                            conn,
-                            email,
-                            directory,
-                        );
+                        crate::tund::acme::spawn_issuance(domain.clone(), conn, email, directory);
                     }
                     None => {
                         tracing::warn!(

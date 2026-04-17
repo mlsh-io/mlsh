@@ -75,7 +75,9 @@ impl TunnelManager {
 
     /// Find the signal QUIC connection for a named cluster, if connected.
     pub fn signal_connection_for(&self, cluster: &str) -> Option<quinn::Connection> {
-        self.tunnels.get(cluster).and_then(|t| t.signal_connection())
+        self.tunnels
+            .get(cluster)
+            .and_then(|t| t.signal_connection())
     }
 
     pub async fn shutdown_all(&mut self) {

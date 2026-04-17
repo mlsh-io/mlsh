@@ -47,19 +47,14 @@ pub struct NodeInfo {
 }
 
 /// Ingress service mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngressMode {
     /// HTTP(S) reverse proxy via rpxy-lib on the peer.
+    #[default]
     Http,
     /// Raw L4 TCP passthrough (future work; rejected by signal for now).
     L4,
-}
-
-impl Default for IngressMode {
-    fn default() -> Self {
-        Self::Http
-    }
 }
 
 /// A registered public-ingress route (returned by ListExposed).

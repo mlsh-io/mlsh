@@ -35,7 +35,13 @@ pub async fn handle_expose(
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity).await?;
+    let conn = connect_to_signal(
+        addr,
+        &config.signal_endpoint,
+        &config.signal_fingerprint,
+        &identity,
+    )
+    .await?;
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -68,20 +74,17 @@ pub async fn handle_expose(
                         .await
                     {
                         eprintln!(
-                            "{} {}",
+                            "{} Failed to register target with local daemon: {}",
                             "warning:".yellow(),
-                            format!("Failed to register target with local daemon: {}", e)
+                            e
                         );
                     }
                 }
                 Err(e) => {
                     eprintln!(
-                        "{} {}",
+                        "{} mlshtund is not running — signal knows the route but no local forwarder: {}",
                         "warning:".yellow(),
-                        format!(
-                            "mlshtund is not running — signal knows the route but no local forwarder: {}",
-                            e
-                        )
+                        e
                     );
                 }
             }
@@ -122,7 +125,13 @@ pub async fn handle_unexpose(cluster: &str, domain: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity).await?;
+    let conn = connect_to_signal(
+        addr,
+        &config.signal_endpoint,
+        &config.signal_fingerprint,
+        &identity,
+    )
+    .await?;
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -160,7 +169,13 @@ pub async fn handle_list_exposed(cluster: &str) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
 
     let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(addr, &config.signal_endpoint, &config.signal_fingerprint, &identity).await?;
+    let conn = connect_to_signal(
+        addr,
+        &config.signal_endpoint,
+        &config.signal_fingerprint,
+        &identity,
+    )
+    .await?;
     let (mut send, mut recv) = conn
         .open_bi()
         .await
@@ -214,4 +229,3 @@ fn short_id(id: &str) -> &str {
     let cut = 8.min(id.len());
     &id[..cut]
 }
-

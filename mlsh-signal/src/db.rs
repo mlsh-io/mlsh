@@ -235,10 +235,7 @@ pub async fn cluster_exists(pool: &SqlitePool, cluster_id: &str) -> Result<bool>
 }
 
 /// Look up a cluster's display name by UUID.
-pub async fn get_cluster_name_by_id(
-    pool: &SqlitePool,
-    cluster_id: &str,
-) -> Result<Option<String>> {
+pub async fn get_cluster_name_by_id(pool: &SqlitePool, cluster_id: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT name FROM clusters WHERE id = ?1")
         .bind(cluster_id)
         .fetch_optional(pool)
@@ -899,6 +896,35 @@ pub struct IngressRouteRecord {
     pub created_at: String,
 }
 
+/// Raw row shape for `ingress_routes` queries. Matches the column order used
+/// in every `SELECT` in this module so the tuple → record conversion stays
+/// consistent across helpers.
+type IngressRouteRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+);
+
+impl From<IngressRouteRow> for IngressRouteRecord {
+    fn from((d, cid, nid, t, m, pm, pi, ca): IngressRouteRow) -> Self {
+        Self {
+            domain: d,
+            cluster_id: cid,
+            node_id: nid,
+            target: t,
+            mode: m,
+            public_mode: pm,
+            public_ip: pi,
+            created_at: ca,
+        }
+    }
+}
+
 /// Insert a new ingress route. Returns `Ok(false)` when the domain is already
 /// owned by a different (cluster, node) — caller should surface this as
 /// "conflict" to the user.
@@ -916,25 +942,22 @@ pub async fn insert_ingress_route(
 
     // If the row already exists for the same (cluster_id, node_id), this is an
     // idempotent re-registration (e.g. target changed). Update in place.
-    let existing: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, target FROM ingress_routes WHERE domain = ?1",
-    )
-    .bind(domain)
-    .fetch_optional(pool)
-    .await
-    .context("Failed to check existing ingress route")?;
+    let existing: Option<(String, String, String)> =
+        sqlx::query_as("SELECT cluster_id, node_id, target FROM ingress_routes WHERE domain = ?1")
+            .bind(domain)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to check existing ingress route")?;
 
     match existing {
         Some((cid, nid, _)) if cid == cluster_id && nid == node_id => {
-            sqlx::query(
-                "UPDATE ingress_routes SET target = ?1, mode = ?2 WHERE domain = ?3",
-            )
-            .bind(target)
-            .bind(mode)
-            .bind(domain)
-            .execute(pool)
-            .await
-            .context("Failed to update ingress route")?;
+            sqlx::query("UPDATE ingress_routes SET target = ?1, mode = ?2 WHERE domain = ?3")
+                .bind(target)
+                .bind(mode)
+                .bind(domain)
+                .execute(pool)
+                .await
+                .context("Failed to update ingress route")?;
             Ok(true)
         }
         Some(_) => Ok(false),
@@ -965,14 +988,12 @@ pub async fn delete_ingress_route(
     cluster_id: &str,
     domain: &str,
 ) -> Result<bool> {
-    let r = sqlx::query(
-        "DELETE FROM ingress_routes WHERE domain = ?1 AND cluster_id = ?2",
-    )
-    .bind(domain)
-    .bind(cluster_id)
-    .execute(pool)
-    .await
-    .context("Failed to delete ingress route")?;
+    let r = sqlx::query("DELETE FROM ingress_routes WHERE domain = ?1 AND cluster_id = ?2")
+        .bind(domain)
+        .bind(cluster_id)
+        .execute(pool)
+        .await
+        .context("Failed to delete ingress route")?;
     Ok(r.rows_affected() > 0)
 }
 
@@ -981,27 +1002,15 @@ pub async fn lookup_ingress_route_by_domain(
     pool: &SqlitePool,
     domain: &str,
 ) -> Result<Option<IngressRouteRecord>> {
-    let row: Option<(String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+    let row: Option<IngressRouteRow> = sqlx::query_as(
+        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
              FROM ingress_routes WHERE domain = ?1",
-        )
-        .bind(domain)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to lookup ingress route")?;
-    Ok(row.map(
-        |(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
-            domain: d,
-            cluster_id: cid,
-            node_id: nid,
-            target: t,
-            mode: m,
-            public_mode: pm,
-            public_ip: pi,
-            created_at: ca,
-        },
-    ))
+    )
+    .bind(domain)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to lookup ingress route")?;
+    Ok(row.map(Into::into))
 }
 
 /// List ingress routes for a cluster.
@@ -1009,28 +1018,15 @@ pub async fn list_ingress_routes(
     pool: &SqlitePool,
     cluster_id: &str,
 ) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<(String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+    let rows: Vec<IngressRouteRow> = sqlx::query_as(
+        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
              FROM ingress_routes WHERE cluster_id = ?1 ORDER BY domain",
-        )
-        .bind(cluster_id)
-        .fetch_all(pool)
-        .await
-        .context("Failed to list ingress routes")?;
-    Ok(rows
-        .into_iter()
-        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
-            domain: d,
-            cluster_id: cid,
-            node_id: nid,
-            target: t,
-            mode: m,
-            public_mode: pm,
-            public_ip: pi,
-            created_at: ca,
-        })
-        .collect())
+    )
+    .bind(cluster_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list ingress routes")?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// List all ingress routes for a specific node — used by the public-IP prober
@@ -1040,55 +1036,29 @@ pub async fn list_ingress_routes_for_node(
     cluster_id: &str,
     node_id: &str,
 ) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<(String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+    let rows: Vec<IngressRouteRow> = sqlx::query_as(
+        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
              FROM ingress_routes WHERE cluster_id = ?1 AND node_id = ?2 ORDER BY domain",
-        )
-        .bind(cluster_id)
-        .bind(node_id)
-        .fetch_all(pool)
-        .await
-        .context("Failed to list ingress routes for node")?;
-    Ok(rows
-        .into_iter()
-        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
-            domain: d,
-            cluster_id: cid,
-            node_id: nid,
-            target: t,
-            mode: m,
-            public_mode: pm,
-            public_ip: pi,
-            created_at: ca,
-        })
-        .collect())
+    )
+    .bind(cluster_id)
+    .bind(node_id)
+    .fetch_all(pool)
+    .await
+    .context("Failed to list ingress routes for node")?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// List every ingress route across all clusters — used by the periodic health
 /// check and DNS zone loader.
 pub async fn list_all_ingress_routes(pool: &SqlitePool) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<(String, String, String, String, String, String, String, String)> =
-        sqlx::query_as(
-            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+    let rows: Vec<IngressRouteRow> = sqlx::query_as(
+        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
              FROM ingress_routes",
-        )
-        .fetch_all(pool)
-        .await
-        .context("Failed to list all ingress routes")?;
-    Ok(rows
-        .into_iter()
-        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
-            domain: d,
-            cluster_id: cid,
-            node_id: nid,
-            target: t,
-            mode: m,
-            public_mode: pm,
-            public_ip: pi,
-            created_at: ca,
-        })
-        .collect())
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to list all ingress routes")?;
+    Ok(rows.into_iter().map(Into::into).collect())
 }
 
 /// Update the public mode + IP for an ingress route.
@@ -1098,15 +1068,13 @@ pub async fn set_ingress_public_mode(
     public_mode: &str,
     public_ip: &str,
 ) -> Result<()> {
-    sqlx::query(
-        "UPDATE ingress_routes SET public_mode = ?1, public_ip = ?2 WHERE domain = ?3",
-    )
-    .bind(public_mode)
-    .bind(public_ip)
-    .bind(domain)
-    .execute(pool)
-    .await
-    .context("Failed to update ingress public mode")?;
+    sqlx::query("UPDATE ingress_routes SET public_mode = ?1, public_ip = ?2 WHERE domain = ?3")
+        .bind(public_mode)
+        .bind(public_ip)
+        .bind(domain)
+        .execute(pool)
+        .await
+        .context("Failed to update ingress public mode")?;
     Ok(())
 }
 
@@ -1147,12 +1115,11 @@ pub async fn list_dns_txt(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT name, value, expires_at FROM dns_txt_records",
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to list dns_txt records")?;
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT name, value, expires_at FROM dns_txt_records")
+            .fetch_all(pool)
+            .await
+            .context("Failed to list dns_txt records")?;
     Ok(rows
         .into_iter()
         .filter(|(_, _, e)| e.is_empty() || e.as_str() > now.as_str())
@@ -1165,13 +1132,11 @@ pub async fn purge_expired_dns_txt(pool: &SqlitePool) -> Result<u64> {
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
-    let r = sqlx::query(
-        "DELETE FROM dns_txt_records WHERE expires_at != '' AND expires_at <= ?1",
-    )
-    .bind(&now)
-    .execute(pool)
-    .await
-    .context("Failed to purge expired dns_txt records")?;
+    let r = sqlx::query("DELETE FROM dns_txt_records WHERE expires_at != '' AND expires_at <= ?1")
+        .bind(&now)
+        .execute(pool)
+        .await
+        .context("Failed to purge expired dns_txt records")?;
     Ok(r.rows_affected())
 }
 
@@ -1632,7 +1597,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!ok, "expected conflict when another cluster owns the domain");
+        assert!(
+            !ok,
+            "expected conflict when another cluster owns the domain"
+        );
     }
 
     #[tokio::test]

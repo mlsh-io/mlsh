@@ -916,8 +916,8 @@ fn validate_ingress_domain(
     Ok(())
 }
 
-async fn resolve_caller<'a>(
-    state: &'a QuicState,
+async fn resolve_caller(
+    state: &QuicState,
     conn: &quinn::Connection,
     cluster_id: &str,
 ) -> Result<db::NodeRecord, ServerMessage> {
@@ -950,10 +950,7 @@ async fn handle_expose(
 ) -> ServerMessage {
     // L4 ingress mode is not implemented yet; reject explicitly.
     if matches!(mode, mlsh_protocol::types::IngressMode::L4) {
-        return ServerMessage::error(
-            "unsupported",
-            "L4 ingress mode is not implemented yet",
-        );
+        return ServerMessage::error("unsupported", "L4 ingress mode is not implemented yet");
     }
 
     let caller = match resolve_caller(state, conn, cluster_id).await {
@@ -977,10 +974,7 @@ async fn handle_expose(
     // Sanity-check the target URL (http://host:port form; the peer will parse
     // further). We just want to reject obvious garbage here.
     if target.is_empty() || !(target.starts_with("http://") || target.starts_with("https://")) {
-        return ServerMessage::error(
-            "invalid_request",
-            "target must be http:// or https:// URL",
-        );
+        return ServerMessage::error("invalid_request", "target must be http:// or https:// URL");
     }
 
     let mode_str = "http";
@@ -1026,10 +1020,8 @@ async fn handle_expose(
     // Kick off a one-shot probe to decide relay vs direct for this new route.
     // Done in-line so the response can reflect the promoted mode when possible.
     let route_lower = domain.to_ascii_lowercase();
-    let (public_mode, public_ip) = match db::lookup_ingress_route_by_domain(
-        &state.db, &route_lower,
-    )
-    .await
+    let (public_mode, public_ip) = match db::lookup_ingress_route_by_domain(&state.db, &route_lower)
+        .await
     {
         Ok(Some(route)) => {
             let ip = crate::probe::srflx_ip(&state.sessions, cluster_id, &caller.node_id).await;
@@ -1085,10 +1077,7 @@ async fn handle_unexpose(
         return ServerMessage::error("not_found", "Domain not found");
     }
     if route.node_id != caller.node_id && caller.role != "admin" {
-        return ServerMessage::error(
-            "forbidden",
-            "Only the owning node or an admin may unexpose",
-        );
+        return ServerMessage::error("forbidden", "Only the owning node or an admin may unexpose");
     }
 
     let removed = match db::delete_ingress_route(&state.db, cluster_id, &d).await {
@@ -1156,7 +1145,10 @@ async fn handle_acme_challenge(
     challenge_name: &str,
     value: &str,
 ) -> ServerMessage {
-    let name = challenge_name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let name = challenge_name
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     let prefix = "_acme-challenge.";
     let parent = match name.strip_prefix(prefix) {
         Some(p) => p.to_string(),
@@ -1171,12 +1163,7 @@ async fn handle_acme_challenge(
     // Look up the route to determine caller ownership.
     let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
         Ok(Some(r)) => r,
-        Ok(None) => {
-            return ServerMessage::error(
-                "not_found",
-                "No ingress route for parent domain",
-            )
-        }
+        Ok(None) => return ServerMessage::error("not_found", "No ingress route for parent domain"),
         Err(e) => {
             warn!(error = %e, "DB error on ACME challenge");
             return ServerMessage::error("internal", "Database error");
@@ -1214,7 +1201,10 @@ async fn handle_acme_challenge_clear(
     conn: &quinn::Connection,
     challenge_name: &str,
 ) -> ServerMessage {
-    let name = challenge_name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let name = challenge_name
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
     let prefix = "_acme-challenge.";
     let parent = match name.strip_prefix(prefix) {
         Some(p) => p.to_string(),
@@ -1228,12 +1218,7 @@ async fn handle_acme_challenge_clear(
 
     let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
         Ok(Some(r)) => r,
-        Ok(None) => {
-            return ServerMessage::error(
-                "not_found",
-                "No ingress route for parent domain",
-            )
-        }
+        Ok(None) => return ServerMessage::error("not_found", "No ingress route for parent domain"),
         Err(e) => {
             warn!(error = %e, "DB error on ACME clear");
             return ServerMessage::error("internal", "Database error");
@@ -1318,12 +1303,10 @@ mod tests {
 
     #[test]
     fn rejects_acme_challenge_spoofing() {
-        assert!(validate_ingress_domain(
-            "mlsh.io",
-            "homelab",
-            "_acme-challenge.homelab.mlsh.io"
-        )
-        .is_err());
+        assert!(
+            validate_ingress_domain("mlsh.io", "homelab", "_acme-challenge.homelab.mlsh.io")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1343,7 +1326,9 @@ mod tests {
     fn rejects_cluster_with_invalid_dns_chars() {
         // Underscores are not DNS-safe — expose must fail rather than produce
         // a broken domain.
-        assert!(validate_ingress_domain("mlsh.io", "my_cluster", "app.my_cluster.mlsh.io").is_err());
+        assert!(
+            validate_ingress_domain("mlsh.io", "my_cluster", "app.my_cluster.mlsh.io").is_err()
+        );
         assert!(validate_ingress_domain("mlsh.io", "", "app.mlsh.io").is_err());
     }
 }
