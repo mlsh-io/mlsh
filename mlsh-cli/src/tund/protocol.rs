@@ -28,11 +28,14 @@ pub enum DaemonRequest {
     /// Register a public-ingress route on the local daemon.
     /// Paired with `StreamMessage::ExposeService` sent to signal by the CLI.
     /// The peer's ingress stream handler splices inbound traffic to `target`
-    /// after terminating TLS with a locally-generated self-signed cert.
-    ///
-    /// `email` and `acme_staging` are accepted today for CLI stability but not
-    /// yet used — they'll feed the HTTP-01 ACME client in a follow-up commit.
+    /// after terminating TLS with the cert issued for `domain`.
     IngressAdd {
+        /// Cluster whose signal session publishes the HTTP-01 challenge
+        /// response. Looked up against `TunnelManager`. If empty / not
+        /// connected, the daemon falls back to a self-signed cert and logs
+        /// a warning.
+        #[serde(default)]
+        cluster: String,
         /// Public domain (e.g. "myapp.mlsh.io").
         domain: String,
         /// Local upstream URL (e.g. "http://localhost:3000").

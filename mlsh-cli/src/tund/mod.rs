@@ -4,6 +4,7 @@
 //! connections. CLI and future GUI are thin clients communicating over
 //! a Unix socket.
 
+pub mod acme;
 pub mod client;
 pub mod control;
 pub mod dns;

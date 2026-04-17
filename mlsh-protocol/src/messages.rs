@@ -106,6 +106,24 @@ pub enum StreamMessage {
     ListExposed {
         cluster_id: String,
     },
+
+    /// Publish an HTTP-01 ACME challenge response on signal. mlshtund sends
+    /// this during ACME issuance; signal serves it on :80 at
+    /// `/.well-known/acme-challenge/<token>` for LE's validator. Caller must
+    /// own the domain via a registered ingress route.
+    HttpChallengeSet {
+        domain: String,
+        token: String,
+        /// The RFC 8555 key-authorization (`<token>.<account-thumbprint>`).
+        key_auth: String,
+    },
+
+    /// Remove a previously-published HTTP-01 challenge response. Either
+    /// protocol messages or the in-memory TTL (15 min) will clear it.
+    HttpChallengeClear {
+        domain: String,
+        token: String,
+    },
 }
 
 // --- Server → Client
@@ -183,6 +201,11 @@ pub enum ServerMessage {
     UnexposeOk,
     ExposedList {
         routes: Vec<IngressRoute>,
+    },
+    /// Acknowledgement for `HttpChallengeSet` / `HttpChallengeClear`.
+    HttpChallengeOk {
+        domain: String,
+        token: String,
     },
 
     // Shared
@@ -743,6 +766,57 @@ mod tests {
                 assert_eq!(routes[0].public_ip, "203.0.113.5");
             }
             other => panic!("expected ExposedList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn http_challenge_set_roundtrip() {
+        let msg = StreamMessage::HttpChallengeSet {
+            domain: "app.mlsh.io".into(),
+            token: "tok-abc".into(),
+            key_auth: "tok-abc.thumbprint".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::HttpChallengeSet {
+                domain,
+                token,
+                key_auth,
+            } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(token, "tok-abc");
+                assert_eq!(key_auth, "tok-abc.thumbprint");
+            }
+            other => panic!("expected HttpChallengeSet, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn http_challenge_clear_roundtrip() {
+        let msg = StreamMessage::HttpChallengeClear {
+            domain: "app.mlsh.io".into(),
+            token: "tok-abc".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::HttpChallengeClear { domain, token } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(token, "tok-abc");
+            }
+            other => panic!("expected HttpChallengeClear, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn http_challenge_ok_roundtrip() {
+        let msg = ServerMessage::HttpChallengeOk {
+            domain: "app.mlsh.io".into(),
+            token: "tok-abc".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            ServerMessage::HttpChallengeOk { domain, token } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(token, "tok-abc");
+            }
+            other => panic!("expected HttpChallengeOk, got {:?}", other),
         }
     }
 

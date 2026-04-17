@@ -88,6 +88,9 @@ pub struct ManagedTunnel {
     bytes_rx: Arc<AtomicU64>,
     overlay_ip: Option<Ipv4Addr>,
     info: Arc<std::sync::Mutex<SharedInfo>>,
+    /// Watch exposing the currently-active signal QUIC connection. Used by
+    /// the ACME client to publish HTTP-01 challenge responses via signal.
+    signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
 }
 
 impl ManagedTunnel {
@@ -95,6 +98,7 @@ impl ManagedTunnel {
     pub fn start(config: ClusterConfig) -> Result<Self> {
         let (state_tx, state_rx) = watch::channel(TunnelState::Connecting);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let (signal_conn_tx, signal_conn_rx) = watch::channel(None::<quinn::Connection>);
         let bytes_tx = Arc::new(AtomicU64::new(0));
         let bytes_rx = Arc::new(AtomicU64::new(0));
         let info = Arc::new(std::sync::Mutex::new(SharedInfo::default()));
@@ -120,6 +124,7 @@ impl ManagedTunnel {
                 info_task,
                 tx_counter,
                 rx_counter,
+                signal_conn_tx,
             )
             .await;
         });
@@ -133,7 +138,15 @@ impl ManagedTunnel {
             bytes_rx,
             overlay_ip: Some(overlay_ip),
             info,
+            signal_conn_rx: Some(signal_conn_rx),
         })
+    }
+
+    /// Return the current signal QUIC connection, if one is active.
+    pub fn signal_connection(&self) -> Option<quinn::Connection> {
+        self.signal_conn_rx
+            .as_ref()
+            .and_then(|rx| rx.borrow().clone())
     }
 
     /// Shut down this tunnel.
@@ -186,6 +199,7 @@ async fn tunnel_task(
     info: Arc<std::sync::Mutex<SharedInfo>>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
+    signal_conn_tx: watch::Sender<Option<quinn::Connection>>,
 ) {
     let mut backoff = Duration::from_secs(1);
 
@@ -355,6 +369,21 @@ async fn tunnel_task(
             }
             let peers = Arc::clone(&rx.borrow());
             sync_table.update_peers(peers).await;
+        }
+    });
+
+    // Mirror the signal session's current QUIC connection into our own watch
+    // so ACME (and future features) can piggyback control messages on the
+    // existing authenticated channel.
+    let signal_conn_in = session.connection.clone();
+    let signal_conn_out = signal_conn_tx.clone();
+    tokio::spawn(async move {
+        let mut rx = signal_conn_in;
+        loop {
+            let _ = signal_conn_out.send(rx.borrow().clone());
+            if rx.changed().await.is_err() {
+                break;
+            }
         }
     });
 

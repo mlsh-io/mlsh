@@ -69,7 +69,10 @@ pub async fn handle_expose(
             // isn't running — signal has the authoritative record.
             match DaemonClient::connect_default().await {
                 Ok(mut c) => {
-                    if let Err(e) = c.ingress_add(&domain, target, email, acme_staging).await {
+                    if let Err(e) = c
+                        .ingress_add(&config.name, &domain, target, email, acme_staging)
+                        .await
+                    {
                         eprintln!(
                             "{} Failed to register target with local daemon: {}",
                             "warning:".yellow(),
