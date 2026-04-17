@@ -106,20 +106,6 @@ pub enum StreamMessage {
     ListExposed {
         cluster_id: String,
     },
-
-    /// Publish an ACME DNS-01 challenge TXT record via mlsh-signal's
-    /// authoritative DNS server. Caller must own the parent domain.
-    AcmeChallenge {
-        /// Fully-qualified challenge name (e.g. "_acme-challenge.myapp.mlsh.io").
-        domain: String,
-        /// TXT record value (Let's Encrypt key-authorization digest).
-        value: String,
-    },
-
-    /// Remove a previously-published ACME challenge TXT record.
-    AcmeChallengeClear {
-        domain: String,
-    },
 }
 
 // --- Server → Client
@@ -184,8 +170,9 @@ pub enum ServerMessage {
         nodes: Vec<NodeInfo>,
     },
 
-    /// Response to `ExposeService`: the route is registered. Public mode may
-    /// be promoted to "direct" later via `IngressStatus`.
+    /// Response to `ExposeService`: the route is registered. In the current
+    /// implementation `public_mode` is always "relay" — direct-ingress mode
+    /// (Mode B) is not implemented.
     ExposeOk {
         domain: String,
         /// "relay" or "direct".
@@ -196,17 +183,6 @@ pub enum ServerMessage {
     UnexposeOk,
     ExposedList {
         routes: Vec<IngressRoute>,
-    },
-    AcmeChallengeOk {
-        domain: String,
-    },
-    /// Pushed to the node when the direct/relay decision changes.
-    IngressStatus {
-        domain: String,
-        /// "direct" or "relay".
-        public_mode: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        public_ip: Option<String>,
     },
 
     // Shared
@@ -727,21 +703,6 @@ mod tests {
     }
 
     #[test]
-    fn acme_challenge_roundtrip() {
-        let msg = StreamMessage::AcmeChallenge {
-            domain: "_acme-challenge.app.mlsh.io".into(),
-            value: "challenge-token-xyz".into(),
-        };
-        match cbor_roundtrip(&msg) {
-            StreamMessage::AcmeChallenge { domain, value } => {
-                assert_eq!(domain, "_acme-challenge.app.mlsh.io");
-                assert_eq!(value, "challenge-token-xyz");
-            }
-            other => panic!("expected AcmeChallenge, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn expose_ok_roundtrip() {
         let msg = ServerMessage::ExposeOk {
             domain: "app.mlsh.io".into(),
@@ -782,27 +743,6 @@ mod tests {
                 assert_eq!(routes[0].public_ip, "203.0.113.5");
             }
             other => panic!("expected ExposedList, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn ingress_status_roundtrip() {
-        let msg = ServerMessage::IngressStatus {
-            domain: "app.mlsh.io".into(),
-            public_mode: "direct".into(),
-            public_ip: Some("203.0.113.5".into()),
-        };
-        match cbor_roundtrip(&msg) {
-            ServerMessage::IngressStatus {
-                domain,
-                public_mode,
-                public_ip,
-            } => {
-                assert_eq!(domain, "app.mlsh.io");
-                assert_eq!(public_mode, "direct");
-                assert_eq!(public_ip.as_deref(), Some("203.0.113.5"));
-            }
-            other => panic!("expected IngressStatus, got {:?}", other),
         }
     }
 

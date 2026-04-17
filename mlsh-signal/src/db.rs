@@ -144,19 +144,6 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     .execute(&pool)
     .await;
 
-    // --- DNS TXT records (ACME DNS-01 challenges + static overrides)
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS dns_txt_records (
-            name       TEXT NOT NULL,
-            value      TEXT NOT NULL,
-            expires_at TEXT NOT NULL DEFAULT '',
-            PRIMARY KEY (name, value)
-        )",
-    )
-    .execute(&pool)
-    .await
-    .context("Failed to create dns_txt_records table")?;
-
     Ok(pool)
 }
 
@@ -1078,68 +1065,6 @@ pub async fn set_ingress_public_mode(
     Ok(())
 }
 
-// --- DNS TXT records
-
-/// Upsert a TXT record with an optional expiry time (RFC3339; empty = no expiry).
-pub async fn upsert_dns_txt(
-    pool: &SqlitePool,
-    name: &str,
-    value: &str,
-    expires_at: &str,
-) -> Result<()> {
-    sqlx::query(
-        "INSERT INTO dns_txt_records (name, value, expires_at) VALUES (?1, ?2, ?3)
-         ON CONFLICT(name, value) DO UPDATE SET expires_at = ?3",
-    )
-    .bind(name)
-    .bind(value)
-    .bind(expires_at)
-    .execute(pool)
-    .await
-    .context("Failed to upsert dns_txt record")?;
-    Ok(())
-}
-
-/// Delete all TXT records for a given name.
-pub async fn delete_dns_txt(pool: &SqlitePool, name: &str) -> Result<()> {
-    sqlx::query("DELETE FROM dns_txt_records WHERE name = ?1")
-        .bind(name)
-        .execute(pool)
-        .await
-        .context("Failed to delete dns_txt records")?;
-    Ok(())
-}
-
-/// List all TXT records (expired rows are filtered out at read time).
-pub async fn list_dns_txt(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-    let rows: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT name, value, expires_at FROM dns_txt_records")
-            .fetch_all(pool)
-            .await
-            .context("Failed to list dns_txt records")?;
-    Ok(rows
-        .into_iter()
-        .filter(|(_, _, e)| e.is_empty() || e.as_str() > now.as_str())
-        .map(|(n, v, _)| (n, v))
-        .collect())
-}
-
-/// Purge TXT records whose expiry has passed.
-pub async fn purge_expired_dns_txt(pool: &SqlitePool) -> Result<u64> {
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-    let r = sqlx::query("DELETE FROM dns_txt_records WHERE expires_at != '' AND expires_at <= ?1")
-        .bind(&now)
-        .execute(pool)
-        .await
-        .context("Failed to purge expired dns_txt records")?;
-    Ok(r.rows_affected())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1217,15 +1142,6 @@ mod tests {
                 public_mode TEXT NOT NULL DEFAULT 'relay',
                 public_ip TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS dns_txt_records (
-                name TEXT NOT NULL, value TEXT NOT NULL,
-                expires_at TEXT NOT NULL DEFAULT '',
-                PRIMARY KEY (name, value))",
         )
         .execute(&pool)
         .await
@@ -1649,45 +1565,5 @@ mod tests {
             .unwrap();
         assert_eq!(r.public_mode, "direct");
         assert_eq!(r.public_ip, "203.0.113.5");
-    }
-
-    // --- DNS TXT records
-
-    #[tokio::test]
-    async fn dns_txt_upsert_and_list() {
-        let pool = test_pool().await;
-        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "abc", "")
-            .await
-            .unwrap();
-        let rows = list_dns_txt(&pool).await.unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].0, "_acme-challenge.app.mlsh.io");
-        assert_eq!(rows[0].1, "abc");
-    }
-
-    #[tokio::test]
-    async fn dns_txt_delete_all_for_name() {
-        let pool = test_pool().await;
-        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "abc", "")
-            .await
-            .unwrap();
-        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "def", "")
-            .await
-            .unwrap();
-        delete_dns_txt(&pool, "_acme-challenge.app.mlsh.io")
-            .await
-            .unwrap();
-        let rows = list_dns_txt(&pool).await.unwrap();
-        assert!(rows.is_empty());
-    }
-
-    #[tokio::test]
-    async fn dns_txt_expired_filtered_out() {
-        let pool = test_pool().await;
-        upsert_dns_txt(&pool, "a.mlsh.io", "v", "2000-01-01T00:00:00Z")
-            .await
-            .unwrap();
-        let rows = list_dns_txt(&pool).await.unwrap();
-        assert!(rows.is_empty());
     }
 }

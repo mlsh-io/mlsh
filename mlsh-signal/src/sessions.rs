@@ -126,20 +126,6 @@ impl SessionStore {
             .collect()
     }
 
-    /// Push a single message to one node's session, if it's online.
-    /// Returns true if the push channel was still alive.
-    pub async fn push_to_node(&self, cluster_id: &str, node_id: &str, msg: ServerMessage) -> bool {
-        let key = (cluster_id.to_string(), node_id.to_string());
-        let sessions = self.sessions.read().await;
-        let Some(session) = sessions.get(&key) else {
-            return false;
-        };
-        let Some(tx) = &session.push_tx else {
-            return false;
-        };
-        tx.send(Arc::new(msg)).is_ok()
-    }
-
     /// Broadcast a message to all connected nodes in a cluster.
     pub async fn broadcast(&self, cluster_id: &str, msg: ServerMessage) {
         let msg = Arc::new(msg);

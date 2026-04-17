@@ -27,12 +27,12 @@ pub enum DaemonRequest {
     Status,
     /// Register a public-ingress route on the local daemon.
     /// Paired with `StreamMessage::ExposeService` sent to signal by the CLI.
+    /// The peer's ingress stream handler splices inbound traffic to `target`
+    /// after terminating TLS with a locally-generated self-signed cert.
+    ///
+    /// `email` and `acme_staging` are accepted today for CLI stability but not
+    /// yet used — they'll feed the HTTP-01 ACME client in a follow-up commit.
     IngressAdd {
-        /// Cluster whose signal session should be used for ACME DNS-01.
-        /// If the cluster isn't connected, ACME is deferred and a self-signed
-        /// cert is used until the daemon reconnects and retries.
-        #[serde(default)]
-        cluster: String,
         /// Public domain (e.g. "myapp.mlsh.io").
         domain: String,
         /// Local upstream URL (e.g. "http://localhost:3000").
@@ -40,8 +40,7 @@ pub enum DaemonRequest {
         /// Contact email for the ACME account.
         #[serde(default)]
         email: Option<String>,
-        /// When true, hit Let's Encrypt staging instead of production. Strongly
-        /// recommended during smoke tests (production has hard rate limits).
+        /// When true, target Let's Encrypt staging instead of production.
         #[serde(default)]
         acme_staging: bool,
     },

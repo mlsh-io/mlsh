@@ -161,20 +161,10 @@ async fn handle_stream(
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
-        StreamMessage::AcmeChallenge { domain, value } => {
-            let resp = handle_acme_challenge(state, conn, &domain, &value).await;
-            protocol::write_message(&mut send, &resp).await?;
-            send.finish()?;
-        }
-        StreamMessage::AcmeChallengeClear { domain } => {
-            let resp = handle_acme_challenge_clear(state, conn, &domain).await;
-            protocol::write_message(&mut send, &resp).await?;
-            send.finish()?;
-        }
         _ => {
             let resp = ServerMessage::error(
                 "auth_required",
-                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, ListExposed, or AcmeChallenge",
+                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, or ListExposed",
             );
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
@@ -310,43 +300,6 @@ async fn run_node_session(
                             }
                             StreamMessage::ReportCandidates { candidates } => {
                                 state.sessions.set_candidates(cluster_id, &node.node_id, candidates).await;
-                                // Re-probe direct/relay for this node's routes whenever its
-                                // srflx candidate may have changed. Spawn so the session loop
-                                // isn't blocked by the TCP connect.
-                                let pool = state.db.clone();
-                                let sessions = state.sessions.clone();
-                                let cluster_id_owned = cluster_id.to_string();
-                                let node_id_owned = node.node_id.clone();
-                                tokio::spawn(async move {
-                                    let routes = match db::list_ingress_routes_for_node(
-                                        &pool,
-                                        &cluster_id_owned,
-                                        &node_id_owned,
-                                    )
-                                    .await
-                                    {
-                                        Ok(r) => r,
-                                        Err(e) => {
-                                            tracing::warn!(error = %e, "Failed to list node's ingress routes");
-                                            return;
-                                        }
-                                    };
-                                    if routes.is_empty() {
-                                        return;
-                                    }
-                                    let ip = crate::probe::srflx_ip(
-                                        &sessions,
-                                        &cluster_id_owned,
-                                        &node_id_owned,
-                                    )
-                                    .await;
-                                    for r in routes {
-                                        let _ = crate::probe::probe_route(
-                                            &pool, &sessions, &r, ip,
-                                        )
-                                        .await;
-                                    }
-                                });
                             }
                             StreamMessage::ListNodes => {
                                 let online = state.sessions.online_node_ids(cluster_id).await;
@@ -967,7 +920,7 @@ async fn handle_expose(
         }
     };
 
-    if let Err(reason) = validate_ingress_domain(&state.config.dns_zone, &cluster_name, domain) {
+    if let Err(reason) = validate_ingress_domain("mlsh.io", &cluster_name, domain) {
         return ServerMessage::error("invalid_request", reason);
     }
 
@@ -1017,37 +970,10 @@ async fn handle_expose(
     )
     .await;
 
-    // Kick off a one-shot probe to decide relay vs direct for this new route.
-    // Done in-line so the response can reflect the promoted mode when possible.
-    let route_lower = domain.to_ascii_lowercase();
-    let (public_mode, public_ip) = match db::lookup_ingress_route_by_domain(&state.db, &route_lower)
-        .await
-    {
-        Ok(Some(route)) => {
-            let ip = crate::probe::srflx_ip(&state.sessions, cluster_id, &caller.node_id).await;
-            if let Err(e) = crate::probe::probe_route(&state.db, &state.sessions, &route, ip).await
-            {
-                warn!(domain = %route_lower, error = %e, "Initial probe failed");
-            }
-            match db::lookup_ingress_route_by_domain(&state.db, &route_lower).await {
-                Ok(Some(r)) => (
-                    r.public_mode,
-                    if r.public_ip.is_empty() {
-                        None
-                    } else {
-                        Some(r.public_ip)
-                    },
-                ),
-                _ => ("relay".to_string(), None),
-            }
-        }
-        _ => ("relay".to_string(), None),
-    };
-
     ServerMessage::ExposeOk {
-        domain: route_lower,
-        public_mode,
-        public_ip,
+        domain: domain.to_ascii_lowercase(),
+        public_mode: "relay".into(),
+        public_ip: None,
     }
 }
 
@@ -1137,111 +1063,6 @@ async fn handle_list_exposed(
             ServerMessage::error("internal", "Database error")
         }
     }
-}
-
-async fn handle_acme_challenge(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    challenge_name: &str,
-    value: &str,
-) -> ServerMessage {
-    let name = challenge_name
-        .trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    let prefix = "_acme-challenge.";
-    let parent = match name.strip_prefix(prefix) {
-        Some(p) => p.to_string(),
-        None => {
-            return ServerMessage::error(
-                "invalid_request",
-                "challenge name must start with _acme-challenge.",
-            )
-        }
-    };
-
-    // Look up the route to determine caller ownership.
-    let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return ServerMessage::error("not_found", "No ingress route for parent domain"),
-        Err(e) => {
-            warn!(error = %e, "DB error on ACME challenge");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
-
-    let caller = match resolve_caller(state, conn, &route.cluster_id).await {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-    if caller.node_id != route.node_id {
-        return ServerMessage::error(
-            "forbidden",
-            "Only the domain owner may publish ACME challenges",
-        );
-    }
-
-    // TXT records live for 10 minutes max — Let's Encrypt polls quickly and
-    // our ACME client issues AcmeChallengeClear on completion.
-    let expires_at = (time::OffsetDateTime::now_utc() + time::Duration::minutes(10))
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-
-    if let Err(e) = db::upsert_dns_txt(&state.db, &name, value, &expires_at).await {
-        warn!(error = %e, "Failed to upsert dns_txt");
-        return ServerMessage::error("internal", "Database error");
-    }
-
-    info!(name = %name, "ACME challenge TXT published");
-    ServerMessage::AcmeChallengeOk { domain: name }
-}
-
-async fn handle_acme_challenge_clear(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    challenge_name: &str,
-) -> ServerMessage {
-    let name = challenge_name
-        .trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    let prefix = "_acme-challenge.";
-    let parent = match name.strip_prefix(prefix) {
-        Some(p) => p.to_string(),
-        None => {
-            return ServerMessage::error(
-                "invalid_request",
-                "challenge name must start with _acme-challenge.",
-            )
-        }
-    };
-
-    let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return ServerMessage::error("not_found", "No ingress route for parent domain"),
-        Err(e) => {
-            warn!(error = %e, "DB error on ACME clear");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
-
-    let caller = match resolve_caller(state, conn, &route.cluster_id).await {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-    if caller.node_id != route.node_id {
-        return ServerMessage::error(
-            "forbidden",
-            "Only the domain owner may clear ACME challenges",
-        );
-    }
-
-    if let Err(e) = db::delete_dns_txt(&state.db, &name).await {
-        warn!(error = %e, "Failed to delete dns_txt");
-        return ServerMessage::error("internal", "Database error");
-    }
-    info!(name = %name, "ACME challenge TXT cleared");
-    ServerMessage::AcmeChallengeOk { domain: name }
 }
 
 /// Extract the SHA-256 fingerprint from the peer's TLS client certificate.

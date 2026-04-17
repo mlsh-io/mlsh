@@ -168,38 +168,21 @@ async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -
             mgr.status()
         }
         DaemonRequest::IngressAdd {
-            cluster,
             domain,
             target,
             email,
             acme_staging,
         } => {
             crate::tund::ingress::add(&domain, &target);
-            // Attempt to spawn ACME issuance if the named cluster has an
-            // active signal connection. Missing/disconnected clusters fall
-            // back to the self-signed cert produced on first ingress.
-            if !cluster.is_empty() {
-                let conn_opt = {
-                    let mgr = manager.lock().await;
-                    mgr.signal_connection_for(&cluster)
-                };
-                match conn_opt {
-                    Some(conn) => {
-                        let directory = if acme_staging {
-                            crate::tund::acme::Directory::Staging
-                        } else {
-                            crate::tund::acme::Directory::Production
-                        };
-                        crate::tund::acme::spawn_issuance(domain.clone(), conn, email, directory);
-                    }
-                    None => {
-                        tracing::warn!(
-                            cluster,
-                            domain,
-                            "No active signal session — ACME deferred; using self-signed cert for now"
-                        );
-                    }
-                }
+            // ACME integration not yet implemented — these fields are accepted
+            // for CLI stability and will feed the HTTP-01 client in a follow-up.
+            if email.is_some() || acme_staging {
+                tracing::info!(
+                    domain,
+                    email = email.as_deref().unwrap_or("-"),
+                    acme_staging,
+                    "ACME requested; not yet implemented — serving self-signed cert"
+                );
             }
             DaemonResponse::Ok {
                 message: Some(format!("Ingress target registered for {}", domain)),

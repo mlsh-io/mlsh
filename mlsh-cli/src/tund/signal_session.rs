@@ -518,20 +518,6 @@ fn handle_push_message(
                 .collect();
             let _ = peers_tx.send(Arc::new(new_peers));
         }
-        ServerMessage::IngressStatus {
-            domain,
-            public_mode,
-            public_ip,
-        } => {
-            let direct = public_mode == "direct";
-            tracing::info!(
-                %domain,
-                mode = %public_mode,
-                ip = public_ip.as_deref().unwrap_or("-"),
-                "Ingress mode update"
-            );
-            super::ingress::set_direct_mode(domain, direct);
-        }
         ServerMessage::Pong => {} // keepalive response
         other => {
             tracing::debug!("Signal: unhandled push message: {:?}", other);
