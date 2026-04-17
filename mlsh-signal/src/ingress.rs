@@ -54,7 +54,10 @@ pub async fn run(
                         let state = state.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_connection(socket, remote, state).await {
-                                debug!(%remote, error = %e, "Ingress connection ended");
+                                // `{:#}` prints the full anyhow chain instead of the top-level
+                                // wrapper only — important for diagnosing rustls errors that
+                                // arrive inside a `.context(...)` wrapper.
+                                warn!(%remote, error = %format!("{e:#}"), "Ingress connection ended");
                             }
                         });
                     }
@@ -80,6 +83,9 @@ async fn handle_connection(
     remote: SocketAddr,
     state: Arc<QuicState>,
 ) -> Result<()> {
+    // Temporary diagnostic.
+    info!(%remote, "Ingress TCP connection accepted");
+
     // 1. Optional PROXY v2 header
     let client_ip = if state.config.ingress_proxy_protocol {
         match tokio::time::timeout(PROXY_V2_DEADLINE, read_proxy_v2_header(&mut socket)).await {
@@ -117,8 +123,16 @@ async fn handle_connection(
             return Ok(());
         }
     };
+    // Temporary diagnostic: log every parsed ClientHello with SNI + whether
+    // the ALPN list advertised acme-tls/1. Helps distinguish "LE never reached
+    // signal" from "ALPN not detected" without turning on full debug logging.
+    info!(
+        %remote,
+        sni = info.sni.as_deref().unwrap_or("-"),
+        acme_tls = info.acme_tls,
+        "Ingress ClientHello"
+    );
     let Some(sni) = info.sni else {
-        debug!(%remote, "No SNI in ClientHello");
         return Ok(());
     };
 
