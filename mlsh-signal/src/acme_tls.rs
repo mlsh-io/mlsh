@@ -81,6 +81,23 @@ fn lookup(domain: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     Some((entry.cert_der.clone(), entry.key_der.clone()))
 }
 
+/// Resolver that always hands out the same `CertifiedKey`. `with_single_cert`
+/// can't be used here because it runs the chain through webpki, which rejects
+/// the ACME challenge cert's critical `id-pe-acmeIdentifier` extension
+/// (RFC 8737 mandates it be critical but webpki doesn't know about it).
+/// `CertifiedKey::new` bypasses that validation and just serves the cert.
+#[derive(Debug)]
+struct FixedCertResolver(Arc<rustls::sign::CertifiedKey>);
+
+impl rustls::server::ResolvesServerCert for FixedCertResolver {
+    fn resolve(
+        &self,
+        _client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        Some(self.0.clone())
+    }
+}
+
 /// Terminate an incoming TLS handshake for `domain` using the stored challenge
 /// cert. LE's validator performs the handshake, verifies the
 /// `id-pe-acmeIdentifier` extension, then closes — we don't exchange any
@@ -92,10 +109,21 @@ pub async fn serve_challenge(socket: TcpStream, domain: &str) -> Result<()> {
     let key = rustls::pki_types::PrivateKeyDer::try_from(key_der)
         .map_err(|e| anyhow::anyhow!("invalid challenge key: {}", e))?;
 
+    // Load the signing key through the active crypto provider (aws-lc-rs) and
+    // build a CertifiedKey directly — this skips the webpki cert-chain check
+    // that `with_single_cert` performs and that rejects our critical ACME
+    // extension.
+    let provider = rustls::crypto::CryptoProvider::get_default()
+        .context("No default rustls crypto provider installed")?;
+    let signing_key = provider
+        .key_provider
+        .load_private_key(key)
+        .map_err(|e| anyhow::anyhow!("Failed to load challenge key: {e}"))?;
+    let certified_key = Arc::new(rustls::sign::CertifiedKey::new(vec![cert], signing_key));
+
     let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![cert], key)
-        .context("Failed to build ACME TLS ServerConfig")?;
+        .with_cert_resolver(Arc::new(FixedCertResolver(certified_key)));
     // LE's validator only accepts the connection if we advertise the
     // acme-tls/1 ALPN; anything else is rejected per RFC 8737.
     server_config.alpn_protocols = vec![ACME_ALPN.to_vec()];
