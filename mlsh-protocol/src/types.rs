@@ -45,3 +45,35 @@ pub struct NodeInfo {
     #[serde(default)]
     pub display_name: String,
 }
+
+/// Ingress service mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IngressMode {
+    /// HTTP(S) reverse proxy via rpxy-lib on the peer.
+    Http,
+    /// Raw L4 TCP passthrough (future work; rejected by signal for now).
+    L4,
+}
+
+impl Default for IngressMode {
+    fn default() -> Self {
+        Self::Http
+    }
+}
+
+/// A registered public-ingress route (returned by ListExposed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngressRoute {
+    pub domain: String,
+    pub target: String,
+    pub node_id: String,
+    #[serde(default)]
+    pub mode: IngressMode,
+    /// "relay" when traffic transits mlsh-signal; "direct" when DNS points at
+    /// the node's public IP.
+    pub public_mode: String,
+    /// Node's public IP in direct mode, empty otherwise.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub public_ip: String,
+}

@@ -1,6 +1,7 @@
 pub mod adopt;
 pub mod connect;
 pub mod daemon;
+pub mod expose;
 pub mod identity;
 pub mod invite;
 pub mod nodes;

@@ -21,27 +21,24 @@ use super::relay_tls;
 /// After the relay handshake, wraps the stream in TLS (as server) for E2E
 /// encryption. The peer (initiator) connects as TLS client and verifies our
 /// certificate fingerprint.
+///
+/// The `RelayIncoming` header is read by the caller (`signal_session`) which
+/// dispatches between relay and ingress bi-streams; `from_node_id` is passed
+/// through already-parsed.
 pub async fn handle_incoming_relay(
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    recv: quinn::RecvStream,
     device: Arc<tun_rs::AsyncDevice>,
     _my_ip: Ipv4Addr,
     peer_table: PeerTable,
     identity: mlsh_crypto::identity::NodeIdentity,
+    from_node_id: String,
 ) -> anyhow::Result<()> {
-    // Read header from signal
-    let header: RelayMessage = framing::read_msg(&mut recv).await?;
-
-    let from_node_id = match &header {
-        RelayMessage::RelayIncoming { from_node_id } => from_node_id.as_str(),
-        other => anyhow::bail!("Expected RelayIncoming, got: {:?}", other),
-    };
-
     tracing::info!("Relay stream accepted (from: {})", from_node_id);
     framing::write_msg(&mut send, &RelayMessage::RelayAccepted).await?;
 
     // Look up peer's overlay IP
-    let peer_ip = lookup_peer_ip(from_node_id, &peer_table).await;
+    let peer_ip = lookup_peer_ip(&from_node_id, &peer_table).await;
 
     // Wrap in TLS (we are the TLS server, initiator is the TLS client)
     let tls_stream = relay_tls::wrap_responder(send, recv, &identity).await?;

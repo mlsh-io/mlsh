@@ -32,6 +32,46 @@ pub struct Config {
     /// Nodes are allocated sequential IPs from this range.
     #[serde(default = "default_overlay_subnet")]
     pub overlay_subnet: String,
+
+    /// TCP bind address for the public-ingress listener.
+    /// An outer SNI proxy terminates public :443 and forwards `*.mlsh.io`
+    /// connections to this port. Default is loopback so signal is never
+    /// directly internet-facing unless explicitly configured.
+    #[serde(default = "default_ingress_bind")]
+    pub ingress_bind: String,
+
+    /// When true, read a PROXY-protocol v2 header from the outer SNI proxy on
+    /// every inbound ingress TCP connection. Use this to preserve the real
+    /// client IP in logs and in the `IngressForward` header sent to peers.
+    #[serde(default)]
+    pub ingress_proxy_protocol: bool,
+
+    /// SNI hostnames routed to the internal HTTP API instead of a peer
+    /// (e.g. the signal web UI / admin endpoints).
+    #[serde(default = "default_admin_hosts")]
+    pub admin_hosts: Vec<String>,
+
+    /// UDP/TCP bind for the authoritative DNS server.
+    /// Empty string disables the DNS server.
+    #[serde(default = "default_dns_bind")]
+    pub dns_bind: String,
+
+    /// IPv4 address that `*.mlsh.io` resolves to in relay mode (the outer SNI
+    /// proxy's public IP). Empty disables wildcard A record publication.
+    #[serde(default)]
+    pub dns_public_ip: String,
+
+    /// SOA MNAME (primary nameserver) for the served zone.
+    #[serde(default = "default_soa_mname")]
+    pub dns_soa_mname: String,
+
+    /// SOA RNAME (zone admin address).
+    #[serde(default = "default_soa_rname")]
+    pub dns_soa_rname: String,
+
+    /// Zone origin (e.g. "mlsh.io").
+    #[serde(default = "default_dns_zone")]
+    pub dns_zone: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -64,6 +104,30 @@ fn default_overlay_subnet() -> String {
     "100.64.0.0/10".to_string()
 }
 
+fn default_ingress_bind() -> String {
+    "127.0.0.1:8443".to_string()
+}
+
+fn default_admin_hosts() -> Vec<String> {
+    vec!["signal.mlsh.io".to_string()]
+}
+
+fn default_dns_bind() -> String {
+    "0.0.0.0:53".to_string()
+}
+
+fn default_soa_mname() -> String {
+    "ns1.mlsh.io.".to_string()
+}
+
+fn default_soa_rname() -> String {
+    "hostmaster.mlsh.io.".to_string()
+}
+
+fn default_dns_zone() -> String {
+    "mlsh.io".to_string()
+}
+
 impl Default for QuicConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +147,14 @@ impl Default for Config {
             cloud_api_token: None,
             http_bind: default_http_bind(),
             overlay_subnet: default_overlay_subnet(),
+            ingress_bind: default_ingress_bind(),
+            ingress_proxy_protocol: false,
+            admin_hosts: default_admin_hosts(),
+            dns_bind: default_dns_bind(),
+            dns_public_ip: String::new(),
+            dns_soa_mname: default_soa_mname(),
+            dns_soa_rname: default_soa_rname(),
+            dns_zone: default_dns_zone(),
         }
     }
 }

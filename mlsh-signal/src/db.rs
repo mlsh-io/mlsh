@@ -122,6 +122,41 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     .await
     .context("Failed to create audit_log table")?;
 
+    // --- Ingress routes (public reverse-proxy registrations)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ingress_routes (
+            domain      TEXT PRIMARY KEY,
+            cluster_id  TEXT NOT NULL,
+            node_id     TEXT NOT NULL,
+            target      TEXT NOT NULL,
+            mode        TEXT NOT NULL DEFAULT 'http',
+            public_mode TEXT NOT NULL DEFAULT 'relay',
+            public_ip   TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create ingress_routes table")?;
+    let _ = sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_ingress_routes_node ON ingress_routes (cluster_id, node_id)",
+    )
+    .execute(&pool)
+    .await;
+
+    // --- DNS TXT records (ACME DNS-01 challenges + static overrides)
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS dns_txt_records (
+            name       TEXT NOT NULL,
+            value      TEXT NOT NULL,
+            expires_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (name, value)
+        )",
+    )
+    .execute(&pool)
+    .await
+    .context("Failed to create dns_txt_records table")?;
+
     Ok(pool)
 }
 
@@ -197,6 +232,19 @@ pub async fn cluster_exists(pool: &SqlitePool, cluster_id: &str) -> Result<bool>
         .await
         .context("Failed to check cluster")?;
     Ok(row.is_some())
+}
+
+/// Look up a cluster's display name by UUID.
+pub async fn get_cluster_name_by_id(
+    pool: &SqlitePool,
+    cluster_id: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT name FROM clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to look up cluster name")?;
+    Ok(row.map(|(n,)| n))
 }
 
 // --- Setup codes (one-time, per-cluster)
@@ -836,6 +884,297 @@ pub async fn lookup_node_by_display_name(
     )
 }
 
+// --- Ingress routes
+
+/// A registered public-ingress route.
+#[derive(Debug, Clone)]
+pub struct IngressRouteRecord {
+    pub domain: String,
+    pub cluster_id: String,
+    pub node_id: String,
+    pub target: String,
+    pub mode: String,
+    pub public_mode: String,
+    pub public_ip: String,
+    pub created_at: String,
+}
+
+/// Insert a new ingress route. Returns `Ok(false)` when the domain is already
+/// owned by a different (cluster, node) — caller should surface this as
+/// "conflict" to the user.
+pub async fn insert_ingress_route(
+    pool: &SqlitePool,
+    domain: &str,
+    cluster_id: &str,
+    node_id: &str,
+    target: &str,
+    mode: &str,
+) -> Result<bool> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
+    // If the row already exists for the same (cluster_id, node_id), this is an
+    // idempotent re-registration (e.g. target changed). Update in place.
+    let existing: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, target FROM ingress_routes WHERE domain = ?1",
+    )
+    .bind(domain)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to check existing ingress route")?;
+
+    match existing {
+        Some((cid, nid, _)) if cid == cluster_id && nid == node_id => {
+            sqlx::query(
+                "UPDATE ingress_routes SET target = ?1, mode = ?2 WHERE domain = ?3",
+            )
+            .bind(target)
+            .bind(mode)
+            .bind(domain)
+            .execute(pool)
+            .await
+            .context("Failed to update ingress route")?;
+            Ok(true)
+        }
+        Some(_) => Ok(false),
+        None => {
+            sqlx::query(
+                "INSERT INTO ingress_routes
+                  (domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at)
+                  VALUES (?1, ?2, ?3, ?4, ?5, 'relay', '', ?6)",
+            )
+            .bind(domain)
+            .bind(cluster_id)
+            .bind(node_id)
+            .bind(target)
+            .bind(mode)
+            .bind(&now)
+            .execute(pool)
+            .await
+            .context("Failed to insert ingress route")?;
+            Ok(true)
+        }
+    }
+}
+
+/// Delete an ingress route. Returns true if a row was removed. Caller must
+/// have verified (cluster_id, node_id) ownership before calling.
+pub async fn delete_ingress_route(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    domain: &str,
+) -> Result<bool> {
+    let r = sqlx::query(
+        "DELETE FROM ingress_routes WHERE domain = ?1 AND cluster_id = ?2",
+    )
+    .bind(domain)
+    .bind(cluster_id)
+    .execute(pool)
+    .await
+    .context("Failed to delete ingress route")?;
+    Ok(r.rows_affected() > 0)
+}
+
+/// Look up an ingress route by domain (global — domain is unique).
+pub async fn lookup_ingress_route_by_domain(
+    pool: &SqlitePool,
+    domain: &str,
+) -> Result<Option<IngressRouteRecord>> {
+    let row: Option<(String, String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+             FROM ingress_routes WHERE domain = ?1",
+        )
+        .bind(domain)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to lookup ingress route")?;
+    Ok(row.map(
+        |(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
+            domain: d,
+            cluster_id: cid,
+            node_id: nid,
+            target: t,
+            mode: m,
+            public_mode: pm,
+            public_ip: pi,
+            created_at: ca,
+        },
+    ))
+}
+
+/// List ingress routes for a cluster.
+pub async fn list_ingress_routes(
+    pool: &SqlitePool,
+    cluster_id: &str,
+) -> Result<Vec<IngressRouteRecord>> {
+    let rows: Vec<(String, String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+             FROM ingress_routes WHERE cluster_id = ?1 ORDER BY domain",
+        )
+        .bind(cluster_id)
+        .fetch_all(pool)
+        .await
+        .context("Failed to list ingress routes")?;
+    Ok(rows
+        .into_iter()
+        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
+            domain: d,
+            cluster_id: cid,
+            node_id: nid,
+            target: t,
+            mode: m,
+            public_mode: pm,
+            public_ip: pi,
+            created_at: ca,
+        })
+        .collect())
+}
+
+/// List all ingress routes for a specific node — used by the public-IP prober
+/// when a node's srflx candidate changes.
+pub async fn list_ingress_routes_for_node(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    node_id: &str,
+) -> Result<Vec<IngressRouteRecord>> {
+    let rows: Vec<(String, String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+             FROM ingress_routes WHERE cluster_id = ?1 AND node_id = ?2 ORDER BY domain",
+        )
+        .bind(cluster_id)
+        .bind(node_id)
+        .fetch_all(pool)
+        .await
+        .context("Failed to list ingress routes for node")?;
+    Ok(rows
+        .into_iter()
+        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
+            domain: d,
+            cluster_id: cid,
+            node_id: nid,
+            target: t,
+            mode: m,
+            public_mode: pm,
+            public_ip: pi,
+            created_at: ca,
+        })
+        .collect())
+}
+
+/// List every ingress route across all clusters — used by the periodic health
+/// check and DNS zone loader.
+pub async fn list_all_ingress_routes(pool: &SqlitePool) -> Result<Vec<IngressRouteRecord>> {
+    let rows: Vec<(String, String, String, String, String, String, String, String)> =
+        sqlx::query_as(
+            "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
+             FROM ingress_routes",
+        )
+        .fetch_all(pool)
+        .await
+        .context("Failed to list all ingress routes")?;
+    Ok(rows
+        .into_iter()
+        .map(|(d, cid, nid, t, m, pm, pi, ca)| IngressRouteRecord {
+            domain: d,
+            cluster_id: cid,
+            node_id: nid,
+            target: t,
+            mode: m,
+            public_mode: pm,
+            public_ip: pi,
+            created_at: ca,
+        })
+        .collect())
+}
+
+/// Update the public mode + IP for an ingress route.
+pub async fn set_ingress_public_mode(
+    pool: &SqlitePool,
+    domain: &str,
+    public_mode: &str,
+    public_ip: &str,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE ingress_routes SET public_mode = ?1, public_ip = ?2 WHERE domain = ?3",
+    )
+    .bind(public_mode)
+    .bind(public_ip)
+    .bind(domain)
+    .execute(pool)
+    .await
+    .context("Failed to update ingress public mode")?;
+    Ok(())
+}
+
+// --- DNS TXT records
+
+/// Upsert a TXT record with an optional expiry time (RFC3339; empty = no expiry).
+pub async fn upsert_dns_txt(
+    pool: &SqlitePool,
+    name: &str,
+    value: &str,
+    expires_at: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO dns_txt_records (name, value, expires_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(name, value) DO UPDATE SET expires_at = ?3",
+    )
+    .bind(name)
+    .bind(value)
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .context("Failed to upsert dns_txt record")?;
+    Ok(())
+}
+
+/// Delete all TXT records for a given name.
+pub async fn delete_dns_txt(pool: &SqlitePool, name: &str) -> Result<()> {
+    sqlx::query("DELETE FROM dns_txt_records WHERE name = ?1")
+        .bind(name)
+        .execute(pool)
+        .await
+        .context("Failed to delete dns_txt records")?;
+    Ok(())
+}
+
+/// List all TXT records (expired rows are filtered out at read time).
+pub async fn list_dns_txt(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let rows: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT name, value, expires_at FROM dns_txt_records",
+    )
+    .fetch_all(pool)
+    .await
+    .context("Failed to list dns_txt records")?;
+    Ok(rows
+        .into_iter()
+        .filter(|(_, _, e)| e.is_empty() || e.as_str() > now.as_str())
+        .map(|(n, v, _)| (n, v))
+        .collect())
+}
+
+/// Purge TXT records whose expiry has passed.
+pub async fn purge_expired_dns_txt(pool: &SqlitePool) -> Result<u64> {
+    let now = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let r = sqlx::query(
+        "DELETE FROM dns_txt_records WHERE expires_at != '' AND expires_at <= ?1",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await
+    .context("Failed to purge expired dns_txt records")?;
+    Ok(r.rows_affected())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -902,6 +1241,26 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
                 cluster_id TEXT NOT NULL, action TEXT NOT NULL,
                 node_id TEXT NOT NULL DEFAULT '', details TEXT NOT NULL DEFAULT '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ingress_routes (
+                domain TEXT PRIMARY KEY, cluster_id TEXT NOT NULL, node_id TEXT NOT NULL,
+                target TEXT NOT NULL, mode TEXT NOT NULL DEFAULT 'http',
+                public_mode TEXT NOT NULL DEFAULT 'relay',
+                public_ip TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS dns_txt_records (
+                name TEXT NOT NULL, value TEXT NOT NULL,
+                expires_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (name, value))",
         )
         .execute(&pool)
         .await
@@ -1222,5 +1581,145 @@ mod tests {
             .await
             .unwrap();
         assert!(result.is_none());
+    }
+
+    // --- Ingress routes
+
+    #[tokio::test]
+    async fn ingress_route_insert_and_lookup() {
+        let pool = test_pool().await;
+        let ok = insert_ingress_route(
+            &pool,
+            "app.mlsh.io",
+            "c1",
+            "n1",
+            "http://localhost:3000",
+            "http",
+        )
+        .await
+        .unwrap();
+        assert!(ok);
+
+        let r = lookup_ingress_route_by_domain(&pool, "app.mlsh.io")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.node_id, "n1");
+        assert_eq!(r.public_mode, "relay");
+        assert_eq!(r.target, "http://localhost:3000");
+    }
+
+    #[tokio::test]
+    async fn ingress_route_conflict_across_clusters() {
+        let pool = test_pool().await;
+        insert_ingress_route(
+            &pool,
+            "app.mlsh.io",
+            "c1",
+            "n1",
+            "http://localhost:3000",
+            "http",
+        )
+        .await
+        .unwrap();
+        let ok = insert_ingress_route(
+            &pool,
+            "app.mlsh.io",
+            "c2",
+            "n2",
+            "http://localhost:4000",
+            "http",
+        )
+        .await
+        .unwrap();
+        assert!(!ok, "expected conflict when another cluster owns the domain");
+    }
+
+    #[tokio::test]
+    async fn ingress_route_idempotent_same_owner() {
+        let pool = test_pool().await;
+        insert_ingress_route(&pool, "app.mlsh.io", "c1", "n1", "http://a", "http")
+            .await
+            .unwrap();
+        let ok = insert_ingress_route(&pool, "app.mlsh.io", "c1", "n1", "http://b", "http")
+            .await
+            .unwrap();
+        assert!(ok);
+        let r = lookup_ingress_route_by_domain(&pool, "app.mlsh.io")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.target, "http://b");
+    }
+
+    #[tokio::test]
+    async fn ingress_route_delete_requires_cluster_match() {
+        let pool = test_pool().await;
+        insert_ingress_route(&pool, "app.mlsh.io", "c1", "n1", "http://a", "http")
+            .await
+            .unwrap();
+        assert!(!delete_ingress_route(&pool, "c2", "app.mlsh.io")
+            .await
+            .unwrap());
+        assert!(delete_ingress_route(&pool, "c1", "app.mlsh.io")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn ingress_route_set_public_mode() {
+        let pool = test_pool().await;
+        insert_ingress_route(&pool, "app.mlsh.io", "c1", "n1", "http://a", "http")
+            .await
+            .unwrap();
+        set_ingress_public_mode(&pool, "app.mlsh.io", "direct", "203.0.113.5")
+            .await
+            .unwrap();
+        let r = lookup_ingress_route_by_domain(&pool, "app.mlsh.io")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.public_mode, "direct");
+        assert_eq!(r.public_ip, "203.0.113.5");
+    }
+
+    // --- DNS TXT records
+
+    #[tokio::test]
+    async fn dns_txt_upsert_and_list() {
+        let pool = test_pool().await;
+        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "abc", "")
+            .await
+            .unwrap();
+        let rows = list_dns_txt(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "_acme-challenge.app.mlsh.io");
+        assert_eq!(rows[0].1, "abc");
+    }
+
+    #[tokio::test]
+    async fn dns_txt_delete_all_for_name() {
+        let pool = test_pool().await;
+        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "abc", "")
+            .await
+            .unwrap();
+        upsert_dns_txt(&pool, "_acme-challenge.app.mlsh.io", "def", "")
+            .await
+            .unwrap();
+        delete_dns_txt(&pool, "_acme-challenge.app.mlsh.io")
+            .await
+            .unwrap();
+        let rows = list_dns_txt(&pool).await.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[tokio::test]
+    async fn dns_txt_expired_filtered_out() {
+        let pool = test_pool().await;
+        upsert_dns_txt(&pool, "a.mlsh.io", "v", "2000-01-01T00:00:00Z")
+            .await
+            .unwrap();
+        let rows = list_dns_txt(&pool).await.unwrap();
+        assert!(rows.is_empty());
     }
 }

@@ -240,36 +240,76 @@ async fn run_session(
                 tracing::warn!("Signal connection lost: {}", reason);
                 return Ok(false);
             }
-            // Accept incoming bi-streams from signal (relay_incoming)
+            // Accept incoming bi-streams from signal.
+            // First RelayMessage discriminates:
+            //   - RelayIncoming   → overlay relay (TLS-wrapped E2E)
+            //   - IngressForward  → public ingress for a domain
             stream = conn_for_accept.accept_bi() => {
                 match stream {
-                    Ok((relay_send, relay_recv)) => {
-                        if let Some(ref dev) = tun_device {
-                            let dev = dev.clone();
-                            let table = peer_table.clone();
-                            let my_ip = overlay_ip;
-                            let relay_identity = mlsh_crypto::identity::NodeIdentity {
-                                cert_der: vec![], // not needed for TLS config
-                                cert_pem: creds.cert_pem.clone(),
-                                key_pem: creds.key_pem.clone(),
-                                fingerprint: creds.fingerprint.clone(),
-                            };
-                            let relay_cancel = ctx.cancel.clone();
-                            tokio::spawn(async move {
-                                tokio::select! {
-                                    result = super::relay_handler::handle_incoming_relay(
-                                        relay_send, relay_recv, dev, my_ip, table, relay_identity,
-                                    ) => {
-                                        if let Err(e) = result {
-                                            tracing::debug!("Incoming relay error: {}", e);
-                                        }
+                    Ok((mut relay_send, mut relay_recv)) => {
+                        let relay_cancel = ctx.cancel.clone();
+                        let tun_device_for_task = tun_device.clone();
+                        let peer_table_for_task = peer_table.clone();
+                        let my_ip = overlay_ip;
+                        let relay_identity = mlsh_crypto::identity::NodeIdentity {
+                            cert_der: vec![],
+                            cert_pem: creds.cert_pem.clone(),
+                            key_pem: creds.key_pem.clone(),
+                            fingerprint: creds.fingerprint.clone(),
+                        };
+                        tokio::spawn(async move {
+                            let header: mlsh_protocol::messages::RelayMessage =
+                                match framing::read_msg(&mut relay_recv).await {
+                                    Ok(m) => m,
+                                    Err(e) => {
+                                        tracing::debug!("Incoming bi-stream header read failed: {}", e);
+                                        return;
                                     }
-                                    _ = relay_cancel.cancelled() => {}
+                                };
+                            match header {
+                                mlsh_protocol::messages::RelayMessage::RelayIncoming { from_node_id } => {
+                                    let Some(dev) = tun_device_for_task else {
+                                        tracing::warn!("Relay stream received but no TUN device available");
+                                        return;
+                                    };
+                                    tokio::select! {
+                                        result = super::relay_handler::handle_incoming_relay(
+                                            relay_send, relay_recv, dev, my_ip, peer_table_for_task, relay_identity, from_node_id,
+                                        ) => {
+                                            if let Err(e) = result {
+                                                tracing::debug!("Incoming relay error: {}", e);
+                                            }
+                                        }
+                                        _ = relay_cancel.cancelled() => {}
+                                    }
                                 }
-                            });
-                        } else {
-                            tracing::warn!("Relay stream received but no TUN device available");
-                        }
+                                mlsh_protocol::messages::RelayMessage::IngressForward { domain, client_ip } => {
+                                    // Acknowledge and splice to local upstream.
+                                    if let Err(e) = framing::write_msg(
+                                        &mut relay_send,
+                                        &mlsh_protocol::messages::RelayMessage::IngressAccepted,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!("Ingress accept write failed: {}", e);
+                                        return;
+                                    }
+                                    tokio::select! {
+                                        result = super::ingress::handle_ingress_stream(
+                                            relay_send, relay_recv, domain.clone(), client_ip,
+                                        ) => {
+                                            if let Err(e) = result {
+                                                tracing::debug!(%domain, "Ingress stream error: {}", e);
+                                            }
+                                        }
+                                        _ = relay_cancel.cancelled() => {}
+                                    }
+                                }
+                                other => {
+                                    tracing::debug!("Unexpected RelayMessage on incoming bi-stream: {:?}", other);
+                                }
+                            }
+                        });
                     }
                     Err(e) => {
                         tracing::debug!("Accept bi-stream error: {}", e);
@@ -477,6 +517,20 @@ fn handle_push_message(
                 })
                 .collect();
             let _ = peers_tx.send(Arc::new(new_peers));
+        }
+        ServerMessage::IngressStatus {
+            domain,
+            public_mode,
+            public_ip,
+        } => {
+            let direct = public_mode == "direct";
+            tracing::info!(
+                %domain,
+                mode = %public_mode,
+                ip = public_ip.as_deref().unwrap_or("-"),
+                "Ingress mode update"
+            );
+            super::ingress::set_direct_mode(domain, direct);
         }
         ServerMessage::Pong => {} // keepalive response
         other => {

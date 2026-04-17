@@ -141,10 +141,40 @@ async fn handle_stream(
             .await?;
             return Ok(());
         }
+        StreamMessage::ExposeService {
+            cluster_id,
+            domain,
+            target,
+            mode,
+        } => {
+            let resp = handle_expose(state, conn, &cluster_id, &domain, &target, mode).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
+        StreamMessage::UnexposeService { cluster_id, domain } => {
+            let resp = handle_unexpose(state, conn, &cluster_id, &domain).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
+        StreamMessage::ListExposed { cluster_id } => {
+            let resp = handle_list_exposed(state, conn, &cluster_id).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
+        StreamMessage::AcmeChallenge { domain, value } => {
+            let resp = handle_acme_challenge(state, conn, &domain, &value).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
+        StreamMessage::AcmeChallengeClear { domain } => {
+            let resp = handle_acme_challenge_clear(state, conn, &domain).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
         _ => {
             let resp = ServerMessage::error(
                 "auth_required",
-                "First message must be NodeAuth, Adopt, Revoke, Rename, or RelayOpen",
+                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, ListExposed, or AcmeChallenge",
             );
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
@@ -280,6 +310,43 @@ async fn run_node_session(
                             }
                             StreamMessage::ReportCandidates { candidates } => {
                                 state.sessions.set_candidates(cluster_id, &node.node_id, candidates).await;
+                                // Re-probe direct/relay for this node's routes whenever its
+                                // srflx candidate may have changed. Spawn so the session loop
+                                // isn't blocked by the TCP connect.
+                                let pool = state.db.clone();
+                                let sessions = state.sessions.clone();
+                                let cluster_id_owned = cluster_id.to_string();
+                                let node_id_owned = node.node_id.clone();
+                                tokio::spawn(async move {
+                                    let routes = match db::list_ingress_routes_for_node(
+                                        &pool,
+                                        &cluster_id_owned,
+                                        &node_id_owned,
+                                    )
+                                    .await
+                                    {
+                                        Ok(r) => r,
+                                        Err(e) => {
+                                            tracing::warn!(error = %e, "Failed to list node's ingress routes");
+                                            return;
+                                        }
+                                    };
+                                    if routes.is_empty() {
+                                        return;
+                                    }
+                                    let ip = crate::probe::srflx_ip(
+                                        &sessions,
+                                        &cluster_id_owned,
+                                        &node_id_owned,
+                                    )
+                                    .await;
+                                    for r in routes {
+                                        let _ = crate::probe::probe_route(
+                                            &pool, &sessions, &r, ip,
+                                        )
+                                        .await;
+                                    }
+                                });
                             }
                             StreamMessage::ListNodes => {
                                 let online = state.sessions.online_node_ids(cluster_id).await;
@@ -786,6 +853,412 @@ async fn handle_promote(
     }
 }
 
+// -------------------------------------------------------------------------
+// Ingress handlers
+// -------------------------------------------------------------------------
+
+/// Validate a DNS label (single `[a-z0-9][a-z0-9-]*[a-z0-9]?`, ≤63 chars).
+fn is_dns_label(s: &str) -> bool {
+    if s.is_empty() || s.len() > 63 {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    if !bytes[0].is_ascii_alphanumeric() || !bytes[bytes.len() - 1].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes
+        .iter()
+        .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+}
+
+/// Validate a domain being exposed.
+///
+/// Each cluster has its own subdomain `<cluster>.<zone>` and services live at
+/// `<label>.<cluster>.<zone>`. This gives natural multi-tenant isolation and
+/// scopes authorization to the caller's cluster. Custom-domain (CNAME) support
+/// is not handled here.
+fn validate_ingress_domain(
+    cfg_zone: &str,
+    cluster_name: &str,
+    domain: &str,
+) -> Result<(), &'static str> {
+    let zone = cfg_zone.trim_end_matches('.').to_ascii_lowercase();
+    let cluster = cluster_name.trim().to_ascii_lowercase();
+    let d = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+
+    if d.is_empty() {
+        return Err("Domain must not be empty");
+    }
+    if cluster.is_empty() || !is_dns_label(&cluster) {
+        return Err(
+            "Cluster name must be DNS-safe (a-z, 0-9, '-'; no underscores) before a service can be exposed",
+        );
+    }
+
+    let suffix = format!(".{}.{}", cluster, zone);
+    if !d.ends_with(&suffix) {
+        return Err("Domain must be under <label>.<cluster>.mlsh.io");
+    }
+    let label = &d[..d.len() - suffix.len()];
+    if label.is_empty() {
+        return Err("Subdomain label cannot be empty");
+    }
+    // Reject ACME-challenge spoofing and admin-reserved names in the leaf.
+    const RESERVED: &[&str] = &["signal", "api", "www", "ns1", "ns2", "ingress"];
+    if RESERVED.contains(&label) || label.starts_with("_acme-challenge") {
+        return Err("Domain is reserved");
+    }
+    for part in label.split('.') {
+        if !is_dns_label(part) {
+            return Err("Subdomain label must be DNS-safe");
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_caller<'a>(
+    state: &'a QuicState,
+    conn: &quinn::Connection,
+    cluster_id: &str,
+) -> Result<db::NodeRecord, ServerMessage> {
+    let caller_fp = match extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
+        None => {
+            return Err(ServerMessage::error(
+                "auth_failed",
+                "Client certificate required",
+            ))
+        }
+    };
+    match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
+        Ok(Some(n)) => Ok(n),
+        Ok(None) => Err(ServerMessage::error("auth_failed", "Unknown fingerprint")),
+        Err(e) => {
+            warn!(error = %e, "DB error looking up caller");
+            Err(ServerMessage::error("internal", "Database error"))
+        }
+    }
+}
+
+async fn handle_expose(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    cluster_id: &str,
+    domain: &str,
+    target: &str,
+    mode: mlsh_protocol::types::IngressMode,
+) -> ServerMessage {
+    // L4 ingress mode is not implemented yet; reject explicitly.
+    if matches!(mode, mlsh_protocol::types::IngressMode::L4) {
+        return ServerMessage::error(
+            "unsupported",
+            "L4 ingress mode is not implemented yet",
+        );
+    }
+
+    let caller = match resolve_caller(state, conn, cluster_id).await {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let cluster_name = match db::get_cluster_name_by_id(&state.db, cluster_id).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return ServerMessage::error("not_found", "Cluster not found"),
+        Err(e) => {
+            warn!(error = %e, "Failed to look up cluster name");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    if let Err(reason) = validate_ingress_domain(&state.config.dns_zone, &cluster_name, domain) {
+        return ServerMessage::error("invalid_request", reason);
+    }
+
+    // Sanity-check the target URL (http://host:port form; the peer will parse
+    // further). We just want to reject obvious garbage here.
+    if target.is_empty() || !(target.starts_with("http://") || target.starts_with("https://")) {
+        return ServerMessage::error(
+            "invalid_request",
+            "target must be http:// or https:// URL",
+        );
+    }
+
+    let mode_str = "http";
+    let ok = match db::insert_ingress_route(
+        &state.db,
+        &domain.to_ascii_lowercase(),
+        cluster_id,
+        &caller.node_id,
+        target,
+        mode_str,
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "Failed to insert ingress route");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+    if !ok {
+        return ServerMessage::error(
+            "conflict",
+            "Domain is already registered by another cluster or node",
+        );
+    }
+
+    info!(
+        cluster_id,
+        node_id = %caller.node_id,
+        domain,
+        target,
+        "Ingress route registered"
+    );
+    db::audit(
+        &state.db,
+        cluster_id,
+        "expose",
+        &caller.node_id,
+        &format!("domain={}, target={}", domain, target),
+    )
+    .await;
+
+    // Kick off a one-shot probe to decide relay vs direct for this new route.
+    // Done in-line so the response can reflect the promoted mode when possible.
+    let route_lower = domain.to_ascii_lowercase();
+    let (public_mode, public_ip) = match db::lookup_ingress_route_by_domain(
+        &state.db, &route_lower,
+    )
+    .await
+    {
+        Ok(Some(route)) => {
+            let ip = crate::probe::srflx_ip(&state.sessions, cluster_id, &caller.node_id).await;
+            if let Err(e) = crate::probe::probe_route(&state.db, &state.sessions, &route, ip).await
+            {
+                warn!(domain = %route_lower, error = %e, "Initial probe failed");
+            }
+            match db::lookup_ingress_route_by_domain(&state.db, &route_lower).await {
+                Ok(Some(r)) => (
+                    r.public_mode,
+                    if r.public_ip.is_empty() {
+                        None
+                    } else {
+                        Some(r.public_ip)
+                    },
+                ),
+                _ => ("relay".to_string(), None),
+            }
+        }
+        _ => ("relay".to_string(), None),
+    };
+
+    ServerMessage::ExposeOk {
+        domain: route_lower,
+        public_mode,
+        public_ip,
+    }
+}
+
+async fn handle_unexpose(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    cluster_id: &str,
+    domain: &str,
+) -> ServerMessage {
+    let caller = match resolve_caller(state, conn, cluster_id).await {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+
+    let d = domain.to_ascii_lowercase();
+
+    // Ensure caller owns the route (admin override allowed).
+    let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return ServerMessage::error("not_found", "Domain not found"),
+        Err(e) => {
+            warn!(error = %e, "DB error looking up ingress route");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+    if route.cluster_id != cluster_id {
+        return ServerMessage::error("not_found", "Domain not found");
+    }
+    if route.node_id != caller.node_id && caller.role != "admin" {
+        return ServerMessage::error(
+            "forbidden",
+            "Only the owning node or an admin may unexpose",
+        );
+    }
+
+    let removed = match db::delete_ingress_route(&state.db, cluster_id, &d).await {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "Failed to delete ingress route");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+    if !removed {
+        return ServerMessage::error("not_found", "Domain not found");
+    }
+
+    info!(cluster_id, domain = %d, caller = %caller.node_id, "Ingress route removed");
+    db::audit(
+        &state.db,
+        cluster_id,
+        "unexpose",
+        &caller.node_id,
+        &format!("domain={}", d),
+    )
+    .await;
+
+    ServerMessage::UnexposeOk
+}
+
+async fn handle_list_exposed(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    cluster_id: &str,
+) -> ServerMessage {
+    // Authenticate the caller; any node in the cluster can list.
+    if let Err(e) = resolve_caller(state, conn, cluster_id).await {
+        return e;
+    }
+
+    match db::list_ingress_routes(&state.db, cluster_id).await {
+        Ok(rows) => {
+            let routes = rows
+                .into_iter()
+                .map(|r| mlsh_protocol::types::IngressRoute {
+                    domain: r.domain,
+                    target: r.target,
+                    node_id: r.node_id,
+                    mode: match r.mode.as_str() {
+                        "l4" => mlsh_protocol::types::IngressMode::L4,
+                        _ => mlsh_protocol::types::IngressMode::Http,
+                    },
+                    public_mode: r.public_mode,
+                    public_ip: r.public_ip,
+                })
+                .collect();
+            ServerMessage::ExposedList { routes }
+        }
+        Err(e) => {
+            warn!(error = %e, "Failed to list ingress routes");
+            ServerMessage::error("internal", "Database error")
+        }
+    }
+}
+
+async fn handle_acme_challenge(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    challenge_name: &str,
+    value: &str,
+) -> ServerMessage {
+    let name = challenge_name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let prefix = "_acme-challenge.";
+    let parent = match name.strip_prefix(prefix) {
+        Some(p) => p.to_string(),
+        None => {
+            return ServerMessage::error(
+                "invalid_request",
+                "challenge name must start with _acme-challenge.",
+            )
+        }
+    };
+
+    // Look up the route to determine caller ownership.
+    let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return ServerMessage::error(
+                "not_found",
+                "No ingress route for parent domain",
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "DB error on ACME challenge");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    let caller = match resolve_caller(state, conn, &route.cluster_id).await {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    if caller.node_id != route.node_id {
+        return ServerMessage::error(
+            "forbidden",
+            "Only the domain owner may publish ACME challenges",
+        );
+    }
+
+    // TXT records live for 10 minutes max — Let's Encrypt polls quickly and
+    // our ACME client issues AcmeChallengeClear on completion.
+    let expires_at = (time::OffsetDateTime::now_utc() + time::Duration::minutes(10))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
+    if let Err(e) = db::upsert_dns_txt(&state.db, &name, value, &expires_at).await {
+        warn!(error = %e, "Failed to upsert dns_txt");
+        return ServerMessage::error("internal", "Database error");
+    }
+
+    info!(name = %name, "ACME challenge TXT published");
+    ServerMessage::AcmeChallengeOk { domain: name }
+}
+
+async fn handle_acme_challenge_clear(
+    state: &QuicState,
+    conn: &quinn::Connection,
+    challenge_name: &str,
+) -> ServerMessage {
+    let name = challenge_name.trim().trim_end_matches('.').to_ascii_lowercase();
+    let prefix = "_acme-challenge.";
+    let parent = match name.strip_prefix(prefix) {
+        Some(p) => p.to_string(),
+        None => {
+            return ServerMessage::error(
+                "invalid_request",
+                "challenge name must start with _acme-challenge.",
+            )
+        }
+    };
+
+    let route = match db::lookup_ingress_route_by_domain(&state.db, &parent).await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            return ServerMessage::error(
+                "not_found",
+                "No ingress route for parent domain",
+            )
+        }
+        Err(e) => {
+            warn!(error = %e, "DB error on ACME clear");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    let caller = match resolve_caller(state, conn, &route.cluster_id).await {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
+    if caller.node_id != route.node_id {
+        return ServerMessage::error(
+            "forbidden",
+            "Only the domain owner may clear ACME challenges",
+        );
+    }
+
+    if let Err(e) = db::delete_dns_txt(&state.db, &name).await {
+        warn!(error = %e, "Failed to delete dns_txt");
+        return ServerMessage::error("internal", "Database error");
+    }
+    info!(name = %name, "ACME challenge TXT cleared");
+    ServerMessage::AcmeChallengeOk { domain: name }
+}
+
 /// Extract the SHA-256 fingerprint from the peer's TLS client certificate.
 pub fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     let peer_certs = conn.peer_identity()?;
@@ -794,4 +1267,83 @@ pub fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
         .ok()?;
     let cert = certs.first()?;
     Some(mlsh_crypto::identity::compute_fingerprint(cert.as_ref()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_ingress_domain;
+
+    #[test]
+    fn accepts_cluster_scoped_subdomain() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "app.homelab.mlsh.io").is_ok());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "APP.homelab.mlsh.io").is_ok());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "foo-bar.homelab.mlsh.io").is_ok());
+    }
+
+    #[test]
+    fn accepts_deep_subdomain() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "a.b.homelab.mlsh.io").is_ok());
+    }
+
+    #[test]
+    fn rejects_cross_cluster_attempt() {
+        // Caller is in "homelab" but tries to register under another cluster.
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "app.work.mlsh.io").is_err());
+    }
+
+    #[test]
+    fn rejects_unscoped_domain() {
+        // Under the new scheme, a flat `app.mlsh.io` with no cluster label is invalid.
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "app.mlsh.io").is_err());
+    }
+
+    #[test]
+    fn rejects_apex() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "homelab.mlsh.io").is_err());
+    }
+
+    #[test]
+    fn rejects_non_zone() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "app.homelab.example.com").is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_leaf_names() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "signal.homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "api.homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "www.homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "ns1.homelab.mlsh.io").is_err());
+    }
+
+    #[test]
+    fn rejects_acme_challenge_spoofing() {
+        assert!(validate_ingress_domain(
+            "mlsh.io",
+            "homelab",
+            "_acme-challenge.homelab.mlsh.io"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn rejects_bad_characters() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "-bad.homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "bad-.homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "bad_.homelab.mlsh.io").is_err());
+    }
+
+    #[test]
+    fn rejects_empty_label() {
+        assert!(validate_ingress_domain("mlsh.io", "homelab", ".homelab.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "").is_err());
+    }
+
+    #[test]
+    fn rejects_cluster_with_invalid_dns_chars() {
+        // Underscores are not DNS-safe — expose must fail rather than produce
+        // a broken domain.
+        assert!(validate_ingress_domain("mlsh.io", "my_cluster", "app.my_cluster.mlsh.io").is_err());
+        assert!(validate_ingress_domain("mlsh.io", "", "app.mlsh.io").is_err());
+    }
 }
