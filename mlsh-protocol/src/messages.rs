@@ -107,22 +107,24 @@ pub enum StreamMessage {
         cluster_id: String,
     },
 
-    /// Publish an HTTP-01 ACME challenge response on signal. mlshtund sends
-    /// this during ACME issuance; signal serves it on :80 at
-    /// `/.well-known/acme-challenge/<token>` for LE's validator. Caller must
-    /// own the domain via a registered ingress route.
-    HttpChallengeSet {
+    /// Publish a TLS-ALPN-01 (RFC 8737) ACME challenge. mlshtund generates a
+    /// self-signed cert for `domain` with the `id-pe-acmeIdentifier` critical
+    /// extension set to SHA-256 of the key-authorization, and sends it here.
+    /// Signal answers LE's validator on the existing public :443 when the
+    /// ClientHello has SNI=`domain` and ALPN=`acme-tls/1`. Caller must own
+    /// the domain via a registered ingress route.
+    TlsAlpnChallengeSet {
         domain: String,
-        token: String,
-        /// The RFC 8555 key-authorization (`<token>.<account-thumbprint>`).
-        key_auth: String,
+        /// DER-encoded certificate.
+        cert_der: Vec<u8>,
+        /// DER-encoded PKCS#8 private key matching the cert.
+        key_der: Vec<u8>,
     },
 
-    /// Remove a previously-published HTTP-01 challenge response. Either
-    /// protocol messages or the in-memory TTL (15 min) will clear it.
-    HttpChallengeClear {
+    /// Remove a previously-published TLS-ALPN-01 challenge. Either protocol
+    /// messages or the in-memory TTL (15 min) will clear it.
+    TlsAlpnChallengeClear {
         domain: String,
-        token: String,
     },
 }
 
@@ -202,10 +204,9 @@ pub enum ServerMessage {
     ExposedList {
         routes: Vec<IngressRoute>,
     },
-    /// Acknowledgement for `HttpChallengeSet` / `HttpChallengeClear`.
-    HttpChallengeOk {
+    /// Acknowledgement for `TlsAlpnChallengeSet` / `TlsAlpnChallengeClear`.
+    TlsAlpnChallengeOk {
         domain: String,
-        token: String,
     },
 
     // Shared
@@ -770,53 +771,49 @@ mod tests {
     }
 
     #[test]
-    fn http_challenge_set_roundtrip() {
-        let msg = StreamMessage::HttpChallengeSet {
+    fn tls_alpn_challenge_set_roundtrip() {
+        let msg = StreamMessage::TlsAlpnChallengeSet {
             domain: "app.mlsh.io".into(),
-            token: "tok-abc".into(),
-            key_auth: "tok-abc.thumbprint".into(),
+            cert_der: vec![0x30, 0x82, 0xAA, 0xBB],
+            key_der: vec![0x30, 0x82, 0xCC, 0xDD],
         };
         match cbor_roundtrip(&msg) {
-            StreamMessage::HttpChallengeSet {
+            StreamMessage::TlsAlpnChallengeSet {
                 domain,
-                token,
-                key_auth,
+                cert_der,
+                key_der,
             } => {
                 assert_eq!(domain, "app.mlsh.io");
-                assert_eq!(token, "tok-abc");
-                assert_eq!(key_auth, "tok-abc.thumbprint");
+                assert_eq!(cert_der, vec![0x30, 0x82, 0xAA, 0xBB]);
+                assert_eq!(key_der, vec![0x30, 0x82, 0xCC, 0xDD]);
             }
-            other => panic!("expected HttpChallengeSet, got {:?}", other),
+            other => panic!("expected TlsAlpnChallengeSet, got {:?}", other),
         }
     }
 
     #[test]
-    fn http_challenge_clear_roundtrip() {
-        let msg = StreamMessage::HttpChallengeClear {
+    fn tls_alpn_challenge_clear_roundtrip() {
+        let msg = StreamMessage::TlsAlpnChallengeClear {
             domain: "app.mlsh.io".into(),
-            token: "tok-abc".into(),
         };
         match cbor_roundtrip(&msg) {
-            StreamMessage::HttpChallengeClear { domain, token } => {
+            StreamMessage::TlsAlpnChallengeClear { domain } => {
                 assert_eq!(domain, "app.mlsh.io");
-                assert_eq!(token, "tok-abc");
             }
-            other => panic!("expected HttpChallengeClear, got {:?}", other),
+            other => panic!("expected TlsAlpnChallengeClear, got {:?}", other),
         }
     }
 
     #[test]
-    fn http_challenge_ok_roundtrip() {
-        let msg = ServerMessage::HttpChallengeOk {
+    fn tls_alpn_challenge_ok_roundtrip() {
+        let msg = ServerMessage::TlsAlpnChallengeOk {
             domain: "app.mlsh.io".into(),
-            token: "tok-abc".into(),
         };
         match cbor_roundtrip(&msg) {
-            ServerMessage::HttpChallengeOk { domain, token } => {
+            ServerMessage::TlsAlpnChallengeOk { domain } => {
                 assert_eq!(domain, "app.mlsh.io");
-                assert_eq!(token, "tok-abc");
             }
-            other => panic!("expected HttpChallengeOk, got {:?}", other),
+            other => panic!("expected TlsAlpnChallengeOk, got {:?}", other),
         }
     }
 

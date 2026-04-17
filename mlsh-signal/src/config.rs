@@ -50,12 +50,6 @@ pub struct Config {
     /// (e.g. the signal web UI / admin endpoints).
     #[serde(default = "default_admin_hosts")]
     pub admin_hosts: Vec<String>,
-
-    /// Bind address for the ACME HTTP-01 challenge responder. Public port 80
-    /// must route to this (either directly via firewall or via a router
-    /// redirection). Empty disables HTTP-01 responses.
-    #[serde(default = "default_acme_http_bind")]
-    pub acme_http_bind: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -96,10 +90,6 @@ fn default_admin_hosts() -> Vec<String> {
     vec!["signal.mlsh.io".to_string()]
 }
 
-fn default_acme_http_bind() -> String {
-    "0.0.0.0:80".to_string()
-}
-
 impl Default for QuicConfig {
     fn default() -> Self {
         Self {
@@ -122,7 +112,6 @@ impl Default for Config {
             ingress_bind: default_ingress_bind(),
             ingress_proxy_protocol: false,
             admin_hosts: default_admin_hosts(),
-            acme_http_bind: default_acme_http_bind(),
         }
     }
 }

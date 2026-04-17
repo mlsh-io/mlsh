@@ -142,27 +142,6 @@ async fn run_server() -> anyhow::Result<()> {
         metrics,
     });
 
-    // Start the ACME HTTP-01 challenge responder.
-    if !cfg.acme_http_bind.is_empty() {
-        match cfg.acme_http_bind.parse::<std::net::SocketAddr>() {
-            Ok(acme_addr) => {
-                let acme_shutdown = shutdown_rx.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = mlsh_signal::acme_http::run(acme_addr, acme_shutdown).await {
-                        error!("ACME HTTP-01 listener failed: {}", e);
-                    }
-                });
-            }
-            Err(e) => {
-                error!(
-                    bind = %cfg.acme_http_bind,
-                    "Invalid acme_http_bind address: {} — HTTP-01 disabled",
-                    e
-                );
-            }
-        }
-    }
-
     // Start the public-ingress TCP listener.
     if !cfg.ingress_bind.is_empty() {
         match cfg.ingress_bind.parse::<std::net::SocketAddr>() {

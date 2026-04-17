@@ -1944,6 +1944,7 @@ dependencies = [
  "sqlx",
  "time",
  "tokio",
+ "tokio-rustls",
  "toml",
  "tower",
  "tracing",

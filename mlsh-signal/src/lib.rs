@@ -1,4 +1,4 @@
-pub mod acme_http;
+pub mod acme_tls;
 pub mod cluster;
 pub mod config;
 pub mod db;

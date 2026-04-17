@@ -98,26 +98,38 @@ async fn handle_connection(
         remote.ip().to_string()
     };
 
-    // 2. Peek ClientHello for SNI
+    // 2. Peek ClientHello for SNI + ALPN acme-tls/1
     let mut peek_buf = vec![0u8; CLIENT_HELLO_PEEK_MAX];
-    let sni =
-        match tokio::time::timeout(CLIENT_HELLO_DEADLINE, peek_sni(&socket, &mut peek_buf)).await {
-            Ok(Ok(Some(sni))) => sni,
-            Ok(Ok(None)) => {
-                debug!(%remote, "No SNI in ClientHello");
-                return Ok(());
-            }
-            Ok(Err(e)) => {
-                debug!(%remote, error = %e, "ClientHello parse error");
-                return Ok(());
-            }
-            Err(_) => {
-                debug!(%remote, "Timed out reading ClientHello");
-                return Ok(());
-            }
-        };
+    let info = match tokio::time::timeout(CLIENT_HELLO_DEADLINE, peek_hello(&socket, &mut peek_buf))
+        .await
+    {
+        Ok(Ok(Some(info))) => info,
+        Ok(Ok(None)) => {
+            debug!(%remote, "Incomplete ClientHello");
+            return Ok(());
+        }
+        Ok(Err(e)) => {
+            debug!(%remote, error = %e, "ClientHello parse error");
+            return Ok(());
+        }
+        Err(_) => {
+            debug!(%remote, "Timed out reading ClientHello");
+            return Ok(());
+        }
+    };
+    let Some(sni) = info.sni else {
+        debug!(%remote, "No SNI in ClientHello");
+        return Ok(());
+    };
 
-    // 3. Admin SNI → internal HTTP API
+    // 3. ACME TLS-ALPN-01 challenge? Let's Encrypt's validator signals intent
+    // via ALPN=acme-tls/1; serve the stored challenge cert and close.
+    if info.acme_tls && crate::acme_tls::has_challenge(&sni) {
+        info!(%sni, %remote, "Handling TLS-ALPN-01 challenge");
+        return crate::acme_tls::serve_challenge(socket, &sni).await;
+    }
+
+    // 4. Admin SNI → internal HTTP API
     if state
         .config
         .admin_hosts
@@ -128,7 +140,7 @@ async fn handle_connection(
         return Ok(());
     }
 
-    // 4. Ingress route lookup
+    // 5. Ingress route lookup
     let route = match db::lookup_ingress_route_by_domain(&state.db, &sni).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -141,7 +153,7 @@ async fn handle_connection(
         }
     };
 
-    // 5. Target node QUIC connection
+    // 6. Target node QUIC connection
     let target_conn = match state
         .sessions
         .get_node_connection(&route.cluster_id, &route.node_id)
@@ -154,7 +166,7 @@ async fn handle_connection(
         }
     };
 
-    // 6. Relay
+    // 7. Relay
     info!(%sni, node_id = %route.node_id, %client_ip, "Ingress relay opening");
     splice_ingress(socket, target_conn, &sni, &client_ip).await
 }
@@ -291,12 +303,19 @@ async fn read_proxy_v2_header(socket: &mut TcpStream) -> Result<Option<SocketAdd
 }
 
 // -------------------------------------------------------------------------
-// SNI extraction
+// ClientHello peek: SNI + ALPN acme-tls/1 detection
 // -------------------------------------------------------------------------
 
-/// Peek bytes from the socket (without consuming) until we can extract the SNI
-/// from the ClientHello, or until the buffer is full.
-async fn peek_sni(socket: &TcpStream, buf: &mut [u8]) -> Result<Option<String>> {
+/// Information extracted from a peeked ClientHello.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(crate) struct HelloInfo {
+    pub sni: Option<String>,
+    pub acme_tls: bool,
+}
+
+/// Peek bytes from the socket (without consuming) until we can extract SNI +
+/// ALPN from the ClientHello, or until the buffer is full.
+async fn peek_hello(socket: &TcpStream, buf: &mut [u8]) -> Result<Option<HelloInfo>> {
     let mut have = 0usize;
     loop {
         let n = socket.peek(&mut buf[have..]).await.context("peek failed")?;
@@ -304,9 +323,8 @@ async fn peek_sni(socket: &TcpStream, buf: &mut [u8]) -> Result<Option<String>> 
             return Ok(None);
         }
         have = n.max(have); // peek returns TOTAL bytes currently buffered
-        match extract_sni(&buf[..have]) {
-            ParseResult::Sni(s) => return Ok(Some(s)),
-            ParseResult::NoSni => return Ok(None),
+        match parse_client_hello(&buf[..have]) {
+            ParseResult::Hello(info) => return Ok(Some(info)),
             ParseResult::NeedMore => {
                 if have >= buf.len() {
                     return Ok(None);
@@ -319,15 +337,15 @@ async fn peek_sni(socket: &TcpStream, buf: &mut [u8]) -> Result<Option<String>> 
 }
 
 enum ParseResult {
-    Sni(String),
-    NoSni,
+    Hello(HelloInfo),
     NeedMore,
     Malformed(&'static str),
 }
 
-/// Parse the minimum necessary of a TLS ClientHello to extract the SNI.
+/// Parse the minimum necessary of a TLS ClientHello to extract the SNI
+/// hostname and check whether ALPN advertises `acme-tls/1` (RFC 8737).
 /// Supports both TLS 1.2 and 1.3 (they share the same ClientHello format).
-fn extract_sni(buf: &[u8]) -> ParseResult {
+fn parse_client_hello(buf: &[u8]) -> ParseResult {
     // TLS record header: type(1) + version(2) + length(2) = 5 bytes
     if buf.len() < 5 {
         return ParseResult::NeedMore;
@@ -384,7 +402,7 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
 
     // extensions
     if body.len() < p + 2 {
-        return ParseResult::NoSni; // no extensions
+        return ParseResult::Hello(HelloInfo::default());
     }
     let ext_total = u16::from_be_bytes([body[p], body[p + 1]]) as usize;
     p += 2;
@@ -392,6 +410,8 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
         return ParseResult::Malformed("truncated extensions");
     }
     let exts = &body[p..p + ext_total];
+
+    let mut info = HelloInfo::default();
 
     let mut q = 0usize;
     while q + 4 <= exts.len() {
@@ -401,37 +421,67 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
         if q + ext_len > exts.len() {
             return ParseResult::Malformed("bad extension length");
         }
-        if ext_type == 0 {
-            // server_name extension
-            let ext = &exts[q..q + ext_len];
-            if ext.len() < 2 {
-                return ParseResult::NoSni;
-            }
-            let list_len = u16::from_be_bytes([ext[0], ext[1]]) as usize;
-            if list_len + 2 > ext.len() {
-                return ParseResult::Malformed("bad SNI list length");
-            }
-            let mut r = 2usize;
-            while r + 3 <= 2 + list_len {
-                let name_type = ext[r];
-                let name_len = u16::from_be_bytes([ext[r + 1], ext[r + 2]]) as usize;
-                r += 3;
-                if r + name_len > ext.len() {
-                    return ParseResult::Malformed("bad SNI name length");
-                }
-                if name_type == 0 {
-                    match std::str::from_utf8(&ext[r..r + name_len]) {
-                        Ok(s) => return ParseResult::Sni(s.to_ascii_lowercase()),
-                        Err(_) => return ParseResult::Malformed("SNI not UTF-8"),
+        let ext = &exts[q..q + ext_len];
+        match ext_type {
+            // server_name (SNI)
+            0 => {
+                if ext.len() < 2 {
+                    // no server_name_list — leave sni None.
+                } else {
+                    let list_len = u16::from_be_bytes([ext[0], ext[1]]) as usize;
+                    if list_len + 2 > ext.len() {
+                        return ParseResult::Malformed("bad SNI list length");
+                    }
+                    let mut r = 2usize;
+                    while r + 3 <= 2 + list_len {
+                        let name_type = ext[r];
+                        let name_len = u16::from_be_bytes([ext[r + 1], ext[r + 2]]) as usize;
+                        r += 3;
+                        if r + name_len > ext.len() {
+                            return ParseResult::Malformed("bad SNI name length");
+                        }
+                        if name_type == 0 {
+                            match std::str::from_utf8(&ext[r..r + name_len]) {
+                                Ok(s) => info.sni = Some(s.to_ascii_lowercase()),
+                                Err(_) => return ParseResult::Malformed("SNI not UTF-8"),
+                            }
+                            break;
+                        }
+                        r += name_len;
                     }
                 }
-                r += name_len;
             }
-            return ParseResult::NoSni;
+            // application_layer_protocol_negotiation (ALPN) = 16
+            16 => {
+                if ext.len() < 2 {
+                    // empty list — ignore
+                } else {
+                    let list_len = u16::from_be_bytes([ext[0], ext[1]]) as usize;
+                    if list_len + 2 > ext.len() {
+                        return ParseResult::Malformed("bad ALPN list length");
+                    }
+                    let mut r = 2usize;
+                    while r < 2 + list_len {
+                        if r >= ext.len() {
+                            return ParseResult::Malformed("bad ALPN entry");
+                        }
+                        let proto_len = ext[r] as usize;
+                        r += 1;
+                        if r + proto_len > ext.len() {
+                            return ParseResult::Malformed("bad ALPN proto length");
+                        }
+                        if &ext[r..r + proto_len] == crate::acme_tls::ACME_ALPN {
+                            info.acme_tls = true;
+                        }
+                        r += proto_len;
+                    }
+                }
+            }
+            _ => {}
         }
         q += ext_len;
     }
-    ParseResult::NoSni
+    ParseResult::Hello(info)
 }
 
 // -------------------------------------------------------------------------
@@ -442,28 +492,44 @@ fn extract_sni(buf: &[u8]) -> ParseResult {
 mod tests {
     use super::*;
 
-    fn build_client_hello_with_sni(sni: &str) -> Vec<u8> {
-        // Minimal TLS 1.2 ClientHello with only the SNI extension.
+    fn build_client_hello(sni: &str, alpn_protos: &[&[u8]]) -> Vec<u8> {
+        // Minimal TLS 1.2 ClientHello with SNI + optional ALPN.
         let mut hello = Vec::new();
         hello.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
         hello.extend_from_slice(&[0u8; 32]); // random
         hello.push(0x00); // session_id length
-        hello.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // 1 cipher suite (TLS_AES_128_GCM_SHA256)
+        hello.extend_from_slice(&[0x00, 0x02, 0x13, 0x01]); // 1 cipher suite
         hello.extend_from_slice(&[0x01, 0x00]); // compression: null only
 
-        // SNI extension payload
+        // Extensions block.
+        let mut ext_block = Vec::new();
+
+        // SNI extension
         let mut sni_ext = Vec::new();
         let name_bytes = sni.as_bytes();
         let list_len = 3 + name_bytes.len();
-        sni_ext.extend_from_slice(&(list_len as u16).to_be_bytes()); // list length
+        sni_ext.extend_from_slice(&(list_len as u16).to_be_bytes());
         sni_ext.push(0x00); // host_name type
         sni_ext.extend_from_slice(&(name_bytes.len() as u16).to_be_bytes());
         sni_ext.extend_from_slice(name_bytes);
-
-        let mut ext_block = Vec::new();
-        ext_block.extend_from_slice(&[0x00, 0x00]); // ext type = server_name
+        ext_block.extend_from_slice(&[0x00, 0x00]); // type = server_name
         ext_block.extend_from_slice(&(sni_ext.len() as u16).to_be_bytes());
         ext_block.extend_from_slice(&sni_ext);
+
+        // ALPN extension (optional)
+        if !alpn_protos.is_empty() {
+            let mut alpn_list: Vec<u8> = Vec::new();
+            for p in alpn_protos {
+                alpn_list.push(p.len() as u8);
+                alpn_list.extend_from_slice(p);
+            }
+            let mut alpn_ext = Vec::new();
+            alpn_ext.extend_from_slice(&(alpn_list.len() as u16).to_be_bytes());
+            alpn_ext.extend_from_slice(&alpn_list);
+            ext_block.extend_from_slice(&[0x00, 0x10]); // type = ALPN (16)
+            ext_block.extend_from_slice(&(alpn_ext.len() as u16).to_be_bytes());
+            ext_block.extend_from_slice(&alpn_ext);
+        }
 
         hello.extend_from_slice(&(ext_block.len() as u16).to_be_bytes());
         hello.extend_from_slice(&ext_block);
@@ -481,44 +547,71 @@ mod tests {
 
         // Record header
         let mut rec = Vec::new();
-        rec.push(0x16); // handshake
-        rec.extend_from_slice(&[0x03, 0x03]); // record version
+        rec.push(0x16);
+        rec.extend_from_slice(&[0x03, 0x03]);
         rec.extend_from_slice(&(hs.len() as u16).to_be_bytes());
         rec.extend_from_slice(&hs);
         rec
     }
 
     #[test]
-    fn extract_sni_basic() {
-        let buf = build_client_hello_with_sni("myapp.mlsh.io");
-        match extract_sni(&buf) {
-            ParseResult::Sni(s) => assert_eq!(s, "myapp.mlsh.io"),
-            _ => panic!("expected SNI"),
+    fn parse_sni_basic() {
+        let buf = build_client_hello("myapp.mlsh.io", &[]);
+        match parse_client_hello(&buf) {
+            ParseResult::Hello(info) => {
+                assert_eq!(info.sni.as_deref(), Some("myapp.mlsh.io"));
+                assert!(!info.acme_tls);
+            }
+            _ => panic!("expected Hello"),
         }
     }
 
     #[test]
-    fn extract_sni_lowercases() {
-        let buf = build_client_hello_with_sni("MyApp.MLSH.io");
-        match extract_sni(&buf) {
-            ParseResult::Sni(s) => assert_eq!(s, "myapp.mlsh.io"),
-            _ => panic!("expected SNI"),
+    fn parse_sni_lowercases() {
+        let buf = build_client_hello("MyApp.MLSH.io", &[]);
+        match parse_client_hello(&buf) {
+            ParseResult::Hello(info) => assert_eq!(info.sni.as_deref(), Some("myapp.mlsh.io")),
+            _ => panic!("expected Hello"),
         }
     }
 
     #[test]
-    fn extract_sni_needs_more_for_truncated_record() {
-        let buf = build_client_hello_with_sni("app.mlsh.io");
-        match extract_sni(&buf[..4]) {
+    fn parse_detects_acme_tls_alpn() {
+        let buf = build_client_hello("app.mlsh.io", &[b"acme-tls/1"]);
+        match parse_client_hello(&buf) {
+            ParseResult::Hello(info) => {
+                assert_eq!(info.sni.as_deref(), Some("app.mlsh.io"));
+                assert!(info.acme_tls);
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn parse_ignores_other_alpn() {
+        let buf = build_client_hello("app.mlsh.io", &[b"h2", b"http/1.1"]);
+        match parse_client_hello(&buf) {
+            ParseResult::Hello(info) => {
+                assert_eq!(info.sni.as_deref(), Some("app.mlsh.io"));
+                assert!(!info.acme_tls);
+            }
+            _ => panic!("expected Hello"),
+        }
+    }
+
+    #[test]
+    fn parse_needs_more_for_truncated_record() {
+        let buf = build_client_hello("app.mlsh.io", &[]);
+        match parse_client_hello(&buf[..4]) {
             ParseResult::NeedMore => {}
             _ => panic!("expected NeedMore"),
         }
     }
 
     #[test]
-    fn extract_sni_rejects_non_handshake() {
+    fn parse_rejects_non_handshake() {
         let buf = vec![0x17, 0x03, 0x03, 0x00, 0x05, 0, 0, 0, 0, 0];
-        match extract_sni(&buf) {
+        match parse_client_hello(&buf) {
             ParseResult::Malformed(_) => {}
             _ => panic!("expected Malformed"),
         }

@@ -161,24 +161,24 @@ async fn handle_stream(
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
-        StreamMessage::HttpChallengeSet {
+        StreamMessage::TlsAlpnChallengeSet {
             domain,
-            token,
-            key_auth,
+            cert_der,
+            key_der,
         } => {
-            let resp = handle_http_challenge_set(state, conn, &domain, &token, &key_auth).await;
+            let resp = handle_tls_alpn_set(state, conn, &domain, cert_der, key_der).await;
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
-        StreamMessage::HttpChallengeClear { domain, token } => {
-            let resp = handle_http_challenge_clear(state, conn, &domain, &token).await;
+        StreamMessage::TlsAlpnChallengeClear { domain } => {
+            let resp = handle_tls_alpn_clear(state, conn, &domain).await;
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
         _ => {
             let resp = ServerMessage::error(
                 "auth_required",
-                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, ListExposed, or HttpChallenge*",
+                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, ListExposed, or TlsAlpnChallenge*",
             );
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
@@ -1079,19 +1079,19 @@ async fn handle_list_exposed(
     }
 }
 
-async fn handle_http_challenge_set(
+async fn handle_tls_alpn_set(
     state: &QuicState,
     conn: &quinn::Connection,
     domain: &str,
-    token: &str,
-    key_auth: &str,
+    cert_der: Vec<u8>,
+    key_der: Vec<u8>,
 ) -> ServerMessage {
     let d = domain.to_ascii_lowercase();
     let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
         Ok(Some(r)) => r,
         Ok(None) => return ServerMessage::error("not_found", "No ingress route for this domain"),
         Err(e) => {
-            warn!(error = %e, "DB error on HTTP-01 set");
+            warn!(error = %e, "DB error on TLS-ALPN-01 set");
             return ServerMessage::error("internal", "Database error");
         }
     };
@@ -1103,40 +1103,29 @@ async fn handle_http_challenge_set(
     if caller.node_id != route.node_id {
         return ServerMessage::error(
             "forbidden",
-            "Only the domain owner may publish HTTP-01 challenges",
+            "Only the domain owner may publish TLS-ALPN-01 challenges",
         );
     }
 
-    // Basic sanity: a token is base64url, ASCII alnum + `-_`. Reject anything
-    // else — stray slashes or spaces would let a caller collide path-based
-    // challenges with someone else's token.
-    if token.is_empty()
-        || !token
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return ServerMessage::error("invalid_request", "Invalid challenge token");
+    if cert_der.is_empty() || key_der.is_empty() {
+        return ServerMessage::error("invalid_request", "cert and key must be non-empty");
     }
 
-    crate::acme_http::set(&d, token, key_auth);
-    ServerMessage::HttpChallengeOk {
-        domain: d,
-        token: token.to_string(),
-    }
+    crate::acme_tls::set(&d, cert_der, key_der);
+    ServerMessage::TlsAlpnChallengeOk { domain: d }
 }
 
-async fn handle_http_challenge_clear(
+async fn handle_tls_alpn_clear(
     state: &QuicState,
     conn: &quinn::Connection,
     domain: &str,
-    token: &str,
 ) -> ServerMessage {
     let d = domain.to_ascii_lowercase();
     let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
         Ok(Some(r)) => r,
         Ok(None) => return ServerMessage::error("not_found", "No ingress route for this domain"),
         Err(e) => {
-            warn!(error = %e, "DB error on HTTP-01 clear");
+            warn!(error = %e, "DB error on TLS-ALPN-01 clear");
             return ServerMessage::error("internal", "Database error");
         }
     };
@@ -1148,15 +1137,12 @@ async fn handle_http_challenge_clear(
     if caller.node_id != route.node_id {
         return ServerMessage::error(
             "forbidden",
-            "Only the domain owner may clear HTTP-01 challenges",
+            "Only the domain owner may clear TLS-ALPN-01 challenges",
         );
     }
 
-    crate::acme_http::clear(&d, token);
-    ServerMessage::HttpChallengeOk {
-        domain: d,
-        token: token.to_string(),
-    }
+    crate::acme_tls::clear(&d);
+    ServerMessage::TlsAlpnChallengeOk { domain: d }
 }
 
 /// Extract the SHA-256 fingerprint from the peer's TLS client certificate.
