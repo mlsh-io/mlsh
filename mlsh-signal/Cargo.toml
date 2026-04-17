@@ -41,7 +41,6 @@ toml = "1"
 clap = { version = "4.6", features = ["derive"] }
 # Internal HTTP API (for cloud integration)
 axum = "0.8"
-tower = "0.5"
 # UUID generation for cluster IDs
 uuid = { version = "1", features = ["v4"] }
 # Cryptographic hashing for setup codes
