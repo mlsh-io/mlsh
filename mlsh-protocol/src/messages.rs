@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Candidate, NodeInfo, PeerInfo};
+use crate::types::{Candidate, IngressMode, IngressRoute, NodeInfo, PeerInfo};
 
 // --- Client → Server
 
@@ -82,6 +82,44 @@ pub enum StreamMessage {
 
     /// List all nodes in the cluster (sent within an authenticated session).
     ListNodes,
+
+    /// Register a public reverse-proxy route for a domain served by the caller.
+    /// Caller is authenticated via TLS client certificate.
+    ExposeService {
+        cluster_id: String,
+        /// Fully-qualified domain (e.g. "myapp.mlsh.io").
+        domain: String,
+        /// Local upstream URL the peer's rpxy-lib should forward to
+        /// (e.g. "http://localhost:3000").
+        target: String,
+        #[serde(default)]
+        mode: IngressMode,
+    },
+
+    /// Remove a previously-registered ingress route.
+    UnexposeService {
+        cluster_id: String,
+        domain: String,
+    },
+
+    /// List ingress routes registered in the cluster.
+    ListExposed {
+        cluster_id: String,
+    },
+
+    /// Publish an ACME DNS-01 challenge TXT record via mlsh-signal's
+    /// authoritative DNS server. Caller must own the parent domain.
+    AcmeChallenge {
+        /// Fully-qualified challenge name (e.g. "_acme-challenge.myapp.mlsh.io").
+        domain: String,
+        /// TXT record value (Let's Encrypt key-authorization digest).
+        value: String,
+    },
+
+    /// Remove a previously-published ACME challenge TXT record.
+    AcmeChallengeClear {
+        domain: String,
+    },
 }
 
 // --- Server → Client
@@ -146,6 +184,31 @@ pub enum ServerMessage {
         nodes: Vec<NodeInfo>,
     },
 
+    /// Response to `ExposeService`: the route is registered. Public mode may
+    /// be promoted to "direct" later via `IngressStatus`.
+    ExposeOk {
+        domain: String,
+        /// "relay" or "direct".
+        public_mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_ip: Option<String>,
+    },
+    UnexposeOk,
+    ExposedList {
+        routes: Vec<IngressRoute>,
+    },
+    AcmeChallengeOk {
+        domain: String,
+    },
+    /// Pushed to the node when the direct/relay decision changes.
+    IngressStatus {
+        domain: String,
+        /// "direct" or "relay".
+        public_mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_ip: Option<String>,
+    },
+
     // Shared
     Error {
         code: String,
@@ -172,6 +235,18 @@ pub enum RelayMessage {
     RelayIncoming { from_node_id: String },
     /// Target peer → signal: relay accepted.
     RelayAccepted,
+    /// Signal → target peer: incoming public ingress connection for `domain`.
+    /// After `IngressAccepted`, signal splices raw TCP bytes over the stream
+    /// and the peer hands them to its local rpxy-lib for TLS termination.
+    IngressForward {
+        domain: String,
+        /// Real client IP observed by signal (or outer SNI proxy via
+        /// PROXY-protocol), if available. For logging / PROXY v2 on the peer.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        client_ip: String,
+    },
+    /// Target peer → signal: ingress stream accepted, start splicing.
+    IngressAccepted,
 }
 
 // --- Tests
@@ -594,6 +669,163 @@ mod tests {
                 assert!(!nodes[1].has_admission_cert);
             }
             other => panic!("expected NodeList, got {:?}", other),
+        }
+    }
+
+    // --- Ingress roundtrips ---
+
+    #[test]
+    fn expose_service_roundtrip() {
+        let msg = StreamMessage::ExposeService {
+            cluster_id: "c1".into(),
+            domain: "app.mlsh.io".into(),
+            target: "http://localhost:3000".into(),
+            mode: IngressMode::Http,
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::ExposeService {
+                cluster_id,
+                domain,
+                target,
+                mode,
+            } => {
+                assert_eq!(cluster_id, "c1");
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(target, "http://localhost:3000");
+                assert_eq!(mode, IngressMode::Http);
+            }
+            other => panic!("expected ExposeService, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unexpose_service_roundtrip() {
+        let msg = StreamMessage::UnexposeService {
+            cluster_id: "c1".into(),
+            domain: "app.mlsh.io".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::UnexposeService { cluster_id, domain } => {
+                assert_eq!(cluster_id, "c1");
+                assert_eq!(domain, "app.mlsh.io");
+            }
+            other => panic!("expected UnexposeService, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn list_exposed_roundtrip() {
+        let msg = StreamMessage::ListExposed {
+            cluster_id: "c1".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::ListExposed { cluster_id } => {
+                assert_eq!(cluster_id, "c1");
+            }
+            other => panic!("expected ListExposed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn acme_challenge_roundtrip() {
+        let msg = StreamMessage::AcmeChallenge {
+            domain: "_acme-challenge.app.mlsh.io".into(),
+            value: "challenge-token-xyz".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            StreamMessage::AcmeChallenge { domain, value } => {
+                assert_eq!(domain, "_acme-challenge.app.mlsh.io");
+                assert_eq!(value, "challenge-token-xyz");
+            }
+            other => panic!("expected AcmeChallenge, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn expose_ok_roundtrip() {
+        let msg = ServerMessage::ExposeOk {
+            domain: "app.mlsh.io".into(),
+            public_mode: "relay".into(),
+            public_ip: None,
+        };
+        match cbor_roundtrip(&msg) {
+            ServerMessage::ExposeOk {
+                domain,
+                public_mode,
+                public_ip,
+            } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(public_mode, "relay");
+                assert!(public_ip.is_none());
+            }
+            other => panic!("expected ExposeOk, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn exposed_list_roundtrip() {
+        let msg = ServerMessage::ExposedList {
+            routes: vec![IngressRoute {
+                domain: "app.mlsh.io".into(),
+                target: "http://localhost:3000".into(),
+                node_id: "n1".into(),
+                mode: IngressMode::Http,
+                public_mode: "direct".into(),
+                public_ip: "203.0.113.5".into(),
+            }],
+        };
+        match cbor_roundtrip(&msg) {
+            ServerMessage::ExposedList { routes } => {
+                assert_eq!(routes.len(), 1);
+                assert_eq!(routes[0].domain, "app.mlsh.io");
+                assert_eq!(routes[0].public_mode, "direct");
+                assert_eq!(routes[0].public_ip, "203.0.113.5");
+            }
+            other => panic!("expected ExposedList, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ingress_status_roundtrip() {
+        let msg = ServerMessage::IngressStatus {
+            domain: "app.mlsh.io".into(),
+            public_mode: "direct".into(),
+            public_ip: Some("203.0.113.5".into()),
+        };
+        match cbor_roundtrip(&msg) {
+            ServerMessage::IngressStatus {
+                domain,
+                public_mode,
+                public_ip,
+            } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(public_mode, "direct");
+                assert_eq!(public_ip.as_deref(), Some("203.0.113.5"));
+            }
+            other => panic!("expected IngressStatus, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ingress_forward_roundtrip() {
+        let msg = RelayMessage::IngressForward {
+            domain: "app.mlsh.io".into(),
+            client_ip: "198.51.100.7".into(),
+        };
+        match cbor_roundtrip(&msg) {
+            RelayMessage::IngressForward { domain, client_ip } => {
+                assert_eq!(domain, "app.mlsh.io");
+                assert_eq!(client_ip, "198.51.100.7");
+            }
+            other => panic!("expected IngressForward, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn ingress_accepted_roundtrip() {
+        match cbor_roundtrip(&RelayMessage::IngressAccepted) {
+            RelayMessage::IngressAccepted => {}
+            other => panic!("expected IngressAccepted, got {:?}", other),
         }
     }
 

@@ -167,6 +167,55 @@ async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -
             let mgr = manager.lock().await;
             mgr.status()
         }
+        DaemonRequest::IngressAdd {
+            cluster,
+            domain,
+            target,
+            email,
+            acme_staging,
+        } => {
+            crate::tund::ingress::add(&domain, &target);
+            // Attempt to spawn ACME issuance if the named cluster has an
+            // active signal connection. Missing/disconnected clusters fall
+            // back to the self-signed cert produced on first ingress.
+            if !cluster.is_empty() {
+                let conn_opt = {
+                    let mgr = manager.lock().await;
+                    mgr.signal_connection_for(&cluster)
+                };
+                match conn_opt {
+                    Some(conn) => {
+                        let directory = if acme_staging {
+                            crate::tund::acme::Directory::Staging
+                        } else {
+                            crate::tund::acme::Directory::Production
+                        };
+                        crate::tund::acme::spawn_issuance(
+                            domain.clone(),
+                            conn,
+                            email,
+                            directory,
+                        );
+                    }
+                    None => {
+                        tracing::warn!(
+                            cluster,
+                            domain,
+                            "No active signal session — ACME deferred; using self-signed cert for now"
+                        );
+                    }
+                }
+            }
+            DaemonResponse::Ok {
+                message: Some(format!("Ingress target registered for {}", domain)),
+            }
+        }
+        DaemonRequest::IngressRemove { domain } => {
+            crate::tund::ingress::remove(&domain);
+            DaemonResponse::Ok {
+                message: Some(format!("Ingress target removed for {}", domain)),
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;

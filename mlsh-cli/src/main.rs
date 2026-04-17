@@ -120,6 +120,44 @@ enum Commands {
     /// Show tunnel status
     Status,
 
+    /// Expose a local service to the public internet over HTTPS
+    Expose {
+        /// Cluster name
+        cluster: String,
+
+        /// Upstream service URL (e.g. http://localhost:3000)
+        target: String,
+
+        /// Public domain (must be *.<cluster>.mlsh.io in this release,
+        /// e.g. myapp.homelab.mlsh.io for the "homelab" cluster)
+        #[arg(long)]
+        domain: String,
+
+        /// Contact email for the Let's Encrypt ACME account
+        #[arg(long)]
+        email: Option<String>,
+
+        /// Use Let's Encrypt's staging directory (recommended for testing;
+        /// production has hard rate limits)
+        #[arg(long)]
+        acme_staging: bool,
+    },
+
+    /// Remove a previously-exposed service
+    Unexpose {
+        /// Cluster name
+        cluster: String,
+
+        /// Domain to unexpose
+        domain: String,
+    },
+
+    /// List services exposed in the cluster
+    Exposed {
+        /// Cluster name
+        cluster: String,
+    },
+
     /// Manage the overlay tunnel daemon
     #[command(subcommand)]
     Tunnel(commands::daemon::DaemonCommands),
@@ -267,6 +305,26 @@ async fn run_cli() -> Result<()> {
             commands::identity::handle_import(file.as_deref()).await
         }
         Commands::Status => commands::connect::handle_status().await,
+        Commands::Expose {
+            cluster,
+            target,
+            domain,
+            email,
+            acme_staging,
+        } => {
+            commands::expose::handle_expose(
+                &cluster,
+                &target,
+                &domain,
+                email.as_deref(),
+                acme_staging,
+            )
+            .await
+        }
+        Commands::Unexpose { cluster, domain } => {
+            commands::expose::handle_unexpose(&cluster, &domain).await
+        }
+        Commands::Exposed { cluster } => commands::expose::handle_list_exposed(&cluster).await,
         Commands::Tunnel(cmd) => commands::daemon::handle(cmd).await,
     }
 }

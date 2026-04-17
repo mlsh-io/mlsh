@@ -25,6 +25,28 @@ pub enum DaemonRequest {
     Disconnect { cluster: String },
     /// Query the status of all tunnels.
     Status,
+    /// Register a public-ingress route on the local daemon.
+    /// Paired with `StreamMessage::ExposeService` sent to signal by the CLI.
+    IngressAdd {
+        /// Cluster whose signal session should be used for ACME DNS-01.
+        /// If the cluster isn't connected, ACME is deferred and a self-signed
+        /// cert is used until the daemon reconnects and retries.
+        #[serde(default)]
+        cluster: String,
+        /// Public domain (e.g. "myapp.mlsh.io").
+        domain: String,
+        /// Local upstream URL (e.g. "http://localhost:3000").
+        target: String,
+        /// Contact email for the ACME account.
+        #[serde(default)]
+        email: Option<String>,
+        /// When true, hit Let's Encrypt staging instead of production. Strongly
+        /// recommended during smoke tests (production has hard rate limits).
+        #[serde(default)]
+        acme_staging: bool,
+    },
+    /// Remove a previously-registered ingress target.
+    IngressRemove { domain: String },
 }
 
 // Daemon → Client

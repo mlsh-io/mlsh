@@ -1,8 +1,11 @@
 pub mod cluster;
 pub mod config;
 pub mod db;
+pub mod dns;
 pub mod http;
+pub mod ingress;
 pub mod metrics;
+pub mod probe;
 pub mod protocol;
 pub mod quic;
 pub mod sessions;

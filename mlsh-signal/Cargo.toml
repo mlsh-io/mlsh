@@ -47,6 +47,10 @@ sha2 = "0.10"
 # Logging
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Authoritative DNS server for *.mlsh.io
+hickory-server = { version = "0.25", default-features = false, features = ["resolver"] }
+hickory-proto = { version = "0.25", default-features = false }
+async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

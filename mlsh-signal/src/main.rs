@@ -137,10 +137,77 @@ async fn run_server() -> anyhow::Result<()> {
     let state = Arc::new(quic::listener::QuicState {
         db: pool,
         sessions,
-        config: cfg,
+        config: cfg.clone(),
         overlay_subnet,
         metrics,
     });
+
+    // Start the authoritative DNS server.
+    if !cfg.dns_bind.is_empty() && !cfg.dns_public_ip.is_empty() {
+        match cfg.dns_bind.parse::<std::net::SocketAddr>() {
+            Ok(dns_addr) => {
+                let dns_pool = state.db.clone();
+                let dns_cfg = cfg.clone();
+                let dns_shutdown = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        mlsh_signal::dns::run(dns_addr, dns_pool, dns_cfg, dns_shutdown).await
+                    {
+                        error!("DNS server failed: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!(
+                    bind = %cfg.dns_bind,
+                    "Invalid dns_bind address: {} — DNS server disabled",
+                    e
+                );
+            }
+        }
+    } else {
+        info!("DNS server disabled (dns_public_ip not configured)");
+    }
+
+    // Periodic ingress health check: probe each route's
+    // owner for direct-mode reachability and flip DNS A records accordingly.
+    {
+        let hc_pool = state.db.clone();
+        let hc_sessions = state.sessions.clone();
+        let hc_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(e) =
+                mlsh_signal::probe::run_health_check(hc_pool, hc_sessions, hc_shutdown).await
+            {
+                error!("Ingress health check failed: {}", e);
+            }
+        });
+    }
+
+    // Start the public-ingress TCP listener.
+    if !cfg.ingress_bind.is_empty() {
+        match cfg.ingress_bind.parse::<std::net::SocketAddr>() {
+            Ok(ingress_addr) => {
+                let ingress_state = state.clone();
+                let ingress_shutdown = shutdown_rx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        mlsh_signal::ingress::run(ingress_addr, ingress_state, ingress_shutdown)
+                            .await
+                    {
+                        error!("Ingress listener failed: {}", e);
+                    }
+                });
+            }
+            Err(e) => {
+                error!(
+                    bind = %cfg.ingress_bind,
+                    "Invalid ingress_bind address: {} — ingress listener disabled",
+                    e
+                );
+            }
+        }
+    }
 
     tokio::spawn(async move {
         shutdown_signal().await;
