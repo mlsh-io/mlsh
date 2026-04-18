@@ -1,0 +1,161 @@
+/* ============================================================
+   MLSH Design System — tokens.css
+   Source de vérité unique.
+   Importé par : Zola (doc), landing page, Vue (via tailwind.config.js)
+   ============================================================ */
+
+/* ── Phosphore ambre — couleur d'accent principale ── */
+:root {
+  --mlsh-amber-50:  #FFF8E7;
+  --mlsh-amber-100: #FDECC0;
+  --mlsh-amber-200: #FBDA86;
+  --mlsh-amber-300: #F0B429;  /* ← phosphore pur, dark mode accent */
+  --mlsh-amber-400: #D4943A;  /* ← UI accent équilibré */
+  --mlsh-amber-500: #A86E1E;
+  --mlsh-amber-600: #7A4D0E;  /* ← light mode accent texte */
+  --mlsh-amber-700: #4F3008;
+
+  /* ── Neutrals sombres chauds ── */
+  --mlsh-dark-950: #060504;   /* fond le plus profond */
+  --mlsh-dark-900: #0A0908;   /* fond natif dark */
+  --mlsh-dark-850: #0F0E0C;
+  --mlsh-dark-800: #141210;   /* fond UI équilibré */
+  --mlsh-dark-700: #1E1C19;   /* surface cards dark */
+  --mlsh-dark-600: #2A2824;   /* borders dark */
+  --mlsh-dark-500: #3A3830;   /* muted dark */
+  --mlsh-dark-400: #5A5850;   /* placeholder dark */
+
+  /* ── Neutrals clairs chauds ── */
+  --mlsh-light-50:  #FAFAF8;  /* blanc cassé */
+  --mlsh-light-100: #F5F3EE;  /* fond light */
+  --mlsh-light-200: #ECEAE4;  /* surface light */
+  --mlsh-light-300: #D8D5CE;  /* borders light */
+  --mlsh-light-400: #A09880;  /* muted light */
+  --mlsh-light-500: #6A6458;  /* secondary text light */
+
+  /* ── Texte ── */
+  --mlsh-text-primary-dark:   #EDE8DC;
+  --mlsh-text-secondary-dark: #A09880;
+  --mlsh-text-muted-dark:     #5A5850;
+
+  --mlsh-text-primary-light:   #1A1916;
+  --mlsh-text-secondary-light: #5A5850;
+  --mlsh-text-muted-light:     #A09880;
+
+  /* ── Sémantique ── */
+  --mlsh-success: #1A9E5C;
+  --mlsh-warning: #F0B429;
+  --mlsh-danger:  #C0341A;
+  --mlsh-info:    #2A7AE0;
+
+  /* ── Typographie ── */
+  --mlsh-font-display: 'Syne', sans-serif;
+  --mlsh-font-body:    'DM Sans', sans-serif;
+  --mlsh-font-mono:    'IBM Plex Mono', monospace;
+
+  /* ── Type scale ── */
+  --mlsh-text-xs:   0.6875rem;  /* 11px */
+  --mlsh-text-sm:   0.8125rem;  /* 13px */
+  --mlsh-text-base: 0.875rem;   /* 14px */
+  --mlsh-text-md:   1rem;       /* 16px */
+  --mlsh-text-lg:   1.125rem;   /* 18px */
+  --mlsh-text-xl:   1.375rem;   /* 22px */
+  --mlsh-text-2xl:  1.75rem;    /* 28px */
+  --mlsh-text-3xl:  2.25rem;    /* 36px */
+  --mlsh-text-4xl:  3rem;       /* 48px */
+
+  /* ── Letter spacing ── */
+  --mlsh-tracking-tight:  -0.03em;
+  --mlsh-tracking-normal:  0em;
+  --mlsh-tracking-wide:    0.08em;
+  --mlsh-tracking-wider:   0.12em;
+  --mlsh-tracking-widest:  0.16em;
+
+  /* ── Spacing ── */
+  --mlsh-space-1:  0.25rem;   /*  4px */
+  --mlsh-space-2:  0.5rem;    /*  8px */
+  --mlsh-space-3:  0.75rem;   /* 12px */
+  --mlsh-space-4:  1rem;      /* 16px */
+  --mlsh-space-5:  1.25rem;   /* 20px */
+  --mlsh-space-6:  1.5rem;    /* 24px */
+  --mlsh-space-8:  2rem;      /* 32px */
+  --mlsh-space-10: 2.5rem;    /* 40px */
+  --mlsh-space-12: 3rem;      /* 48px */
+  --mlsh-space-16: 4rem;      /* 64px */
+  --mlsh-space-20: 5rem;      /* 80px */
+  --mlsh-space-24: 6rem;      /* 96px */
+
+  /* ── Border radius ── */
+  --mlsh-radius-sm:   4px;
+  --mlsh-radius-md:   8px;
+  --mlsh-radius-lg:   12px;
+  --mlsh-radius-xl:   16px;
+  --mlsh-radius-full: 9999px;
+
+  /* ── Borders ── */
+  --mlsh-border-subtle:   rgba(240,180,41,0.08);
+  --mlsh-border-default:  rgba(240,180,41,0.15);
+  --mlsh-border-strong:   rgba(240,180,41,0.30);
+  --mlsh-border-accent:   rgba(240,180,41,0.60);
+
+  /* ── Scanlines (marketing / landing) ── */
+  --mlsh-scanlines: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 2px,
+    rgba(0,0,0,0.25) 2px,
+    rgba(0,0,0,0.25) 4px
+  );
+
+  /* ── Transitions ── */
+  --mlsh-transition-fast:   100ms ease;
+  --mlsh-transition-base:   200ms ease;
+  --mlsh-transition-slow:   400ms ease;
+
+  /* ── Shadows ── */
+  --mlsh-shadow-sm:  0 1px 3px rgba(0,0,0,0.4);
+  --mlsh-shadow-md:  0 4px 12px rgba(0,0,0,0.5);
+  --mlsh-shadow-lg:  0 8px 32px rgba(0,0,0,0.6);
+  --mlsh-shadow-glow: 0 0 20px rgba(240,180,41,0.25);
+}
+
+/* ── Aliases sémantiques dark mode (défaut) ── */
+:root,
+[data-theme="dark"] {
+  --mlsh-bg:          var(--mlsh-dark-800);
+  --mlsh-bg-surface:  var(--mlsh-dark-700);
+  --mlsh-bg-elevated: var(--mlsh-dark-600);
+  --mlsh-fg:          var(--mlsh-text-primary-dark);
+  --mlsh-fg-2:        var(--mlsh-text-secondary-dark);
+  --mlsh-fg-3:        var(--mlsh-text-muted-dark);
+  --mlsh-accent:      var(--mlsh-amber-300);
+  --mlsh-accent-dim:  rgba(240,180,41,0.10);
+  --mlsh-border:      var(--mlsh-border-default);
+}
+
+/* ── Aliases sémantiques light mode ── */
+[data-theme="light"] {
+  --mlsh-bg:          var(--mlsh-light-100);
+  --mlsh-bg-surface:  var(--mlsh-light-50);
+  --mlsh-bg-elevated: var(--mlsh-light-200);
+  --mlsh-fg:          var(--mlsh-text-primary-light);
+  --mlsh-fg-2:        var(--mlsh-text-secondary-light);
+  --mlsh-fg-3:        var(--mlsh-text-muted-light);
+  --mlsh-accent:      var(--mlsh-amber-600);
+  --mlsh-accent-dim:  rgba(122,77,14,0.08);
+  --mlsh-border:      rgba(26,25,22,0.10);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --mlsh-bg:          var(--mlsh-light-100);
+    --mlsh-bg-surface:  var(--mlsh-light-50);
+    --mlsh-bg-elevated: var(--mlsh-light-200);
+    --mlsh-fg:          var(--mlsh-text-primary-light);
+    --mlsh-fg-2:        var(--mlsh-text-secondary-light);
+    --mlsh-fg-3:        var(--mlsh-text-muted-light);
+    --mlsh-accent:      var(--mlsh-amber-600);
+    --mlsh-accent-dim:  rgba(122,77,14,0.08);
+    --mlsh-border:      rgba(26,25,22,0.10);
+  }
+}
