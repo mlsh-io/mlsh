@@ -124,37 +124,7 @@ body {
   .theme-icon-dark { display: none; }
 }
 
-/* Search modal */
-.search-modal {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  padding: var(--mlsh-space-16) var(--mlsh-space-4) var(--mlsh-space-4);
-
-  &[hidden] { display: none; }
-}
-
-.search-modal-backdrop {
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.6);
-  backdrop-filter: blur(4px);
-}
-
-.search-modal-inner {
-  position: relative;
-  width: min(40rem, 100%);
-  background: var(--mlsh-bg-surface);
-  border: 1px solid var(--mlsh-border);
-  border-radius: var(--mlsh-radius-lg);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-  padding: var(--mlsh-space-4);
-  max-height: 70vh;
-  overflow-y: auto;
-}
+/* Pagefind Component UI picks up dark styling via data-pf-theme="dark" on <html>. */
 
 /* Lead paragraph under H1 */
 .docs-content .lead {

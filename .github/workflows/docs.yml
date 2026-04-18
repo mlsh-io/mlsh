@@ -10,23 +10,21 @@ on:
         description: "Override version tag (e.g. v0.3.0-rc1). Defaults to current tag."
         required: false
       staging:
-        description: "Deploy under /staging/ instead of /vX.Y.Z/."
+        description: "Publish under /staging/ instead of /vX.Y.Z/."
         required: false
         default: "false"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   ZOLA_VERSION: "0.22.1"
   PAGEFIND_VERSION: "1.1.0"
-  DEPLOY_HOST: ${{ vars.DOCS_DEPLOY_HOST }}
-  DEPLOY_USER: ${{ vars.DOCS_DEPLOY_USER }}
-  DEPLOY_ROOT: ${{ vars.DOCS_DEPLOY_ROOT }}
+  PUBLISH_BRANCH: "docs-site"
 
 jobs:
-  build-and-deploy:
-    name: build and deploy
+  build-and-publish:
+    name: build and publish to ${{ env.PUBLISH_BRANCH }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -83,58 +81,40 @@ jobs:
         working-directory: docs
         run: pagefind --site public
 
-      - name: Configure SSH
+      - name: Stage this version
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.DOCS_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          mkdir -p staging-out/${{ steps.version.outputs.dir }}
+          cp -a docs/public/. staging-out/${{ steps.version.outputs.dir }}/
+          ls -la staging-out/
 
-      - name: Deploy version directory
-        working-directory: docs
-        run: |
-          rsync -az --delete \
-            public/ \
-            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/${{ steps.version.outputs.dir }}/"
+      - name: Publish to ${{ env.PUBLISH_BRANCH }} branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: ${{ env.PUBLISH_BRANCH }}
+          publish_dir: ./staging-out
+          keep_files: true
+          user_name: "github-actions[bot]"
+          user_email: "github-actions[bot]@users.noreply.github.com"
+          commit_message: "docs: publish ${{ steps.version.outputs.tag }}"
 
-      - name: Update versions.json and latest symlink
+      - name: Update versions.json
         if: steps.version.outputs.is_release == 'true'
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<'EOS'
           set -euo pipefail
-          cd "${DEPLOY_ROOT:-/srv/docs.mlsh.io}"
-          tmp="$(mktemp)"
-          if [ ! -f versions.json ]; then echo '{"versions":[]}' > versions.json; fi
+          git fetch origin "${PUBLISH_BRANCH}:${PUBLISH_BRANCH}"
+          worktree="$(mktemp -d)"
+          git worktree add "$worktree" "$PUBLISH_BRANCH"
 
-          # Add the new version if not present.
-          python3 - "$TAG" <<'PY' > "$tmp"
-          import json, sys, re
-          tag = sys.argv[1]
-          with open("versions.json") as f: data = json.load(f)
-          vs = [v for v in data.get("versions", []) if v.get("version") != tag]
-          vs.append({"version": tag})
-          # Sort by semver descending
-          def key(v):
-              m = re.match(r"v(\d+)\.(\d+)\.(\d+)", v["version"])
-              return tuple(-int(x) for x in m.groups()) if m else (0,0,0)
-          vs.sort(key=key)
-          for i, v in enumerate(vs):
-              v["latest"] = (i == 0)
-          json.dump({"versions": vs}, open("/dev/stdout", "w"), indent=2)
-          PY
-          mv "$tmp" versions.json
+          make docs-versions-json DIR="$worktree"
 
-          # Latest symlink to the highest semver.
-          latest=$(python3 -c 'import json; d=json.load(open("versions.json")); print(next(v["version"] for v in d["versions"] if v["latest"]))')
-          ln -sfn "$latest" latest
-
-          # Root index redirects to /latest/.
-          cat > index.html <<HTML
-          <!doctype html><meta charset="utf-8">
-          <title>MLSH Documentation</title>
-          <meta http-equiv="refresh" content="0; url=/latest/">
-          <link rel="canonical" href="/latest/">
-          HTML
-          EOS
+          cd "$worktree"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet versions.json; then
+            echo "versions.json already up to date"
+          else
+            git add versions.json
+            git commit -m "docs: update versions.json for ${{ steps.version.outputs.tag }}"
+            git push origin "$PUBLISH_BRANCH"
+          fi

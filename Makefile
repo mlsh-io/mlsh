@@ -33,6 +33,17 @@ docs-build-with-search: ## Build docs + generate Pagefind search index
 	cd docs && zola build
 	cd docs && npx --yes pagefind@latest --site public
 
+.PHONY: docs-versions-json
+docs-versions-json: ## Regenerate versions.json from vX.Y.Z/ dirs (DIR=path/to/checkout, e.g. a worktree of the docs-site branch)
+	@if [ -z "$$DIR" ]; then \
+		echo "error: DIR is required. Point it at a directory containing vX.Y.Z/ subdirs."; \
+		echo "       Typically a worktree of the docs-site branch:"; \
+		echo "         git worktree add /tmp/docs-site docs-site"; \
+		echo "         make docs-versions-json DIR=/tmp/docs-site"; \
+		exit 1; \
+	fi
+	python3 docs/scripts/gen-versions.py "$$DIR"
+
 .PHONY: fmt
 fmt: ## Format all Rust code
 	cargo fmt --all

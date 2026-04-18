@@ -27,6 +27,8 @@
   btn.addEventListener('click', function () {
     var next = current() === 'dark' ? 'light' : 'dark';
     root.setAttribute('data-theme', next);
+    if (next === 'dark') root.setAttribute('data-pf-theme', 'dark');
+    else root.removeAttribute('data-pf-theme');
     syncHighlightCss(next);
     try { localStorage.setItem('mlsh-theme', next); } catch (_) {}
   });
