@@ -34,7 +34,10 @@ impl Transport for WindowsTransport {
             PathBuf::from(SYSTEM_PIPE)
         } else {
             let user = whoami::username();
-            PathBuf::from(format!(r"\\.\pipe\mlshtund-{}", sanitize_pipe_segment(&user)))
+            PathBuf::from(format!(
+                r"\\.\pipe\mlshtund-{}",
+                sanitize_pipe_segment(&user)
+            ))
         }
     }
 
@@ -112,20 +115,14 @@ impl AsyncWrite for NamedPipeServerOrClient {
         }
     }
 
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Server(s) => Pin::new(s).poll_flush(cx),
             Self::Client(c) => Pin::new(c).poll_flush(cx),
         }
     }
 
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
             Self::Server(s) => Pin::new(s).poll_shutdown(cx),
             Self::Client(c) => Pin::new(c).poll_shutdown(cx),

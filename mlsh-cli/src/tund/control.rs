@@ -89,32 +89,30 @@ where
             config_toml,
             cert_pem,
             key_pem,
-        } => {
-            match persist_config(&cluster, &config_toml, &cert_pem, &key_pem) {
-                Ok(state_dir) => {
-                    let identity_dir = state_dir.join("clusters").join(&cluster);
-                    match parse_cluster_config(&config_toml, &identity_dir) {
-                        Ok(config) => {
-                            let mut mgr = manager.lock().await;
-                            mgr.connect(config)
-                                .await
-                                .unwrap_or_else(|e| DaemonResponse::Error {
-                                    code: "connect_failed".into(),
-                                    message: format!("{:#}", e),
-                                })
-                        }
-                        Err(e) => DaemonResponse::Error {
-                            code: "invalid_config".into(),
-                            message: format!("{:#}", e),
-                        },
+        } => match persist_config(&cluster, &config_toml, &cert_pem, &key_pem) {
+            Ok(state_dir) => {
+                let identity_dir = state_dir.join("clusters").join(&cluster);
+                match parse_cluster_config(&config_toml, &identity_dir) {
+                    Ok(config) => {
+                        let mut mgr = manager.lock().await;
+                        mgr.connect(config)
+                            .await
+                            .unwrap_or_else(|e| DaemonResponse::Error {
+                                code: "connect_failed".into(),
+                                message: format!("{:#}", e),
+                            })
                     }
+                    Err(e) => DaemonResponse::Error {
+                        code: "invalid_config".into(),
+                        message: format!("{:#}", e),
+                    },
                 }
-                Err(e) => DaemonResponse::Error {
-                    code: "persist_failed".into(),
-                    message: format!("{:#}", e),
-                },
             }
-        }
+            Err(e) => DaemonResponse::Error {
+                code: "persist_failed".into(),
+                message: format!("{:#}", e),
+            },
+        },
         DaemonRequest::Disconnect { cluster } => {
             let mut mgr = manager.lock().await;
             mgr.disconnect(&cluster).await
