@@ -16,11 +16,13 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 env:
   ZOLA_VERSION: "0.22.1"
   PAGEFIND_VERSION: "1.1.0"
   PUBLISH_BRANCH: "docs-site"
+  IMAGE_NAME: "ghcr.io/${{ github.repository_owner }}/mlsh-docs"
 
 jobs:
   build-and-publish:
@@ -98,12 +100,13 @@ jobs:
           user_email: "github-actions[bot]@users.noreply.github.com"
           commit_message: "docs: publish ${{ steps.version.outputs.tag }}"
 
-      - name: Update versions.json
+      - name: Refresh versions.json, latest symlink, and root redirect
         if: steps.version.outputs.is_release == 'true'
+        id: refresh_branch
         run: |
           set -euo pipefail
           git fetch origin "${PUBLISH_BRANCH}:${PUBLISH_BRANCH}"
-          worktree="$(mktemp -d)"
+          worktree="$(mktemp -d)/docs-site"
           git worktree add "$worktree" "$PUBLISH_BRANCH"
 
           make docs-versions-json DIR="$worktree"
@@ -111,10 +114,42 @@ jobs:
           cd "$worktree"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet versions.json; then
-            echo "versions.json already up to date"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "docs-site branch already up to date"
           else
-            git add versions.json
-            git commit -m "docs: update versions.json for ${{ steps.version.outputs.tag }}"
+            git commit -m "docs: publish metadata for ${{ steps.version.outputs.tag }}"
             git push origin "$PUBLISH_BRANCH"
           fi
+
+          echo "worktree=$worktree" >>"$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        if: steps.version.outputs.is_release == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare image build context
+        if: steps.version.outputs.is_release == 'true'
+        run: |
+          cp docs/Containerfile "${{ steps.refresh_branch.outputs.worktree }}/Containerfile"
+          cat > "${{ steps.refresh_branch.outputs.worktree }}/.dockerignore" <<'EOF'
+          .git
+          .gitignore
+          Containerfile
+          .dockerignore
+          EOF
+
+      - name: Build and push docs image
+        if: steps.version.outputs.is_release == 'true'
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ steps.refresh_branch.outputs.worktree }}
+          file: ${{ steps.refresh_branch.outputs.worktree }}/Containerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:latest
+            ${{ env.IMAGE_NAME }}:${{ steps.version.outputs.tag }}

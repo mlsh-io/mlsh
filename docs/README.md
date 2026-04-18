@@ -41,7 +41,7 @@ docs/
     tokens.css           # MLSH design system — colors, type, spacing
     logo.svg, favicon.*  # Brand assets
     js/                  # copy-code, theme-toggle, search, version-picker
-  Containerfile          # Optional local preview container
+  Containerfile          # Serves a docs-site checkout via static-web-server (used by CI to publish ghcr.io/mlsh-io/mlsh-docs)
 ```
 
 ## Versioning

@@ -1,19 +1,8 @@
-# Build the MLSH documentation site with Zola + Pagefind, serve with static-web-server.
-
-FROM ghcr.io/getzola/zola:v0.22.1 AS builder
-WORKDIR /site
-COPY . .
-ARG BASE_URL=https://docs.mlsh.io
-RUN ["zola", "build", "--base-url", "${BASE_URL}"]
-
-FROM node:20-alpine AS pagefind
-WORKDIR /site
-COPY --from=builder /site/public ./public
-RUN npx --yes pagefind@latest --site public
-
+# Packages an already-built docs site (the docs-site branch contents) into a
+# static-web-server image. The build context is the docs-site branch checkout.
 FROM docker.io/joseluisq/static-web-server:2
-COPY --from=pagefind /site/public /public
-ENV SERVER_PORT=80
+COPY . /public
+ENV SERVER_PORT=8080
 ENV SERVER_ROOT=/public
 ENV SERVER_LOG_LEVEL=info
-EXPOSE 80
+EXPOSE 8080

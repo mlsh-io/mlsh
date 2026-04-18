@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Regenerate versions.json from the vX.Y.Z/ directories present in DIR.
+"""Regenerate versions.json, the `latest` symlink, and the root redirect
+from the vX.Y.Z/ directories present in DIR.
 
 Usage:
     gen-versions.py <dir>
 
-Writes <dir>/versions.json with the shape expected by
-`docs/static/js/version-picker.js`:
-
-    {"versions": [{"version": "v0.4.0", "latest": true}, ...]}
+Produces, under <dir>:
+  - versions.json    consumed by docs/static/js/version-picker.js
+  - latest           symlink to the newest vX.Y.Z/
+  - index.html       meta-refresh redirect to /latest/
 """
 
 import json
@@ -46,6 +47,27 @@ def main(root: str) -> int:
         json.dump(payload, f, indent=2)
         f.write("\n")
     print(f"wrote {out_path} with {len(versions)} version(s)")
+
+    if versions:
+        newest = versions[0]
+        # `latest` -> newest vX.Y.Z/
+        latest_link = os.path.join(root, "latest")
+        if os.path.islink(latest_link) or os.path.exists(latest_link):
+            os.remove(latest_link)
+        os.symlink(newest, latest_link)
+        print(f"linked {latest_link} -> {newest}")
+
+        # Root index.html -> /latest/
+        index_path = os.path.join(root, "index.html")
+        with open(index_path, "w") as f:
+            f.write(
+                '<!doctype html><meta charset="utf-8">'
+                '<title>MLSH Documentation</title>'
+                '<meta http-equiv="refresh" content="0; url=/latest/">'
+                '<link rel="canonical" href="/latest/">\n'
+            )
+        print(f"wrote {index_path} (redirect to /latest/)")
+
     return 0
 
 
