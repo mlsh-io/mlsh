@@ -17,5 +17,6 @@ pub mod relay_handler;
 pub mod relay_tls;
 pub mod routes;
 pub mod signal_session;
+pub mod transport;
 pub mod tunnel;
 pub mod tunnel_manager;

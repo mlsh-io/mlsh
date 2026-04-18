@@ -1,40 +1,28 @@
 //! Daemon client for CLI and future GUI.
 //!
-//! Connects to the `mlshtund` Unix socket and sends requests.
-//! On Windows, named pipes will be used in a future release.
+//! Connects to the `mlshtund` control endpoint (Unix socket on Unix,
+//! named pipe on Windows) and exchanges JSON requests/responses.
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-#[cfg(unix)]
-use tokio::net::UnixStream;
+use anyhow::Result;
 
 use super::protocol::{read_message, write_message, DaemonRequest, DaemonResponse};
+use super::transport::{ActiveTransport, Transport};
 
 /// Client for communicating with the `mlshtund` daemon.
 pub struct DaemonClient {
-    #[cfg(unix)]
-    stream: UnixStream,
+    stream: <ActiveTransport as Transport>::Stream,
 }
 
 impl DaemonClient {
-    /// Connect to the daemon at the given socket path.
+    /// Connect to the daemon at the given endpoint.
     pub async fn connect(path: &Path) -> Result<Self> {
-        #[cfg(unix)]
-        {
-            let stream = UnixStream::connect(path)
-                .await
-                .with_context(|| format!("Failed to connect to daemon at {}", path.display()))?;
-            Ok(Self { stream })
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = path;
-            anyhow::bail!("Daemon IPC is not yet supported on this platform")
-        }
+        let stream = ActiveTransport::connect(path).await?;
+        Ok(Self { stream })
     }
 
-    /// Connect to the daemon, auto-discovering the socket path.
+    /// Connect to the daemon, auto-discovering the endpoint.
     pub async fn connect_default() -> Result<Self> {
         let path = discover_socket()?;
         Self::connect(&path).await
@@ -42,21 +30,12 @@ impl DaemonClient {
 
     /// Send a request and receive the response.
     pub async fn request(&mut self, req: &DaemonRequest) -> Result<DaemonResponse> {
-        #[cfg(unix)]
-        {
-            let (mut reader, mut writer) = self.stream.split();
-            write_message(&mut writer, req).await?;
-            let resp: DaemonResponse = read_message(&mut reader).await?;
-            Ok(resp)
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = req;
-            anyhow::bail!("Daemon IPC is not yet supported on this platform")
-        }
+        let (mut reader, mut writer) = tokio::io::split(&mut self.stream);
+        write_message(&mut writer, req).await?;
+        let resp: DaemonResponse = read_message(&mut reader).await?;
+        Ok(resp)
     }
 
-    /// Send a connect request for a cluster, including the full config and identity.
     pub async fn connect_cluster(
         &mut self,
         cluster: &str,
@@ -73,7 +52,6 @@ impl DaemonClient {
         .await
     }
 
-    /// Send a disconnect request for a cluster.
     pub async fn disconnect_cluster(&mut self, cluster: &str) -> Result<DaemonResponse> {
         self.request(&DaemonRequest::Disconnect {
             cluster: cluster.to_string(),
@@ -81,12 +59,10 @@ impl DaemonClient {
         .await
     }
 
-    /// Query status of all tunnels.
     pub async fn status(&mut self) -> Result<DaemonResponse> {
         self.request(&DaemonRequest::Status).await
     }
 
-    /// Register an ingress target with the local daemon.
     pub async fn ingress_add(
         &mut self,
         cluster: &str,
@@ -105,7 +81,6 @@ impl DaemonClient {
         .await
     }
 
-    /// Remove an ingress target from the local daemon.
     pub async fn ingress_remove(&mut self, domain: &str) -> Result<DaemonResponse> {
         self.request(&DaemonRequest::IngressRemove {
             domain: domain.to_string(),
@@ -114,11 +89,12 @@ impl DaemonClient {
     }
 }
 
-/// Discover the daemon socket path.
+/// Discover the daemon endpoint.
 ///
-/// Checks (in order):
-/// 1. System socket `/var/run/mlshtund.sock`
-/// 2. User socket `~/.config/mlsh/mlshtund.sock`
+/// On Unix: checks the system socket, then the user socket.
+/// On Windows: named pipes aren't filesystem entries, so we return the most
+/// likely candidate and let the `connect` call surface a clear error if
+/// nothing is listening.
 pub fn discover_socket() -> Result<PathBuf> {
     #[cfg(unix)]
     {
@@ -128,17 +104,25 @@ pub fn discover_socket() -> Result<PathBuf> {
         }
 
         let user = dirs::config_dir()
-            .context("Failed to determine config directory")?
+            .ok_or_else(|| anyhow::anyhow!("Failed to determine config directory"))?
             .join("mlsh")
             .join("mlshtund.sock");
         if user.exists() {
             return Ok(user);
         }
-    }
 
-    anyhow::bail!(
-        "mlshtund is not running.\n  \
-         Start it with: sudo mlshtund\n  \
-         Or install as service: sudo mlsh tunnel install"
-    )
+        anyhow::bail!(
+            "mlshtund is not running.\n  \
+             Start it with: sudo mlshtund\n  \
+             Or install as service: sudo mlsh tunnel install"
+        )
+    }
+    #[cfg(windows)]
+    {
+        Ok(ActiveTransport::endpoint_default(false))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        anyhow::bail!("Daemon IPC is not supported on this platform")
+    }
 }

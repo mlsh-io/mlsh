@@ -24,7 +24,7 @@ toml = "1.1"
 # Date/time
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Async runtime
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "signal"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "signal", "net", "io-util"] }
 tokio-util = "0.7"
 # QUIC transport (ADR-011) — prefer-post-quantum enables X25519Kyber768 via aws-lc-rs
 quinn = "0.11"

@@ -1,99 +1,55 @@
-//! Unix socket listener for the `mlshtund` daemon.
+//! Control-channel listener for the `mlshtund` daemon.
 //!
-//! Accepts connections on a Unix domain socket, reads `DaemonRequest`s,
-//! dispatches to the tunnel manager, and sends `DaemonResponse`s.
+//! Accepts connections over the active platform transport (Unix socket on
+//! Unix, named pipe on Windows), reads `DaemonRequest`s, dispatches to the
+//! tunnel manager, and sends `DaemonResponse`s.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-#[cfg(unix)]
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{watch, Mutex};
 
 use super::protocol::{read_message, write_message, DaemonRequest, DaemonResponse};
+use super::transport::{ActiveTransport, Transport};
 use super::tunnel::parse_cluster_config;
 use super::tunnel_manager::TunnelManager;
 
-/// Default socket path for root daemon.
-const SYSTEM_SOCKET: &str = "/var/run/mlshtund.sock";
-
-/// Determine the socket path.
+/// Determine the endpoint path (socket / pipe name).
 pub fn socket_path(custom: Option<&str>) -> PathBuf {
     if let Some(p) = custom {
         return PathBuf::from(p);
     }
-    // Use system socket if running as root, user socket otherwise
-    if is_root() {
-        PathBuf::from(SYSTEM_SOCKET)
-    } else {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("mlsh")
-            .join("mlshtund.sock")
-    }
+    ActiveTransport::endpoint_default(is_privileged())
 }
 
-fn is_root() -> bool {
+fn is_privileged() -> bool {
     #[cfg(unix)]
     {
         unsafe { libc::geteuid() == 0 }
     }
     #[cfg(not(unix))]
     {
+        // TODO: detect Windows service / elevated token when service install lands.
         false
     }
 }
 
-/// Run the control socket server loop.
+/// Run the control listener loop.
 pub async fn run(
-    sock_path: &Path,
-    manager: Arc<Mutex<TunnelManager>>,
-    shutdown_rx: watch::Receiver<bool>,
-) -> Result<()> {
-    #[cfg(unix)]
-    {
-        run_unix(sock_path, manager, shutdown_rx).await
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (sock_path, manager, shutdown_rx);
-        anyhow::bail!("Daemon control socket is not yet supported on this platform")
-    }
-}
-
-#[cfg(unix)]
-async fn run_unix(
     sock_path: &Path,
     manager: Arc<Mutex<TunnelManager>>,
     mut shutdown_rx: watch::Receiver<bool>,
 ) -> Result<()> {
-    // Clean up stale socket
-    if sock_path.exists() {
-        std::fs::remove_file(sock_path).ok();
-    }
-    if let Some(parent) = sock_path.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-
-    let listener = UnixListener::bind(sock_path)
-        .with_context(|| format!("Failed to bind Unix socket at {}", sock_path.display()))?;
-
-    // Make socket accessible to all local users (daemon runs as root, CLI runs as user).
-    // TODO: add SO_PEERCRED check on Connect to restrict who can push configs.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o666);
-        std::fs::set_permissions(sock_path, perms).ok();
-    }
-
+    let mut listener = ActiveTransport::bind(sock_path).await?;
     tracing::info!("Listening on {}", sock_path.display());
 
     loop {
         tokio::select! {
-            accept = listener.accept() => {
+            accept = ActiveTransport::accept(&mut listener) => {
                 match accept {
-                    Ok((stream, _)) => {
+                    Ok(stream) => {
                         let mgr = manager.clone();
                         tokio::spawn(async move {
                             if let Err(e) = handle_client(stream, mgr).await {
@@ -113,15 +69,16 @@ async fn run_unix(
         }
     }
 
-    // Clean up socket file
-    std::fs::remove_file(sock_path).ok();
+    ActiveTransport::cleanup(sock_path);
 
     Ok(())
 }
 
-#[cfg(unix)]
-async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -> Result<()> {
-    let (mut reader, mut writer) = stream.into_split();
+async fn handle_client<S>(stream: S, manager: Arc<Mutex<TunnelManager>>) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
+    let (mut reader, mut writer) = tokio::io::split(stream);
 
     let request: DaemonRequest = read_message(&mut reader).await?;
     tracing::debug!("Received request: {:?}", request);
@@ -133,7 +90,6 @@ async fn handle_client(stream: UnixStream, manager: Arc<Mutex<TunnelManager>>) -
             cert_pem,
             key_pem,
         } => {
-            // Persist config and identity to daemon state dir for auto-reconnect
             match persist_config(&cluster, &config_toml, &cert_pem, &key_pem) {
                 Ok(state_dir) => {
                     let identity_dir = state_dir.join("clusters").join(&cluster);
@@ -224,11 +180,7 @@ fn validate_cluster_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Write content to a file atomically with restricted permissions (0o600).
-///
-/// Writes to a temporary file in the same directory, then renames it to the
-/// final path. This ensures the file is never partially written and that
-/// permissions are correct from the start (no race window).
+/// Write content to a file atomically with restricted permissions (0o600 on unix).
 fn atomic_write_restricted(path: &Path, content: &str) -> Result<()> {
     use std::io::Write;
 
@@ -276,11 +228,9 @@ fn persist_config(
 
     let state_dir = crate::config::daemon_state_dir()?;
 
-    // Persist cluster config
     let cluster_file = state_dir.join("clusters").join(format!("{}.toml", cluster));
     atomic_write_restricted(&cluster_file, config_toml)?;
 
-    // Persist identity per cluster (not shared across clusters)
     let identity_dir = state_dir.join("clusters").join(cluster);
     atomic_write_restricted(&identity_dir.join("cert.pem"), cert_pem)?;
     atomic_write_restricted(&identity_dir.join("key.pem"), key_pem)?;
@@ -382,5 +332,12 @@ mod tests {
     fn socket_path_uses_custom_when_provided() {
         let path = socket_path(Some("/tmp/custom.sock"));
         assert_eq!(path, PathBuf::from("/tmp/custom.sock"));
+    }
+
+    #[test]
+    fn endpoint_default_differs_by_privilege() {
+        let system = ActiveTransport::endpoint_default(true);
+        let user = ActiveTransport::endpoint_default(false);
+        assert_ne!(system, user);
     }
 }
