@@ -1,0 +1,19 @@
+{% set root = get_section(path="_index.md") %}
+<nav class="sidebar-nav" aria-label="Documentation sections">
+  {% for sub_path in root.subsections %}
+    {% set sub = get_section(path=sub_path) %}
+    <h2>{{ sub.title }}</h2>
+    <ul>
+      {% if sub.content %}
+      <li{% if current_path and current_path == sub.path %} class="active"{% endif %}>
+        <a href="{{ sub.permalink }}">Overview</a>
+      </li>
+      {% endif %}
+      {% for sibling in sub.pages %}
+      <li{% if current_path and current_path == sibling.path %} class="active"{% endif %}>
+        <a href="{{ sibling.permalink }}">{{ sibling.title }}</a>
+      </li>
+      {% endfor %}
+    </ul>
+  {% endfor %}
+</nav>

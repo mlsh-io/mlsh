@@ -1,0 +1,140 @@
+name: docs
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override version tag (e.g. v0.3.0-rc1). Defaults to current tag."
+        required: false
+      staging:
+        description: "Deploy under /staging/ instead of /vX.Y.Z/."
+        required: false
+        default: "false"
+
+permissions:
+  contents: read
+
+env:
+  ZOLA_VERSION: "0.22.1"
+  PAGEFIND_VERSION: "1.1.0"
+  DEPLOY_HOST: ${{ vars.DOCS_DEPLOY_HOST }}
+  DEPLOY_USER: ${{ vars.DOCS_DEPLOY_USER }}
+  DEPLOY_ROOT: ${{ vars.DOCS_DEPLOY_ROOT }}
+
+jobs:
+  build-and-deploy:
+    name: build and deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.staging }}" = "true" ]; then
+            echo "dir=staging" >>"$GITHUB_OUTPUT"
+            echo "tag=staging" >>"$GITHUB_OUTPUT"
+            echo "is_release=false" >>"$GITHUB_OUTPUT"
+          else
+            tag="${{ github.event.inputs.version }}"
+            if [ -z "$tag" ]; then
+              tag="${GITHUB_REF_NAME}"
+            fi
+            case "$tag" in
+              v*) ;;
+              *) echo "refusing to build for non-tag ref '$tag'"; exit 1 ;;
+            esac
+            echo "dir=$tag" >>"$GITHUB_OUTPUT"
+            echo "tag=$tag" >>"$GITHUB_OUTPUT"
+            echo "is_release=true" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Zola
+        run: |
+          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin
+          zola --version
+
+      - name: Install Pagefind
+        run: |
+          curl -fsSL "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin
+          pagefind --version
+
+      - name: Stamp current_version
+        working-directory: docs
+        run: |
+          sed -i "s|^current_version = .*|current_version = \"${{ steps.version.outputs.tag }}\"|" config.toml
+          grep current_version config.toml
+
+      - name: Build site
+        working-directory: docs
+        run: |
+          zola build --base-url "https://docs.mlsh.io/${{ steps.version.outputs.dir }}"
+
+      - name: Build search index
+        working-directory: docs
+        run: pagefind --site public
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DOCS_DEPLOY_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy version directory
+        working-directory: docs
+        run: |
+          rsync -az --delete \
+            public/ \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_ROOT/${{ steps.version.outputs.dir }}/"
+
+      - name: Update versions.json and latest symlink
+        if: steps.version.outputs.is_release == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<'EOS'
+          set -euo pipefail
+          cd "${DEPLOY_ROOT:-/srv/docs.mlsh.io}"
+          tmp="$(mktemp)"
+          if [ ! -f versions.json ]; then echo '{"versions":[]}' > versions.json; fi
+
+          # Add the new version if not present.
+          python3 - "$TAG" <<'PY' > "$tmp"
+          import json, sys, re
+          tag = sys.argv[1]
+          with open("versions.json") as f: data = json.load(f)
+          vs = [v for v in data.get("versions", []) if v.get("version") != tag]
+          vs.append({"version": tag})
+          # Sort by semver descending
+          def key(v):
+              m = re.match(r"v(\d+)\.(\d+)\.(\d+)", v["version"])
+              return tuple(-int(x) for x in m.groups()) if m else (0,0,0)
+          vs.sort(key=key)
+          for i, v in enumerate(vs):
+              v["latest"] = (i == 0)
+          json.dump({"versions": vs}, open("/dev/stdout", "w"), indent=2)
+          PY
+          mv "$tmp" versions.json
+
+          # Latest symlink to the highest semver.
+          latest=$(python3 -c 'import json; d=json.load(open("versions.json")); print(next(v["version"] for v in d["versions"] if v["latest"]))')
+          ln -sfn "$latest" latest
+
+          # Root index redirects to /latest/.
+          cat > index.html <<HTML
+          <!doctype html><meta charset="utf-8">
+          <title>MLSH Documentation</title>
+          <meta http-equiv="refresh" content="0; url=/latest/">
+          <link rel="canonical" href="/latest/">
+          HTML
+          EOS

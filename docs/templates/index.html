@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="landing">
+  <div class="landing-hero">
+    <img src="{{ get_url(path='logo.svg') }}" alt="MLSH" class="landing-logo" width="96" height="96">
+    <h1 class="landing-title">docs / mlsh<span class="logo-dot">.</span>io</h1>
+    <div class="landing-subtitle">{{ section.content | safe }}</div>
+  </div>
+
+  <div class="landing-grid">
+    {% for sub_path in section.subsections %}
+      {% set sub = get_section(path=sub_path) %}
+      <a href="{{ sub.permalink }}" class="landing-card">
+        <h3>{{ sub.title }}</h3>
+        {% if sub.description %}<p>{{ sub.description }}</p>{% endif %}
+      </a>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

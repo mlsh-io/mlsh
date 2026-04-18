@@ -20,6 +20,19 @@ GIT_VERSION  ?= $(shell git describe --tags --always --dirty=-dirty 2>/dev/null 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
+.PHONY: docs-serve
+docs-serve: ## Serve the documentation site at http://127.0.0.1:1111
+	cd docs && zola serve
+
+.PHONY: docs-build
+docs-build: ## Build the documentation site into docs/public
+	cd docs && zola build
+
+.PHONY: docs-build-with-search
+docs-build-with-search: ## Build docs + generate Pagefind search index
+	cd docs && zola build
+	cd docs && npx --yes pagefind@latest --site public
+
 .PHONY: fmt
 fmt: ## Format all Rust code
 	cargo fmt --all

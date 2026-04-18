@@ -1,0 +1,23 @@
+base_url = "https://docs.mlsh.io"
+title = "MLSH Documentation"
+description = "Self-hosted post-quantum mesh VPN — documentation, guides, CLI reference, deployment."
+compile_sass = true
+build_search_index = false
+generate_feeds = false
+minify_html = true
+default_language = "en"
+
+[markdown]
+smart_punctuation = false
+
+[markdown.highlighting]
+enabled = true
+style = "class"
+light_theme = "github-light"
+dark_theme = "github-dark"
+
+[extra]
+github_repo = "https://github.com/mlsh-io/mlsh"
+edit_url_base = "https://github.com/mlsh-io/mlsh/edit/main/docs/content"
+# Overridden by CI with the current version being built (e.g. "v0.3.0")
+current_version = "dev"

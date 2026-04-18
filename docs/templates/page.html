@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — {{ config.title }}{% endblock %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+
+{% block content %}
+<div class="docs-layout" data-pagefind-body>
+  <aside class="docs-sidebar">
+    {% set current_path = page.path %}
+    {% include "partials/sidebar.html" %}
+  </aside>
+
+  <article class="docs-content">
+    <h1>{{ page.title }}</h1>
+    {% if page.description %}<p class="lead">{{ page.description }}</p>{% endif %}
+
+    {{ page.content | safe }}
+
+    <div class="page-meta">
+      <a class="edit-link" href="{{ config.extra.edit_url_base }}/{{ page.relative_path }}" target="_blank" rel="noopener">Edit this page on GitHub</a>
+    </div>
+
+    <nav class="page-nav">
+      {% if page.lower %}
+      <a href="{{ page.lower.permalink }}" class="page-nav-prev">
+        <span class="page-nav-label">← Previous</span>
+        <span class="page-nav-title">{{ page.lower.title }}</span>
+      </a>
+      {% endif %}
+      {% if page.higher %}
+      <a href="{{ page.higher.permalink }}" class="page-nav-next">
+        <span class="page-nav-label">Next →</span>
+        <span class="page-nav-title">{{ page.higher.title }}</span>
+      </a>
+      {% endif %}
+    </nav>
+  </article>
+
+  {% if page.toc %}
+  <aside class="docs-toc">
+    <nav class="toc" aria-label="On this page">
+      <h3>On this page</h3>
+      <ul>
+        {% for h in page.toc %}
+        <li>
+          <a href="#{{ h.id }}">{{ h.title }}</a>
+          {% if h.children %}
+          <ul>
+            {% for child in h.children %}
+            <li><a href="#{{ child.id }}">{{ child.title }}</a></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+  </aside>
+  {% endif %}
+</div>
+{% endblock %}

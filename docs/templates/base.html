@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock %}">
+  <link rel="icon" href="{{ get_url(path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="icon" href="{{ get_url(path='favicon.ico') }}" sizes="any">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="{{ get_url(path='tokens.css') }}">
+  <link rel="stylesheet" href="{{ get_url(path='style.css') }}">
+  <link rel="stylesheet" href="{{ get_url(path='giallo-light.css') }}" media="(prefers-color-scheme: light)" id="giallo-light">
+  <link rel="stylesheet" href="{{ get_url(path='giallo-dark.css') }}" media="(prefers-color-scheme: dark)" id="giallo-dark">
+  <link rel="stylesheet" href="{{ get_url(path='pagefind/pagefind-ui.css') }}">
+  <script>
+    // Apply persisted theme before first paint to avoid flash.
+    (function () {
+      try {
+        var t = localStorage.getItem('mlsh-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (_) {}
+    })();
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <nav class="site-nav">
+      <a href="{{ get_url(path='@/_index.md') }}" class="site-logo">
+        <img src="{{ get_url(path='logo.svg') }}" alt="" class="site-logo-icon" width="28" height="28">
+        <span class="site-logo-divider" aria-hidden="true">|</span>
+        <span class="site-logo-text">mlsh</span>
+      </a>
+
+      <div class="nav-center">
+        <button type="button" class="search-trigger" id="search-trigger" aria-label="Search (Cmd+K)">
+          <span>Search docs</span>
+          <kbd>⌘K</kbd>
+        </button>
+      </div>
+
+      <div class="nav-links">
+        <select id="version-picker" class="version-picker" aria-label="Documentation version">
+          <option value="{{ config.extra.current_version }}">{{ config.extra.current_version }}</option>
+        </select>
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+          <svg class="theme-icon-dark" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+          <svg class="theme-icon-light" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        </button>
+        <a href="{{ config.extra.github_repo }}" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="site-main">
+    {% block content %}{% endblock %}
+  </main>
+
+  <div class="search-modal" id="search-modal" hidden>
+    <div class="search-modal-backdrop" data-search-close></div>
+    <div class="search-modal-inner">
+      <div id="pagefind-search"></div>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>
+      MLSH Documentation — <a href="{{ config.extra.github_repo }}">Source on GitHub</a>
+      · <span id="footer-version">{{ config.extra.current_version }}</span>
+    </p>
+  </footer>
+
+  <script src="{{ get_url(path='js/theme-toggle.js') }}" defer></script>
+  <script src="{{ get_url(path='js/copy-code.js') }}" defer></script>
+  <script src="{{ get_url(path='js/version-picker.js') }}" defer></script>
+  <script src="{{ get_url(path='pagefind/pagefind-ui.js') }}" defer onload="window.__mlshPagefindReady = true"></script>
+  <script src="{{ get_url(path='js/search.js') }}" defer></script>
+</body>
+</html>
