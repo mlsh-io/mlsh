@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Regenerate versions.json, the `latest` symlink, and the root redirect
-from the vX.Y.Z/ directories present in DIR.
+"""Regenerate versions.json and the root redirect from the vX.Y.Z/
+directories present in DIR.
 
 Usage:
     gen-versions.py <dir>
 
 Produces, under <dir>:
   - versions.json    consumed by docs/static/js/version-picker.js
-  - latest           symlink to the newest vX.Y.Z/
   - index.html       meta-refresh redirect to /latest/
+
+The /latest/ directory itself is materialized at image build time by
+docs/Containerfile (a real copy, not a symlink, so static-web-server
+doesn't reject it).
 """
 
 import json
@@ -49,13 +52,12 @@ def main(root: str) -> int:
     print(f"wrote {out_path} with {len(versions)} version(s)")
 
     if versions:
-        newest = versions[0]
-        # `latest` -> newest vX.Y.Z/
-        latest_link = os.path.join(root, "latest")
-        if os.path.islink(latest_link) or os.path.exists(latest_link):
-            os.remove(latest_link)
-        os.symlink(newest, latest_link)
-        print(f"linked {latest_link} -> {newest}")
+        # Clean up any stray `latest` symlink from an older version of this
+        # script; image build materializes /latest as a copy.
+        stale = os.path.join(root, "latest")
+        if os.path.islink(stale):
+            os.remove(stale)
+            print(f"removed stale symlink {stale}")
 
         # Root index.html -> /latest/
         index_path = os.path.join(root, "index.html")
