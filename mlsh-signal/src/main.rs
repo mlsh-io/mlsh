@@ -192,7 +192,14 @@ async fn cmd_create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> 
 
     let result = mlsh_signal::cluster::create_cluster(&pool, name, ttl_minutes).await?;
 
-    eprintln!("Cluster created:");
+    eprintln!(
+        "{}",
+        if result.reused {
+            "Cluster already existed — issued new setup code:"
+        } else {
+            "Cluster created:"
+        }
+    );
     eprintln!("  Name:  {}", name);
     eprintln!("  ID:    {}", result.cluster_id);
     eprintln!();

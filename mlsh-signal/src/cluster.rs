@@ -11,17 +11,32 @@ pub struct ClusterCreated {
     pub cluster_id: String,
     pub name: String,
     pub setup_token: String, // CODE@UUID@FINGERPRINT
+    pub reused: bool,
 }
 
 /// Create a cluster, generate a one-time setup code, and return the full token.
-///
 /// Used by both `mlsh-signal cluster create` (CLI) and `POST /internal/clusters` (HTTP).
 pub async fn create_cluster(
     pool: &SqlitePool,
     name: &str,
     ttl_minutes: u64,
 ) -> Result<ClusterCreated> {
-    let cluster_id = db::create_cluster(pool, name).await?;
+    let (cluster_id, reused) = match db::get_cluster_by_name(pool, name).await? {
+        Some((id, _)) => {
+            let nodes = db::list_nodes(pool, &id).await?;
+            if !nodes.is_empty() {
+                anyhow::bail!(
+                    "Cluster '{}' already has {} adopted node(s); refusing to emit a new setup code. \
+                     Use `mlsh invite {} --role admin` from an existing admin instead.",
+                    name,
+                    nodes.len(),
+                    name
+                );
+            }
+            (id, true)
+        }
+        None => (db::create_cluster(pool, name).await?, false),
+    };
 
     let code = generate_human_code(12);
     let code_formatted = format!("{}-{}-{}", &code[..4], &code[4..8], &code[8..12]);
@@ -44,6 +59,7 @@ pub async fn create_cluster(
         cluster_id,
         name: name.to_string(),
         setup_token,
+        reused,
     })
 }
 
