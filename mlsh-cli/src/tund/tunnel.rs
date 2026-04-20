@@ -335,6 +335,7 @@ async fn tunnel_task(
         peer_table.clone(),
         overlay_port,
         overlay_prefix_len,
+        config.display_name.clone(),
     );
     let dns_config = super::overlay_dns::DnsConfig {
         bind_addr: dns_bind,
@@ -343,12 +344,14 @@ async fn tunnel_task(
     };
     let dns_node_id = config.node_id.clone();
     let dns_table = peer_table.clone();
+    let dns_display_name = session.display_name.clone();
     let (dns_shutdown_tx, dns_shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         if let Err(e) = super::overlay_dns::run(
             dns_config,
             overlay_ip,
             dns_node_id,
+            dns_display_name,
             dns_table,
             dns_shutdown_rx,
         )

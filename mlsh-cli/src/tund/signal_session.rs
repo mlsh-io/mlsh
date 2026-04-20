@@ -44,6 +44,7 @@ pub struct SignalSessionHandle {
     pub overlay_ip: watch::Receiver<Option<Ipv4Addr>>,
     pub peers: watch::Receiver<Arc<Vec<PeerInfo>>>,
     pub connection: watch::Receiver<Option<quinn::Connection>>,
+    pub display_name: watch::Receiver<String>,
     shutdown_tx: watch::Sender<bool>,
 }
 
@@ -77,6 +78,8 @@ struct SessionContext {
     ip_tx: watch::Sender<Option<Ipv4Addr>>,
     peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
     conn_tx: watch::Sender<Option<quinn::Connection>>,
+    display_name_tx: watch::Sender<String>,
+    my_node_id: String,
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
@@ -95,12 +98,15 @@ pub fn spawn(
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
     overlay_prefix_len: u8,
+    initial_display_name: String,
 ) -> SignalSessionHandle {
     let (ip_tx, ip_rx) = watch::channel(None);
     let (peers_tx, peers_rx) = watch::channel(Arc::new(Vec::new()));
     let (conn_tx, conn_rx) = watch::channel(None);
+    let (display_name_tx, display_name_rx) = watch::channel(initial_display_name);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let my_node_id = creds.node_id.clone();
     let ctx = SessionContext {
         creds,
         endpoint,
@@ -108,6 +114,8 @@ pub fn spawn(
         ip_tx,
         peers_tx,
         conn_tx,
+        display_name_tx,
+        my_node_id,
         tun_device,
         peer_table,
         overlay_port,
@@ -120,6 +128,7 @@ pub fn spawn(
         overlay_ip: ip_rx,
         peers: peers_rx,
         connection: conn_rx,
+        display_name: display_name_rx,
         shutdown_tx,
     }
 }
@@ -320,7 +329,7 @@ async fn run_session(
             msg = framing::read_msg_opt::<ServerMessage>(&mut recv) => {
                 match msg {
                     Ok(Some(msg)) => {
-                        handle_push_message(&msg, peers_tx, &creds.root_fingerprint);
+                        handle_push_message(&msg, peers_tx, &ctx.display_name_tx, &ctx.my_node_id, &creds.root_fingerprint);
                     }
                     Ok(None) => {
                         tracing::info!("Signal stream closed");
@@ -469,6 +478,8 @@ fn verify_admission(
 fn handle_push_message(
     msg: &ServerMessage,
     peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
+    display_name_tx: &watch::Sender<String>,
+    my_node_id: &str,
     root_fingerprint: &str,
 ) {
     match msg {
@@ -503,6 +514,9 @@ fn handle_push_message(
             new_display_name,
         } => {
             tracing::info!("Peer renamed: {} → {}", node_id, new_display_name);
+            if node_id == my_node_id {
+                let _ = display_name_tx.send(new_display_name.clone());
+            }
             let new_peers: Vec<PeerInfo> = peers_tx
                 .borrow()
                 .iter()
@@ -678,7 +692,7 @@ mod tests {
                 display_name: String::new(),
             },
         };
-        handle_push_message(&msg, &tx, "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].node_id, "nas");
     }
@@ -698,7 +712,7 @@ mod tests {
             node_id: "nas".into(),
             cluster_id: "c1".into(),
         };
-        handle_push_message(&msg, &tx, "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert!(tx.borrow().is_empty());
     }
 
@@ -724,7 +738,7 @@ mod tests {
                 display_name: String::new(),
             },
         };
-        handle_push_message(&msg, &tx, "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].fingerprint, "new-fp");
     }

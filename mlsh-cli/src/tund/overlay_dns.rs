@@ -31,6 +31,7 @@ pub async fn run(
     config: DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: String,
+    my_display_name: watch::Receiver<String>,
     peer_table: PeerTable,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
@@ -52,7 +53,8 @@ pub async fn run(
                 match result {
                     Ok((len, src)) => {
                         let query = &buf[..len];
-                        let response = handle_query(query, &config, my_ip, &my_node_id, &peer_table).await;
+                        let display_name = my_display_name.borrow().clone();
+                        let response = handle_query(query, &config, my_ip, &my_node_id, &display_name, &peer_table).await;
                         if let Ok(resp) = response {
                             let _ = socket.send_to(&resp, src).await;
                         }
@@ -77,6 +79,7 @@ async fn handle_query(
     config: &DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: &str,
+    my_display_name: &str,
     peer_table: &PeerTable,
 ) -> Result<Vec<u8>, DnsError> {
     if query.len() < 12 {
@@ -98,7 +101,7 @@ async fn handle_query(
         return Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl));
     }
 
-    let ip = resolve(&qname, config, my_ip, my_node_id, peer_table).await;
+    let ip = resolve(&qname, config, my_ip, my_node_id, my_display_name, peer_table).await;
 
     match ip {
         Some(addr) => Ok(build_response(id, RCODE_OK, query, Some(addr), config.ttl)),
@@ -112,6 +115,7 @@ async fn resolve(
     config: &DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: &str,
+    my_display_name: &str,
     peer_table: &PeerTable,
 ) -> Option<Ipv4Addr> {
     let name = name.strip_suffix('.').unwrap_or(name).to_lowercase();
@@ -132,8 +136,11 @@ async fn resolve(
         return None;
     }
 
-    // Check if it's us (by node_id)
     if label == my_node_id {
+        return Some(my_ip);
+    }
+
+    if !my_display_name.is_empty() && sanitize_dns_label(my_display_name) == label {
         return Some(my_ip);
     }
 
@@ -314,7 +321,7 @@ mod tests {
         let table = PeerTable::new();
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
-        let ip = resolve("homelab", &config, my_ip, "nas", &table).await;
+        let ip = resolve("homelab", &config, my_ip, "nas", "", &table).await;
         assert_eq!(ip, Some(my_ip));
     }
 
@@ -328,7 +335,7 @@ mod tests {
         let table = PeerTable::new();
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
-        let ip = resolve("nas.homelab", &config, my_ip, "nas", &table).await;
+        let ip = resolve("nas.homelab", &config, my_ip, "nas", "", &table).await;
         assert_eq!(ip, Some(my_ip));
     }
 
@@ -357,6 +364,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
+            "",
             &table,
         )
         .await;
@@ -404,6 +412,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
+            "",
             &table,
         )
         .await;
@@ -446,6 +455,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
+            "",
             &table,
         )
         .await;
@@ -466,6 +476,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
+            "",
             &table,
         )
         .await;
@@ -486,6 +497,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
+            "",
             &table,
         )
         .await;
@@ -503,7 +515,7 @@ mod tests {
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
         let query = make_a_query("homelab");
-        let resp = handle_query(&query, &config, my_ip, "nas", &table)
+        let resp = handle_query(&query, &config, my_ip, "nas", "", &table)
             .await
             .unwrap();
 
