@@ -127,22 +127,63 @@ async fn resolve(
         return None;
     }
 
-    let node_id = &name[..name.len() - suffix.len()];
-    if node_id.is_empty() {
+    let label = &name[..name.len() - suffix.len()];
+    if label.is_empty() {
         return None;
     }
 
-    // Check if it's us
-    if node_id == my_node_id {
+    // Check if it's us (by node_id)
+    if label == my_node_id {
         return Some(my_ip);
     }
 
-    // Look up in peer table
     let peers = peer_table.known_peers().await;
+
+    if let Some(p) = peers.iter().find(|p| p.node_id.to_lowercase() == label) {
+        return p.overlay_ip.parse().ok();
+    }
+
     peers
         .iter()
-        .find(|p| p.node_id.to_lowercase() == node_id)
+        .find(|p| !p.display_name.is_empty() && sanitize_dns_label(&p.display_name) == label)
         .and_then(|p| p.overlay_ip.parse().ok())
+}
+
+/// Sanitize a user-entered display name into a valid DNS label per RFC 1035.
+pub(crate) fn sanitize_dns_label(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut prev_hyphen = false;
+    for ch in input.chars() {
+        let mapped = match ch {
+            'A'..='Z' => Some(ch.to_ascii_lowercase()),
+            'a'..='z' | '0'..='9' => Some(ch),
+            ' ' | '_' | '.' | '-' => Some('-'),
+            _ => None,
+        };
+        match mapped {
+            Some('-') => {
+                if !prev_hyphen && !out.is_empty() {
+                    out.push('-');
+                    prev_hyphen = true;
+                }
+            }
+            Some(c) => {
+                out.push(c);
+                prev_hyphen = false;
+            }
+            None => {}
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.len() > 63 {
+        out.truncate(63);
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    out
 }
 
 fn build_response(id: u16, rcode: u8, query: &[u8], answer: Option<Ipv4Addr>, ttl: u32) -> Vec<u8> {
@@ -309,6 +350,95 @@ mod tests {
                 admission_cert: String::new(),
                 display_name: String::new(),
             }]))
+            .await;
+
+        let ip = resolve(
+            "pi.homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &table,
+        )
+        .await;
+        assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 2)));
+    }
+
+    #[test]
+    fn sanitize_label_rules() {
+        assert_eq!(sanitize_dns_label("NAS"), "nas");
+        assert_eq!(sanitize_dns_label("Rack Toulouse NUC"), "rack-toulouse-nuc");
+        assert_eq!(sanitize_dns_label("pi_hole.dns"), "pi-hole-dns");
+        assert_eq!(sanitize_dns_label("Nico's laptop"), "nicos-laptop");
+        assert_eq!(sanitize_dns_label("  --weird__.name--  "), "weird-name");
+        assert_eq!(sanitize_dns_label(""), "");
+        assert_eq!(sanitize_dns_label("---"), "");
+        let long = "a".repeat(100);
+        assert_eq!(sanitize_dns_label(&long).len(), 63);
+        // truncation must not leave a trailing hyphen
+        let tricky = format!("{}-tail", "a".repeat(62));
+        assert!(!sanitize_dns_label(&tricky).ends_with('-'));
+    }
+
+    #[tokio::test]
+    async fn resolve_by_display_name() {
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        table
+            .update_peers(std::sync::Arc::new(vec![PeerInfo {
+                node_id: "a3f8b2c1-uuid".into(),
+                fingerprint: "fp".into(),
+                overlay_ip: "100.64.0.5".into(),
+                candidates: vec![],
+                public_key: String::new(),
+                admission_cert: String::new(),
+                display_name: "Rack Toulouse NUC".into(),
+            }]))
+            .await;
+
+        let ip = resolve(
+            "rack-toulouse-nuc.homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &table,
+        )
+        .await;
+        assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 5)));
+    }
+
+    #[tokio::test]
+    async fn node_id_takes_priority_over_display_name() {
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        table
+            .update_peers(std::sync::Arc::new(vec![
+                PeerInfo {
+                    node_id: "pi".into(),
+                    fingerprint: "fp1".into(),
+                    overlay_ip: "100.64.0.2".into(),
+                    candidates: vec![],
+                    public_key: String::new(),
+                    admission_cert: String::new(),
+                    display_name: "Other".into(),
+                },
+                PeerInfo {
+                    node_id: "xyz".into(),
+                    fingerprint: "fp2".into(),
+                    overlay_ip: "100.64.0.3".into(),
+                    candidates: vec![],
+                    public_key: String::new(),
+                    admission_cert: String::new(),
+                    display_name: "pi".into(),
+                },
+            ]))
             .await;
 
         let ip = resolve(

@@ -43,10 +43,14 @@ pub fn install_resolver(cluster: &str, ip: &str, #[allow(unused)] port: u16) -> 
             std::fs::create_dir_all(resolver_dir).context("Failed to create /etc/resolver")?;
         }
         let path = resolver_dir.join(cluster);
+        // `domain` + `search_order` enable bare-name resolution (`ssh nas` → `nas.<cluster>`).
         let content = if port == 53 {
-            format!("nameserver {}\n", ip)
+            format!("nameserver {}\ndomain {}\nsearch_order 1\n", ip, cluster)
         } else {
-            format!("nameserver {}\nport {}\n", ip, port)
+            format!(
+                "nameserver {}\nport {}\ndomain {}\nsearch_order 1\n",
+                ip, port, cluster
+            )
         };
         std::fs::write(&path, &content)
             .with_context(|| format!("Failed to write {}", path.display()))?;
@@ -166,8 +170,9 @@ mod resolved {
                     .await
                     .context("SetLinkDNS failed")?;
 
-                // SetLinkDomains(i, a(sb)) — array of (domain, routing_only)
-                let domains: Vec<(&str, bool)> = vec![(&zone, true)];
+                // SetLinkDomains(i, a(sb)) — array of (domain, routing_only).
+                // routing_only=false makes the zone a search domain too (bare-name resolution).
+                let domains: Vec<(&str, bool)> = vec![(&zone, false)];
                 proxy
                     .call::<_, _, ()>("SetLinkDomains", &(idx, domains))
                     .await
