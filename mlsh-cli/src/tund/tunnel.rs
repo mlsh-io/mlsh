@@ -943,13 +943,17 @@ async fn run_connection_manager(
                 if result.is_err() { break; }
             }
             _ = signal_conn_rx.changed() => {
-                // Signal reconnected. Existing peer tasks still hold a handle
-                // to the dead QUIC connection; broadcast WakeKick so each FSM
-                // tears down its routes and respawns against the fresh conn.
-                tracing::debug!("Signal connection changed, kicking peer FSMs");
-                ctx.fsm_registry
-                    .broadcast(super::peer_fsm::Event::WakeKick)
-                    .await;
+                // Signal reconnected. Peer tasks captured the old signal_conn
+                // at spawn time; abort them so the next iteration respawns
+                // them with the fresh connection. Routes they installed are
+                // cleaned up as part of their Cancelled transition.
+                tracing::debug!("Signal connection changed, aborting peer tasks");
+                for (node_id, (handle, ip)) in active_peers.drain() {
+                    handle.abort();
+                    ctx.peer_table.remove_route(ip).await;
+                    ctx.fsm_registry.unregister(ip).await;
+                    tracing::debug!("Aborted peer task for {node_id}");
+                }
             }
             _ = ctx.cancel.cancelled() => { break; }
             // Periodically check for finished tasks to retry
