@@ -25,27 +25,12 @@ impl OverlayNet {
     }
 }
 
-pub fn is_interesting_ip(ip: Ipv4Addr, iface_name: Option<&str>, overlay: OverlayNet) -> bool {
+pub fn is_interesting_ip(ip: Ipv4Addr, _iface_name: Option<&str>, overlay: OverlayNet) -> bool {
     if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
-        return false;
-    }
-
-    let octets = ip.octets();
-    // Docker default bridge range 172.16.0.0/12
-    if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-        return false;
-    }
-    // Podman default bridge ranges 10.88.0.0/16 and 10.89.0.0/16
-    if octets[0] == 10 && (octets[1] == 88 || octets[1] == 89) {
         return false;
     }
     if overlay.contains(ip) {
         return false;
-    }
-    if let Some(name) = iface_name {
-        if name.starts_with("mlsh") || name.starts_with("utun") || name.starts_with("tun") {
-            return false;
-        }
     }
     true
 }
@@ -78,59 +63,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_docker_bridge() {
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(172, 17, 0, 1),
-            None,
-            overlay()
-        ));
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(172, 31, 0, 1),
-            None,
-            overlay()
-        ));
-    }
-
-    #[test]
-    fn accepts_nearby_non_docker_ranges() {
-        // 172.15 and 172.32 are NOT in Docker's default range.
+    fn accepts_iphone_hotspot() {
+        // Apple Personal Hotspot subnet lives inside RFC1918 172.16/12 —
+        // used to be rejected as "Docker". Now accepted.
         assert!(is_interesting_ip(
-            Ipv4Addr::new(172, 15, 0, 1),
-            None,
-            overlay()
-        ));
-        assert!(is_interesting_ip(
-            Ipv4Addr::new(172, 32, 0, 1),
-            None,
+            Ipv4Addr::new(172, 20, 10, 4),
+            Some("en0"),
             overlay()
         ));
     }
 
     #[test]
-    fn rejects_podman_bridge() {
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(10, 88, 0, 1),
-            None,
-            overlay()
-        ));
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(10, 89, 0, 1),
-            None,
-            overlay()
-        ));
-    }
-
-    #[test]
-    fn accepts_other_rfc1918_ten() {
-        // 10.0.0.0/8 except the two podman subnets is fine.
+    fn accepts_rfc1918_ten() {
         assert!(is_interesting_ip(
             Ipv4Addr::new(10, 0, 0, 1),
-            None,
-            overlay()
-        ));
-        assert!(is_interesting_ip(
-            Ipv4Addr::new(10, 90, 0, 1),
-            None,
+            Some("en0"),
             overlay()
         ));
     }
@@ -150,29 +97,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_tun_by_name() {
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(192, 168, 1, 10),
-            Some("utun41"),
-            overlay()
-        ));
-        assert!(!is_interesting_ip(
-            Ipv4Addr::new(192, 168, 1, 10),
-            Some("mlsh0"),
-            overlay()
-        ));
-    }
-
-    #[test]
     fn accepts_normal_lan() {
         assert!(is_interesting_ip(
             Ipv4Addr::new(192, 168, 1, 42),
             Some("en0"),
             overlay()
         ));
+    }
+
+    #[test]
+    fn accepts_vpn_tun() {
+        // utun / tun interfaces may be legitimate VPN endpoints whose
+        // default route we'd want to follow — no name-based filter.
         assert!(is_interesting_ip(
-            Ipv4Addr::new(192, 168, 1, 42),
-            Some("wlan0"),
+            Ipv4Addr::new(10, 7, 0, 2),
+            Some("utun5"),
             overlay()
         ));
     }
