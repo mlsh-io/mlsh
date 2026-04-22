@@ -13,6 +13,9 @@ use super::signal_session::SignalSessionHandle;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const MIGRATION_VALIDATION: Duration = Duration::from_secs(5);
+/// Silence window used to detect the end of if-watch's startup snapshot
+/// (one Up event per pre-existing address).
+const SNAPSHOT_DRAIN: Duration = Duration::from_millis(500);
 
 pub fn spawn(
     session: SignalSessionHandle,
@@ -40,14 +43,22 @@ async fn run(
     let mut watcher = if_watch::tokio::IfWatcher::new()
         .map_err(|e| anyhow::anyhow!("failed to start if-watch: {e}"))?;
 
-    tracing::info!("net_watcher started");
-
     async fn next_event(watcher: &mut if_watch::tokio::IfWatcher) -> Option<if_watch::IfEvent> {
         poll_fn(|cx| watcher.poll_if_event(cx))
             .await
             .map_err(|e| tracing::warn!("if-watch error: {e}"))
             .ok()
     }
+
+    // Drain if-watch's startup snapshot: on creation it emits one Up event
+    // per pre-existing address so consumers can build initial state. We
+    // don't — those aren't changes, just baseline. Read until the stream
+    // goes silent for SNAPSHOT_DRAIN.
+    let mut snapshot_count = 0;
+    while let Ok(Some(_)) = tokio::time::timeout(SNAPSHOT_DRAIN, next_event(&mut watcher)).await {
+        snapshot_count += 1;
+    }
+    tracing::info!("net_watcher started (drained {snapshot_count} snapshot event(s))");
 
     let mut pending = false;
 
