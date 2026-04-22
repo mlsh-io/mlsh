@@ -319,24 +319,27 @@ async fn tunnel_task(
         }
     };
 
+    let fsm_registry = super::peer_fsm::FsmRegistry::new();
+
     // Spawn ONE signal session — it handles its own reconnection internally.
     // Pass the PeerTable so incoming relay streams can register routes.
-    let session = signal_session::spawn(
-        match config.signal_credentials() {
+    let session = signal_session::spawn(signal_session::SpawnParams {
+        creds: match config.signal_credentials() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to load identity: {}", e);
                 return;
             }
         },
-        endpoint.clone(),
-        cancel.clone(),
-        Some(device.clone()),
-        peer_table.clone(),
+        endpoint: endpoint.clone(),
+        cancel: cancel.clone(),
+        tun_device: Some(device.clone()),
+        peer_table: peer_table.clone(),
         overlay_port,
         overlay_prefix_len,
-        config.display_name.clone(),
-    );
+        initial_display_name: config.display_name.clone(),
+        fsm_registry: fsm_registry.clone(),
+    });
     let dns_config = super::overlay_dns::DnsConfig {
         bind_addr: dns_bind,
         zone: config.name.clone(),
@@ -402,12 +405,14 @@ async fn tunnel_task(
             cancel: &cancel,
             endpoint: &endpoint,
             overlay_ip,
+            overlay_prefix_len,
             device: &device,
             session: &session,
             peer_table: &peer_table,
             state_tx: &state_tx,
             info: &info,
             bytes_tx: &bytes_tx,
+            fsm_registry: &fsm_registry,
         };
         match establish_and_run(&run_ctx, &mut shutdown_rx).await {
             Ok(ShutdownReason::UserRequested) => {
@@ -474,18 +479,21 @@ enum ShutdownReason {
 
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_STAGGER: Duration = Duration::from_millis(100);
+const RELAY_GRACE: Duration = Duration::from_millis(200);
 
 struct TunnelRunContext<'a> {
     config: &'a ClusterConfig,
     cancel: &'a tokio_util::sync::CancellationToken,
     endpoint: &'a quinn::Endpoint,
     overlay_ip: Ipv4Addr,
+    overlay_prefix_len: u8,
     device: &'a Arc<tun_rs::AsyncDevice>,
     session: &'a signal_session::SignalSessionHandle,
     peer_table: &'a PeerTable,
     state_tx: &'a watch::Sender<TunnelState>,
     info: &'a Arc<std::sync::Mutex<SharedInfo>>,
     bytes_tx: &'a Arc<AtomicU64>,
+    fsm_registry: &'a super::peer_fsm::FsmRegistry,
 }
 
 /// Wait for signal session to be ready, then run the multi-peer forwarding loop.
@@ -560,6 +568,7 @@ async fn establish_and_run(
     let cm_identity_dir = config.identity_dir.clone();
     let cm_overlay_ip = overlay_ip;
     let cm_endpoint = ctx.endpoint.clone();
+    let cm_fsm_registry = ctx.fsm_registry.clone();
     let conn_manager = tokio::spawn(async move {
         let cm_ctx = ConnectionManagerContext {
             cancel: &cm_cancel,
@@ -570,9 +579,17 @@ async fn establish_and_run(
             my_node_id: &cm_node_id,
             cluster_id: &cm_cluster_id,
             identity_dir: &cm_identity_dir,
+            fsm_registry: &cm_fsm_registry,
         };
         run_connection_manager(cm_session_peers, cm_session_conn, &cm_ctx).await;
     });
+
+    let _net_watcher = super::net_watcher::spawn(
+        session.clone(),
+        ctx.fsm_registry.clone(),
+        super::net_filter::OverlayNet::new(overlay_ip, ctx.overlay_prefix_len),
+        ctx.cancel.clone(),
+    );
 
     // Wait for shutdown or session death
     let reason = tokio::select! {
@@ -817,6 +834,7 @@ struct ConnectionManagerContext<'a> {
     my_node_id: &'a str,
     cluster_id: &'a str,
     identity_dir: &'a std::path::Path,
+    fsm_registry: &'a super::peer_fsm::FsmRegistry,
 }
 
 async fn run_connection_manager(
@@ -897,6 +915,7 @@ async fn run_connection_manager(
             let id_dir = ctx.identity_dir.to_path_buf();
             let overlay_ip = ctx.overlay_ip;
 
+            let fsm_registry = ctx.fsm_registry.clone();
             let handle = tokio::spawn(async move {
                 establish_peer_connection(PeerConnectionContext {
                     cancel,
@@ -910,6 +929,7 @@ async fn run_connection_manager(
                     cluster_id: cid,
                     my_node_id: nid,
                     identity_dir: id_dir,
+                    fsm_registry,
                 })
                 .await;
             });
@@ -953,204 +973,315 @@ struct PeerConnectionContext {
     cluster_id: String,
     my_node_id: String,
     identity_dir: std::path::PathBuf,
+    fsm_registry: super::peer_fsm::FsmRegistry,
 }
 
+/// Drives the peer FSM in [`super::peer_fsm`]: executes effects as spawned
+/// tasks and feeds their outcomes back as events.
 async fn establish_peer_connection(ctx: PeerConnectionContext) {
-    let peer = &ctx.peer;
+    use super::peer_fsm::{initial_effects, transition, Effect, Event, State};
+
     let peer_ip = ctx.peer_ip;
-    let overlay_ip = ctx.overlay_ip;
-    let peer_table = &ctx.peer_table;
-    let device = &ctx.device;
-    let identity_dir = &ctx.identity_dir;
-    let my_node_id = &ctx.my_node_id;
-    // Try direct connection first if peer has candidates
-    if !peer.candidates.is_empty() {
-        let summary: Vec<String> = peer
+    let is_initiator = ctx.overlay_ip < peer_ip;
+
+    if !ctx.peer.candidates.is_empty() {
+        let summary: Vec<String> = ctx
+            .peer
             .candidates
             .iter()
             .map(|c| format!("{}:{}", c.kind, c.addr))
             .collect();
         tracing::info!(
             "Connecting to {} ({}) — candidates: [{}]",
-            peer.node_id,
+            ctx.peer.node_id,
             peer_ip,
             summary.join(", ")
         );
+    }
 
-        // Try direct connection. On failure, retry once on srflx candidates only:
-        // both peers have been sending packets for ~3s at this point, so NAT
-        // mappings on both sides should be open (hole-punch rendezvous).
-        let probe_result = match probe_candidates(
-            &ctx.endpoint,
-            &peer.candidates,
-            &peer.fingerprint,
-            identity_dir,
-        )
-        .await
-        {
-            Ok(probe) => Some(probe),
-            Err(e) => {
-                tracing::debug!(
-                    "Direct to {} failed: {} — retrying srflx (hole-punch)",
-                    peer.node_id,
-                    e
-                );
-                let srflx: Vec<_> = peer
-                    .candidates
-                    .iter()
-                    .filter(|c| c.kind == "srflx")
-                    .cloned()
-                    .collect();
-                if srflx.is_empty() {
-                    None
-                } else {
-                    probe_candidates(&ctx.endpoint, &srflx, &peer.fingerprint, identity_dir)
-                        .await
-                        .ok()
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    ctx.fsm_registry.register(peer_ip, events_tx.clone()).await;
+
+    let mut pending_direct_conn: Option<quinn::Connection> = None;
+    let mut pending_relay_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>> = None;
+
+    let mut probe_cancel = tokio_util::sync::CancellationToken::new();
+    let mut relay_cancel = tokio_util::sync::CancellationToken::new();
+    let mut direct_lifecycle: Option<tokio::task::JoinHandle<()>> = None;
+
+    let mut state = State::Probing;
+    let mut effects_to_run = initial_effects(is_initiator);
+
+    'outer: loop {
+        for effect in effects_to_run.drain(..) {
+            match effect {
+                Effect::SpawnProbe => {
+                    if ctx.peer.candidates.is_empty() {
+                        let _ = events_tx.send(Event::ProbeFailed);
+                        continue;
+                    }
+                    probe_cancel = tokio_util::sync::CancellationToken::new();
+                    let endpoint = ctx.endpoint.clone();
+                    let candidates = ctx.peer.candidates.clone();
+                    let fp = ctx.peer.fingerprint.clone();
+                    let id_dir = ctx.identity_dir.clone();
+                    let ev = events_tx.clone();
+                    let cancel = probe_cancel.clone();
+                    let peer_ip_copy = peer_ip;
+                    let peer_node_id = ctx.peer.node_id.clone();
+                    tokio::spawn(async move {
+                        let result = tokio::select! {
+                            r = probe_candidates(&endpoint, &candidates, &fp, &id_dir) => r,
+                            _ = cancel.cancelled() => return,
+                        };
+                        match result {
+                            Ok(probe) => {
+                                tracing::info!(
+                                    "Direct connection to {} ({}) via {}",
+                                    peer_node_id,
+                                    peer_ip_copy,
+                                    probe.via
+                                );
+                                let _ = ev.send(Event::__ProbeSucceededWith(Box::new(probe.conn)));
+                            }
+                            Err(e) => {
+                                tracing::debug!("Direct to {} failed: {}", peer_node_id, e);
+                                let _ = ev.send(Event::ProbeFailed);
+                            }
+                        }
+                    });
                 }
+
+                Effect::StartRelayGraceTimer => {
+                    let ev = events_tx.clone();
+                    let cancel = ctx.cancel.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = tokio::time::sleep(RELAY_GRACE) => {
+                                let _ = ev.send(Event::RelayGraceElapsed);
+                            }
+                            _ = cancel.cancelled() => {}
+                        }
+                    });
+                }
+
+                Effect::InitiateRelay => {
+                    let Some(signal_conn) = ctx.signal_conn.clone() else {
+                        tracing::warn!("No signal connection for relay to {}", ctx.peer.node_id);
+                        continue;
+                    };
+                    relay_cancel = tokio_util::sync::CancellationToken::new();
+                    let r = RelayInitiator {
+                        signal_conn,
+                        cluster_id: ctx.cluster_id.clone(),
+                        my_node_id: ctx.my_node_id.clone(),
+                        peer_node_id: ctx.peer.node_id.clone(),
+                        peer_fingerprint: ctx.peer.fingerprint.clone(),
+                        identity_dir: ctx.identity_dir.clone(),
+                        device: ctx.device.clone(),
+                        peer_table: ctx.peer_table.clone(),
+                        events_tx: events_tx.clone(),
+                        cancel: relay_cancel.clone(),
+                    };
+                    tokio::spawn(async move {
+                        run_relay_initiator(r).await;
+                    });
+                }
+
+                Effect::InsertDirectRoute => {
+                    if let Some(conn) = pending_direct_conn.take() {
+                        ctx.peer_table.insert_direct(peer_ip, conn.clone()).await;
+                        let dev = ctx.device.clone();
+                        let pt = ctx.peer_table.clone();
+                        let cancel = ctx.cancel.clone();
+                        let ev = events_tx.clone();
+                        direct_lifecycle = Some(tokio::spawn(async move {
+                            tokio::select! {
+                                _ = spawn_peer_inbound(conn, dev, pt) => {}
+                                _ = cancel.cancelled() => {}
+                            }
+                            let _ = ev.send(Event::DirectConnectionLost);
+                        }));
+                    }
+                }
+
+                Effect::InsertRelayRoute => {
+                    if let Some(tx) = pending_relay_tx.take() {
+                        ctx.peer_table.insert_relay(peer_ip, tx).await;
+                    }
+                }
+
+                Effect::RemoveRoute => {
+                    ctx.peer_table.remove_route(peer_ip).await;
+                }
+
+                Effect::RemoveRelayOnly => {
+                    if ctx.peer_table.remove_relay_only(peer_ip).await {
+                        tracing::info!("Relay to {} ended", ctx.peer.node_id);
+                    } else {
+                        tracing::debug!(
+                            "Relay to {} ended, keeping active direct route",
+                            ctx.peer.node_id
+                        );
+                    }
+                }
+
+                Effect::AbortRelayTask => relay_cancel.cancel(),
+                Effect::AbortProbeTask => probe_cancel.cancel(),
+                Effect::LogDirect => {} // already logged when the probe succeeded
+                Effect::LogRelay => {}  // logged by run_relay_initiator
+            }
+        }
+
+        if state == State::Done {
+            break 'outer;
+        }
+
+        let event = tokio::select! {
+            maybe = events_rx.recv() => match maybe {
+                Some(e) => e,
+                None => break 'outer,
+            },
+            _ = ctx.cancel.cancelled() => Event::Cancelled,
+        };
+
+        // Carrier variants hand runtime handles to the driver, then the
+        // pure equivalent is passed to `transition`.
+        let fsm_event = match event {
+            Event::__ProbeSucceededWith(conn) => {
+                pending_direct_conn = Some(*conn);
+                Event::ProbeSucceeded
+            }
+            Event::__RelayReadyWith(tx) => {
+                pending_relay_tx = Some(*tx);
+                Event::RelayReady
+            }
+            other => other,
+        };
+
+        let (new_state, new_effects) = transition(state, fsm_event, is_initiator);
+        state = new_state;
+        effects_to_run = new_effects;
+    }
+
+    probe_cancel.cancel();
+    relay_cancel.cancel();
+    if let Some(h) = direct_lifecycle {
+        h.abort();
+    }
+    ctx.fsm_registry.unregister(peer_ip).await;
+}
+
+struct RelayInitiator {
+    signal_conn: quinn::Connection,
+    cluster_id: String,
+    my_node_id: String,
+    peer_node_id: String,
+    peer_fingerprint: String,
+    identity_dir: std::path::PathBuf,
+    device: Arc<tun_rs::AsyncDevice>,
+    peer_table: PeerTable,
+    events_tx: tokio::sync::mpsc::UnboundedSender<super::peer_fsm::Event>,
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+/// Opens a relay stream through signal, wraps it in TLS, and runs the I/O
+/// tasks. Emits `__RelayReadyWith` once up and `RelayClosed` on exit.
+async fn run_relay_initiator(r: RelayInitiator) {
+    use super::peer_fsm::Event;
+    let RelayInitiator {
+        signal_conn,
+        cluster_id,
+        my_node_id,
+        peer_node_id,
+        peer_fingerprint,
+        identity_dir,
+        device,
+        peer_table,
+        events_tx,
+        cancel,
+    } = r;
+
+    let (send, recv) =
+        match open_relay_to_peer(&signal_conn, &cluster_id, &my_node_id, &peer_node_id).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("Failed to open relay to {}: {}", peer_node_id, e);
+                return;
             }
         };
 
-        if let Some(probe) = probe_result {
-            tracing::info!(
-                "Direct connection to {} ({}) via {}",
-                peer.node_id,
-                peer_ip,
-                probe.via
-            );
-            let conn = probe.conn;
-            peer_table.insert_direct(peer_ip, conn.clone()).await;
-
-            // Run inbound task — reads from peer's QUIC streams, writes to TUN
-            tokio::select! {
-                _ = spawn_peer_inbound(conn.clone(), device.clone(), peer_table.clone()) => {}
-                _ = ctx.cancel.cancelled() => {}
-            }
-
-            // Connection ended — remove route
-            peer_table.remove_route(peer_ip).await;
-            tracing::info!("Direct connection to {} ended", peer.node_id);
-            return;
-        } else {
-            tracing::debug!(
-                "Direct to {} failed after hole-punch retry, trying relay",
-                peer.node_id
-            );
-        }
-    }
-
-    // Fallback: relay via signal
-    // Tiebreaker: lower IP initiates the relay stream
-    if overlay_ip > peer_ip {
-        // We have higher IP — wait for the peer to initiate relay.
-        // The relay_handler (via signal_session) will insert the route when
-        // an incoming relay arrives.
-        tracing::debug!(
-            "Waiting for relay from {} (they have lower IP)",
-            peer.node_id
-        );
-        return;
-    }
-
-    let signal_conn = match &ctx.signal_conn {
-        Some(c) => c,
-        None => {
-            tracing::warn!("No signal connection for relay to {}", peer.node_id);
+    let identity = match mlsh_crypto::identity::load_or_generate(&identity_dir, &my_node_id) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("Failed to load identity for relay TLS: {}", e);
             return;
         }
     };
 
-    match open_relay_to_peer(signal_conn, &ctx.cluster_id, my_node_id, &peer.node_id).await {
-        Ok((send, recv)) => {
-            // Load identity for TLS
-            let identity = match mlsh_crypto::identity::load_or_generate(identity_dir, my_node_id) {
-                Ok(id) => id,
-                Err(e) => {
-                    tracing::warn!("Failed to load identity for relay TLS: {}", e);
-                    return;
-                }
-            };
-
-            // Wrap relay in TLS (we are the initiator = TLS client)
-            let tls_stream =
-                match super::relay_tls::wrap_initiator(send, recv, &identity, &peer.fingerprint)
-                    .await
-                {
-                    Ok(s) => s,
-                    Err(e) => {
-                        tracing::warn!("Relay TLS handshake to {} failed: {}", peer.node_id, e);
-                        return;
-                    }
-                };
-
-            tracing::info!("Relay to {} via signal (TLS E2E encrypted)", peer.node_id);
-
-            let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
-
-            let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
-            peer_table.insert_relay(peer_ip, outbound_tx).await;
-
-            // Inbound: TLS → TUN
-            let dev_in = device.clone();
-            let pt_rx = peer_table.clone();
-            let inbound = tokio::spawn(async move {
-                use tokio::io::AsyncReadExt;
-                let mut pkt_buf = vec![0u8; 65536];
-                loop {
-                    let mut len_buf = [0u8; 4];
-                    if tls_read.read_exact(&mut len_buf).await.is_err() {
-                        break;
-                    }
-                    let plen = u32::from_be_bytes(len_buf) as usize;
-                    if !(20..=65536).contains(&plen) {
-                        continue;
-                    }
-                    if tls_read.read_exact(&mut pkt_buf[..plen]).await.is_err() {
-                        break;
-                    }
-                    let pkt = &pkt_buf[..plen];
-                    if !peer_table::validate_inbound_packet(pkt) {
-                        continue;
-                    }
-                    pt_rx.record_rx(plen);
-                    let _ = dev_in.send(pkt).await;
-                }
-            });
-
-            // Outbound: channel → TLS
-            let outbound = tokio::spawn(async move {
-                use tokio::io::AsyncWriteExt;
-                while let Some(packet) = outbound_rx.recv().await {
-                    let len = (packet.len() as u32).to_be_bytes();
-                    if tls_write.write_all(&len).await.is_err() {
-                        break;
-                    }
-                    if tls_write.write_all(&packet).await.is_err() {
-                        break;
-                    }
-                }
-                let _ = tls_write.shutdown().await;
-            });
-
-            tokio::select! {
-                _ = inbound => {}
-                _ = outbound => {}
-                _ = ctx.cancel.cancelled() => {}
+    let tls_stream =
+        match super::relay_tls::wrap_initiator(send, recv, &identity, &peer_fingerprint).await {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Relay TLS handshake to {} failed: {}", peer_node_id, e);
+                return;
             }
+        };
 
-            if peer_table.remove_relay_only(peer_ip).await {
-                tracing::info!("Relay to {} ended", peer.node_id);
-            } else {
-                tracing::debug!(
-                    "Relay to {} ended, keeping active direct route",
-                    peer.node_id
-                );
+    tracing::info!("Relay to {} via signal (TLS E2E encrypted)", peer_node_id);
+
+    let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+
+    let _ = events_tx.send(Event::__RelayReadyWith(Box::new(outbound_tx.clone())));
+
+    let dev_in = device.clone();
+    let pt_rx = peer_table.clone();
+    let inbound = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut pkt_buf = vec![0u8; 65536];
+        loop {
+            let mut len_buf = [0u8; 4];
+            if tls_read.read_exact(&mut len_buf).await.is_err() {
+                break;
+            }
+            let plen = u32::from_be_bytes(len_buf) as usize;
+            if !(20..=65536).contains(&plen) {
+                continue;
+            }
+            if tls_read.read_exact(&mut pkt_buf[..plen]).await.is_err() {
+                break;
+            }
+            let pkt = &pkt_buf[..plen];
+            if !peer_table::validate_inbound_packet(pkt) {
+                continue;
+            }
+            pt_rx.record_rx(plen);
+            let _ = dev_in.send(pkt).await;
+        }
+    });
+
+    let outbound = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        while let Some(packet) = outbound_rx.recv().await {
+            let len = (packet.len() as u32).to_be_bytes();
+            if tls_write.write_all(&len).await.is_err() {
+                break;
+            }
+            if tls_write.write_all(&packet).await.is_err() {
+                break;
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to open relay to {}: {}", peer.node_id, e);
-        }
+        let _ = tls_write.shutdown().await;
+    });
+
+    tokio::select! {
+        _ = inbound => {}
+        _ = outbound => {}
+        _ = cancel.cancelled() => {}
     }
+
+    let _ = events_tx.send(Event::RelayClosed);
 }
 
 /// Open a relay stream to a specific peer through signal.

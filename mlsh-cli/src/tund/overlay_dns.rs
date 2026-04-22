@@ -101,7 +101,15 @@ async fn handle_query(
         return Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl));
     }
 
-    let ip = resolve(&qname, config, my_ip, my_node_id, my_display_name, peer_table).await;
+    let ip = resolve(
+        &qname,
+        config,
+        my_ip,
+        my_node_id,
+        my_display_name,
+        peer_table,
+    )
+    .await;
 
     match ip {
         Some(addr) => Ok(build_response(id, RCODE_OK, query, Some(addr), config.ttl)),

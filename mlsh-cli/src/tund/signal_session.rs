@@ -16,9 +16,11 @@ use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 use mlsh_protocol::types::{Candidate, PeerInfo};
 
 const PING_INTERVAL: Duration = Duration::from_secs(15);
-const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const RECONNECT_INITIAL: Duration = Duration::from_millis(200);
+const RECONNECT_MAX: Duration = Duration::from_secs(10);
+const RECONNECT_JITTER: Duration = Duration::from_millis(100);
 
 /// Credentials for connecting to signal.
 #[derive(Clone)]
@@ -40,12 +42,14 @@ pub struct SignalCredentials {
 
 /// Handle to a running signal session. Provides reactive access to
 /// overlay IP and peer list via watch channels.
+#[derive(Clone)]
 pub struct SignalSessionHandle {
     pub overlay_ip: watch::Receiver<Option<Ipv4Addr>>,
     pub peers: watch::Receiver<Arc<Vec<PeerInfo>>>,
     pub connection: watch::Receiver<Option<quinn::Connection>>,
     pub display_name: watch::Receiver<String>,
     shutdown_tx: watch::Sender<bool>,
+    kick_tx: watch::Sender<u64>,
 }
 
 impl SignalSessionHandle {
@@ -68,6 +72,12 @@ impl SignalSessionHandle {
     pub fn shutdown(&self) {
         let _ = self.shutdown_tx.send(true);
     }
+
+    /// Drop the current connection (if any) and reconnect immediately,
+    /// skipping any remaining backoff.
+    pub fn kick_reconnect(&self) {
+        self.kick_tx.send_modify(|v| *v = v.wrapping_add(1));
+    }
 }
 
 /// Shared state for the signal session loop.
@@ -84,42 +94,66 @@ struct SessionContext {
     peer_table: super::peer_table::PeerTable,
     overlay_port: u16,
     overlay_prefix_len: u8,
+    /// Built once per session handle so TLS session tickets survive reconnects.
+    client_config: quinn::ClientConfig,
+    fsm_registry: super::peer_fsm::FsmRegistry,
+    kick_rx: watch::Receiver<u64>,
+}
+
+pub struct SpawnParams {
+    pub creds: SignalCredentials,
+    pub endpoint: quinn::Endpoint,
+    pub cancel: tokio_util::sync::CancellationToken,
+    /// If provided, incoming relay bi-streams from signal are accepted and
+    /// forwarded via the shared `peer_table`.
+    pub tun_device: Option<Arc<tun_rs::AsyncDevice>>,
+    pub peer_table: super::peer_table::PeerTable,
+    pub overlay_port: u16,
+    pub overlay_prefix_len: u8,
+    pub initial_display_name: String,
+    pub fsm_registry: super::peer_fsm::FsmRegistry,
 }
 
 /// Spawn a persistent signal session as a background task.
-///
-/// If `tun_device` is provided, incoming relay bi-streams from signal will be
-/// accepted and forwarded via the shared `peer_table`.
-pub fn spawn(
-    creds: SignalCredentials,
-    endpoint: quinn::Endpoint,
-    cancel: tokio_util::sync::CancellationToken,
-    tun_device: Option<Arc<tun_rs::AsyncDevice>>,
-    peer_table: super::peer_table::PeerTable,
-    overlay_port: u16,
-    overlay_prefix_len: u8,
-    initial_display_name: String,
-) -> SignalSessionHandle {
+pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
     let (ip_tx, ip_rx) = watch::channel(None);
     let (peers_tx, peers_rx) = watch::channel(Arc::new(Vec::new()));
     let (conn_tx, conn_rx) = watch::channel(None);
-    let (display_name_tx, display_name_rx) = watch::channel(initial_display_name);
+    let (display_name_tx, display_name_rx) = watch::channel(params.initial_display_name);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let (kick_tx, kick_rx) = watch::channel::<u64>(0);
 
-    let my_node_id = creds.node_id.clone();
+    let my_node_id = params.creds.node_id.clone();
+    let client_config = match build_client_config(&params.creds) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::error!("Failed to build signal client config: {e:#}");
+            return SignalSessionHandle {
+                overlay_ip: ip_rx,
+                peers: peers_rx,
+                connection: conn_rx,
+                display_name: display_name_rx,
+                shutdown_tx,
+                kick_tx,
+            };
+        }
+    };
     let ctx = SessionContext {
-        creds,
-        endpoint,
-        cancel,
+        creds: params.creds,
+        endpoint: params.endpoint,
+        cancel: params.cancel,
         ip_tx,
         peers_tx,
         conn_tx,
         display_name_tx,
         my_node_id,
-        tun_device,
-        peer_table,
-        overlay_port,
-        overlay_prefix_len,
+        tun_device: params.tun_device,
+        peer_table: params.peer_table,
+        overlay_port: params.overlay_port,
+        overlay_prefix_len: params.overlay_prefix_len,
+        client_config,
+        fsm_registry: params.fsm_registry,
+        kick_rx,
     };
 
     tokio::spawn(session_loop(ctx, shutdown_rx));
@@ -130,39 +164,65 @@ pub fn spawn(
         connection: conn_rx,
         display_name: display_name_rx,
         shutdown_tx,
+        kick_tx,
     }
 }
 
-async fn session_loop(ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool>) {
+async fn session_loop(mut ctx: SessionContext, mut shutdown_rx: watch::Receiver<bool>) {
     shutdown_rx.borrow_and_update();
+    ctx.kick_rx.borrow_and_update();
+
+    let mut error_backoff = RECONNECT_INITIAL;
 
     loop {
-        match run_session(&ctx, &mut shutdown_rx).await {
+        let delay = match run_session(&mut ctx, &mut shutdown_rx).await {
             Ok(true) => {
                 tracing::info!("Signal session shut down by user");
                 break;
             }
             Ok(false) => {
-                tracing::info!("Signal session closed, reconnecting in {RECONNECT_DELAY:?}...");
+                error_backoff = RECONNECT_INITIAL;
+                let jitter = rand_jitter(RECONNECT_JITTER);
+                tracing::info!("Signal session closed, reconnecting in {jitter:?}");
+                jitter
             }
             Err(e) => {
-                tracing::warn!("Signal session error: {e:#}, reconnecting in {RECONNECT_DELAY:?}");
+                let d = error_backoff;
+                tracing::warn!("Signal session error: {e:#}, reconnecting in {d:?}");
+                error_backoff = (error_backoff.saturating_mul(2)).min(RECONNECT_MAX);
+                d
             }
-        }
+        };
 
+        if delay.is_zero() {
+            continue;
+        }
         tokio::select! {
-            _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+            _ = tokio::time::sleep(delay) => {}
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() { break; }
+            }
+            _ = ctx.kick_rx.changed() => {
+                tracing::debug!("Reconnect backoff interrupted by kick");
             }
         }
     }
 }
 
+fn rand_jitter(max: Duration) -> Duration {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let factor = 0.5 + (nanos as f64 / u32::MAX as f64) * 0.5;
+    Duration::from_secs_f64(max.as_secs_f64() * factor)
+}
+
 /// Run a single session. Returns Ok(true) if user requested shutdown,
 /// Ok(false) if connection was lost, Err on failure.
 async fn run_session(
-    ctx: &SessionContext,
+    ctx: &mut SessionContext,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> Result<bool> {
     let creds = &ctx.creds;
@@ -175,7 +235,13 @@ async fn run_session(
     let overlay_prefix_len = ctx.overlay_prefix_len;
 
     let addr = resolve_addr(&creds.signal_endpoint)?;
-    let conn = connect_to_signal(&ctx.endpoint, addr, &creds.signal_endpoint, creds).await?;
+    let conn = connect_to_signal(
+        &ctx.endpoint,
+        ctx.client_config.clone(),
+        addr,
+        &creds.signal_endpoint,
+    )
+    .await?;
 
     // Expose connection to the tunnel for relay/direct streams
     let _ = conn_tx.send(Some(conn.clone()));
@@ -237,6 +303,8 @@ async fn run_session(
     let mut last_ping = std::time::Instant::now();
     let conn_for_accept = conn.clone();
 
+    ctx.kick_rx.borrow_and_update();
+
     loop {
         tokio::select! {
             _ = shutdown_rx.changed() => {
@@ -249,6 +317,11 @@ async fn run_session(
                 tracing::warn!("Signal connection lost: {}", reason);
                 return Ok(false);
             }
+            _ = ctx.kick_rx.changed() => {
+                tracing::info!("Signal session kicked; forcing reconnect");
+                conn.close(quinn::VarInt::from_u32(0), b"kick-reconnect");
+                return Ok(false);
+            }
             // Accept incoming bi-streams from signal.
             // First RelayMessage discriminates:
             //   - RelayIncoming   → overlay relay (TLS-wrapped E2E)
@@ -259,7 +332,7 @@ async fn run_session(
                         let relay_cancel = ctx.cancel.clone();
                         let tun_device_for_task = tun_device.clone();
                         let peer_table_for_task = peer_table.clone();
-                        let my_ip = overlay_ip;
+                        let fsm_registry_for_task = ctx.fsm_registry.clone();
                         let relay_identity = mlsh_crypto::identity::NodeIdentity {
                             cert_der: vec![],
                             cert_pem: creds.cert_pem.clone(),
@@ -283,7 +356,15 @@ async fn run_session(
                                     };
                                     tokio::select! {
                                         result = super::relay_handler::handle_incoming_relay(
-                                            relay_send, relay_recv, dev, my_ip, peer_table_for_task, relay_identity, from_node_id,
+                                            super::relay_handler::IncomingRelay {
+                                                send: relay_send,
+                                                recv: relay_recv,
+                                                device: dev,
+                                                peer_table: peer_table_for_task,
+                                                identity: relay_identity,
+                                                from_node_id,
+                                                fsm_registry: fsm_registry_for_task,
+                                            },
                                         ) => {
                                             if let Err(e) = result {
                                                 tracing::debug!("Incoming relay error: {}", e);
@@ -541,13 +622,8 @@ fn handle_push_message(
 
 // --- QUIC connection helpers
 
-async fn connect_to_signal(
-    endpoint: &quinn::Endpoint,
-    addr: SocketAddr,
-    endpoint_str: &str,
-    creds: &SignalCredentials,
-) -> Result<quinn::Connection> {
-    // Load identity for mTLS client auth
+/// Built once per handle so TLS 1.3 session tickets are reused across reconnects.
+fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig> {
     let cert_der = {
         let b64: String = creds
             .cert_pem
@@ -562,7 +638,6 @@ async fn connect_to_signal(
         .context("Failed to parse identity key")?
         .context("No private key in PEM")?;
 
-    // Verify signal's QUIC cert fingerprint + send our client cert
     let mut tls_config = rustls::ClientConfig::builder()
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(
@@ -571,6 +646,8 @@ async fn connect_to_signal(
         .with_client_auth_cert(vec![cert], key)
         .context("Failed to set client auth cert")?;
     tls_config.alpn_protocols = vec![mlsh_protocol::alpn::ALPN_SIGNAL.to_vec()];
+    tls_config.resumption = rustls::client::Resumption::in_memory_sessions(8);
+    tls_config.enable_early_data = true;
 
     let mut client_config = quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
@@ -580,7 +657,15 @@ async fn connect_to_signal(
     transport.max_idle_timeout(Some(quinn::IdleTimeout::try_from(IDLE_TIMEOUT)?));
     transport.keep_alive_interval(Some(PING_INTERVAL));
     client_config.transport_config(Arc::new(transport));
+    Ok(client_config)
+}
 
+async fn connect_to_signal(
+    endpoint: &quinn::Endpoint,
+    client_config: quinn::ClientConfig,
+    addr: SocketAddr,
+    endpoint_str: &str,
+) -> Result<quinn::Connection> {
     let sni_host = endpoint_str.split(':').next().unwrap_or(endpoint_str);
 
     let conn = tokio::time::timeout(
@@ -601,36 +686,13 @@ fn gather_host_candidates(
     overlay_ip: Ipv4Addr,
     overlay_prefix_len: u8,
 ) -> Vec<Candidate> {
+    let overlay = super::net_filter::OverlayNet::new(overlay_ip, overlay_prefix_len);
     let mut candidates = Vec::new();
-
-    // Compute overlay subnet mask for filtering
-    let overlay_mask: u32 = if overlay_prefix_len >= 32 {
-        u32::MAX
-    } else {
-        !((1u32 << (32 - overlay_prefix_len)) - 1)
-    };
-    let overlay_network = u32::from(overlay_ip) & overlay_mask;
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
         for (name, ip) in &interfaces {
             if let std::net::IpAddr::V4(v4) = ip {
-                if v4.is_loopback() || v4.is_link_local() {
-                    continue;
-                }
-                let octets = v4.octets();
-                // Skip Docker/Podman bridge networks (172.16-31.x.x)
-                if octets[0] == 172 && (16..=31).contains(&octets[1]) {
-                    continue;
-                }
-                // Skip overlay subnet — advertising overlay IPs as host
-                // candidates creates routing loops: QUIC transport UDP goes
-                // through the TUN, gets re-encapsulated as overlay traffic,
-                // exhausts stream limits, and blocks all outbound.
-                if u32::from(*v4) & overlay_mask == overlay_network {
-                    continue;
-                }
-                // Skip TUN interfaces by name as a safety net
-                if name.starts_with("mlsh") || name.starts_with("tun") {
+                if !super::net_filter::is_interesting_ip(*v4, Some(name), overlay) {
                     continue;
                 }
                 candidates.push(Candidate {
@@ -692,7 +754,8 @@ mod tests {
                 display_name: String::new(),
             },
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new());
+        handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].node_id, "nas");
     }
@@ -712,7 +775,8 @@ mod tests {
             node_id: "nas".into(),
             cluster_id: "c1".into(),
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new());
+        handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert!(tx.borrow().is_empty());
     }
 
@@ -738,7 +802,8 @@ mod tests {
                 display_name: String::new(),
             },
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new()); handle_push_message(&msg, &tx, &dn_tx, "", "");
+        let (dn_tx, _dn_rx) = watch::channel(String::new());
+        handle_push_message(&msg, &tx, &dn_tx, "", "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].fingerprint, "new-fp");
     }

@@ -13,34 +13,42 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use mlsh_protocol::framing;
 use mlsh_protocol::messages::RelayMessage;
 
+use super::peer_fsm::{Event, FsmRegistry};
 use super::peer_table::{self, PeerTable};
 use super::relay_tls;
 
+pub struct IncomingRelay {
+    pub send: quinn::SendStream,
+    pub recv: quinn::RecvStream,
+    pub device: Arc<tun_rs::AsyncDevice>,
+    pub peer_table: PeerTable,
+    pub identity: mlsh_crypto::identity::NodeIdentity,
+    pub from_node_id: String,
+    pub fsm_registry: FsmRegistry,
+}
+
 /// Handle an incoming relay stream from signal (responder side).
 ///
-/// After the relay handshake, wraps the stream in TLS (as server) for E2E
-/// encryption. The peer (initiator) connects as TLS client and verifies our
-/// certificate fingerprint.
-///
-/// The `RelayIncoming` header is read by the caller (`signal_session`) which
-/// dispatches between relay and ingress bi-streams; `from_node_id` is passed
-/// through already-parsed.
-pub async fn handle_incoming_relay(
-    mut send: quinn::SendStream,
-    recv: quinn::RecvStream,
-    device: Arc<tun_rs::AsyncDevice>,
-    _my_ip: Ipv4Addr,
-    peer_table: PeerTable,
-    identity: mlsh_crypto::identity::NodeIdentity,
-    from_node_id: String,
-) -> anyhow::Result<()> {
+/// Wraps the stream in TLS (as server) for E2E encryption; the peer
+/// (initiator) connects as TLS client and verifies our certificate
+/// fingerprint. `from_node_id` is parsed by the caller from the
+/// `RelayIncoming` header.
+pub async fn handle_incoming_relay(relay: IncomingRelay) -> anyhow::Result<()> {
+    let IncomingRelay {
+        mut send,
+        recv,
+        device,
+        peer_table,
+        identity,
+        from_node_id,
+        fsm_registry,
+    } = relay;
+
     tracing::info!("Relay stream accepted (from: {})", from_node_id);
     framing::write_msg(&mut send, &RelayMessage::RelayAccepted).await?;
 
-    // Look up peer's overlay IP
     let peer_ip = lookup_peer_ip(&from_node_id, &peer_table).await;
 
-    // Wrap in TLS (we are the TLS server, initiator is the TLS client)
     let tls_stream = relay_tls::wrap_responder(send, recv, &identity).await?;
 
     // Verify the peer's fingerprint after TLS handshake
@@ -76,6 +84,7 @@ pub async fn handle_incoming_relay(
 
     if let Some(ip) = peer_ip {
         peer_table.insert_relay(ip, outbound_tx.clone()).await;
+        fsm_registry.notify(ip, Event::RelayReady).await;
     }
 
     // Inbound: TLS → TUN
@@ -127,6 +136,7 @@ pub async fn handle_incoming_relay(
         if peer_table.remove_relay_only(ip).await {
             tracing::info!("Relay route to {} removed", ip);
         }
+        fsm_registry.notify(ip, Event::RelayClosed).await;
     }
 
     drop(outbound_tx);
