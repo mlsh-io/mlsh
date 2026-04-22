@@ -21,6 +21,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_INITIAL: Duration = Duration::from_millis(200);
 const RECONNECT_MAX: Duration = Duration::from_secs(10);
 const RECONNECT_JITTER: Duration = Duration::from_millis(100);
+const DNS_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Credentials for connecting to signal.
 #[derive(Clone)]
@@ -98,6 +99,9 @@ struct SessionContext {
     client_config: quinn::ClientConfig,
     fsm_registry: super::peer_fsm::FsmRegistry,
     kick_rx: watch::Receiver<u64>,
+    /// Last resolved signal address. Used as a warm fallback when the system
+    /// resolver is temporarily unresponsive (e.g. just after a wake).
+    last_resolved_addr: Option<SocketAddr>,
 }
 
 pub struct SpawnParams {
@@ -154,6 +158,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         client_config,
         fsm_registry: params.fsm_registry,
         kick_rx,
+        last_resolved_addr: None,
     };
 
     tokio::spawn(session_loop(ctx, shutdown_rx));
@@ -234,7 +239,16 @@ async fn run_session(
     let overlay_port = ctx.overlay_port;
     let overlay_prefix_len = ctx.overlay_prefix_len;
 
-    let addr = resolve_addr(&creds.signal_endpoint)?;
+    let addr = match resolve_addr(&creds.signal_endpoint).await {
+        Ok(a) => a,
+        Err(e) => match ctx.last_resolved_addr {
+            Some(a) => {
+                tracing::warn!("DNS failed ({e:#}), retrying with cached {a}");
+                a
+            }
+            None => return Err(e),
+        },
+    };
     let conn = connect_to_signal(
         &ctx.endpoint,
         ctx.client_config.clone(),
@@ -242,6 +256,7 @@ async fn run_session(
         &creds.signal_endpoint,
     )
     .await?;
+    ctx.last_resolved_addr = Some(addr);
 
     // Expose connection to the tunnel for relay/direct streams
     let _ = conn_tx.send(Some(conn.clone()));
@@ -707,33 +722,29 @@ fn gather_host_candidates(
     candidates
 }
 
-fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
+async fn resolve_addr(endpoint: &str) -> Result<SocketAddr> {
     if let Ok(addr) = endpoint.parse::<SocketAddr>() {
         return Ok(addr);
     }
     let (host, port) = endpoint.rsplit_once(':').unwrap_or((endpoint, "4433"));
-    let port: u16 = match port.parse() {
-        Ok(p) => p,
-        Err(_) => {
-            tracing::warn!(
-                "Invalid port '{}' in endpoint '{}', defaulting to 4433",
-                port,
-                endpoint
-            );
-            4433
-        }
-    };
-    use std::net::ToSocketAddrs;
-    (host, port)
-        .to_socket_addrs()?
+    let port: u16 = port.parse().unwrap_or_else(|_| {
+        tracing::warn!("Invalid port '{port}' in endpoint '{endpoint}', defaulting to 4433");
+        4433
+    });
+
+    let host = host.to_string();
+    let resolved = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, port)))
+        .await
+        .map_err(|_| anyhow::anyhow!("DNS lookup timed out after {DNS_TIMEOUT:?}: {endpoint}"))?
+        .with_context(|| format!("Failed to resolve: {endpoint}"))?;
+
+    let mut addrs: Vec<_> = resolved.collect();
+    addrs
+        .iter()
         .find(|a| a.is_ipv4())
-        .or_else(|| {
-            (host, port)
-                .to_socket_addrs()
-                .ok()
-                .and_then(|mut a| a.next())
-        })
-        .context(format!("Failed to resolve: {}", endpoint))
+        .copied()
+        .or_else(|| addrs.pop())
+        .with_context(|| format!("No addresses for: {endpoint}"))
 }
 
 #[cfg(test)]
@@ -808,16 +819,15 @@ mod tests {
         assert_eq!(tx.borrow()[0].fingerprint, "new-fp");
     }
 
-    #[test]
-    fn resolve_addr_with_port() {
-        let addr = resolve_addr("127.0.0.1:5555").unwrap();
+    #[tokio::test]
+    async fn resolve_addr_with_port() {
+        let addr = resolve_addr("127.0.0.1:5555").await.unwrap();
         assert_eq!(addr.port(), 5555);
     }
 
-    #[test]
-    fn resolve_addr_defaults_to_4433() {
-        // localhost should resolve
-        let addr = resolve_addr("127.0.0.1").unwrap();
+    #[tokio::test]
+    async fn resolve_addr_defaults_to_4433() {
+        let addr = resolve_addr("127.0.0.1").await.unwrap();
         assert_eq!(addr.port(), 4433);
     }
 }
