@@ -480,6 +480,8 @@ enum ShutdownReason {
 const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const PROBE_STAGGER: Duration = Duration::from_millis(100);
 const RELAY_GRACE: Duration = Duration::from_millis(200);
+/// How often a peer on relay re-attempts a direct probe in the background.
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 
 struct TunnelRunContext<'a> {
     config: &'a ClusterConfig,
@@ -1018,6 +1020,25 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
     let mut relay_cancel = tokio_util::sync::CancellationToken::new();
     let mut direct_lifecycle: Option<tokio::task::JoinHandle<()>> = None;
 
+    let probe_retry_ticker = {
+        let ev = events_tx.clone();
+        let cancel = ctx.cancel.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(PROBE_RETRY_INTERVAL);
+            interval.tick().await; // skip the immediate first tick
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if ev.send(Event::ProbeRetryTick).is_err() {
+                            break;
+                        }
+                    }
+                    _ = cancel.cancelled() => break,
+                }
+            }
+        })
+    };
+
     let mut state = State::Probing;
     let mut effects_to_run = initial_effects(is_initiator);
 
@@ -1175,6 +1196,7 @@ async fn establish_peer_connection(ctx: PeerConnectionContext) {
 
     probe_cancel.cancel();
     relay_cancel.cancel();
+    probe_retry_ticker.abort();
     if let Some(h) = direct_lifecycle {
         h.abort();
     }

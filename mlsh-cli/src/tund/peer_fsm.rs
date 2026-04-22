@@ -30,6 +30,9 @@ pub enum Event {
     PeerLeft,
     Cancelled,
     WakeKick,
+    /// Periodic tick while the peer is on relay or stuck probing — an
+    /// opportunity to re-try direct in case the network changed.
+    ProbeRetryTick,
 
     // Carrier variants: smuggle handles from I/O tasks to the driver. The
     // driver stashes the payload and feeds the matching pure variant to
@@ -54,6 +57,7 @@ impl PartialEq for Event {
                 | (PeerLeft, PeerLeft)
                 | (Cancelled, Cancelled)
                 | (WakeKick, WakeKick)
+                | (ProbeRetryTick, ProbeRetryTick)
         )
     }
 }
@@ -71,6 +75,7 @@ impl Clone for Event {
             Event::PeerLeft => Event::PeerLeft,
             Event::Cancelled => Event::Cancelled,
             Event::WakeKick => Event::WakeKick,
+            Event::ProbeRetryTick => Event::ProbeRetryTick,
             Event::__ProbeSucceededWith(_) | Event::__RelayReadyWith(_) => {
                 panic!("carrier Event variants are not Clone-able")
             }
@@ -135,6 +140,10 @@ pub fn transition(state: State, event: Event, is_initiator: bool) -> (State, Vec
         ),
         (Relay, WakeKick) => (Probing, vec![AbortRelayTask, RemoveRelayOnly, SpawnProbe]),
         (Direct, WakeKick) => (Done, vec![RemoveRoute]),
+
+        // Background direct re-probe: relay stays up while a fresh probe runs.
+        (Relay, ProbeRetryTick) => (RelayWithProbing, vec![SpawnProbe]),
+        (Probing, ProbeRetryTick) => (Probing, vec![AbortProbeTask, SpawnProbe]),
 
         (_, PeerLeft) | (_, Cancelled) => (Done, vec![AbortProbeTask, AbortRelayTask, RemoveRoute]),
 
@@ -323,6 +332,7 @@ mod tests {
             Event::RelayClosed,
             Event::DirectConnectionLost,
             Event::WakeKick,
+            Event::ProbeRetryTick,
         ] {
             let (state, _) = transition(State::Done, event, true);
             assert_eq!(state, State::Done);
@@ -370,6 +380,29 @@ mod tests {
         let (state, effects) = transition(State::Direct, Event::WakeKick, true);
         assert_eq!(state, State::Done);
         assert_eq!(effects, vec![Effect::RemoveRoute]);
+    }
+
+    #[test]
+    fn probe_retry_tick_from_relay_enters_relay_with_probing() {
+        let (state, effects) = transition(State::Relay, Event::ProbeRetryTick, true);
+        assert_eq!(state, State::RelayWithProbing);
+        assert_eq!(effects, vec![Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn probe_retry_tick_from_probing_respawns_probe() {
+        let (state, effects) = transition(State::Probing, Event::ProbeRetryTick, true);
+        assert_eq!(state, State::Probing);
+        assert_eq!(effects, vec![Effect::AbortProbeTask, Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn probe_retry_tick_is_noop_in_direct_and_relay_with_probing() {
+        for start in [State::Direct, State::RelayWithProbing] {
+            let (state, effects) = transition(start, Event::ProbeRetryTick, true);
+            assert_eq!(state, start);
+            assert!(effects.is_empty());
+        }
     }
 
     #[test]
