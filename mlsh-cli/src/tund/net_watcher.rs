@@ -12,6 +12,7 @@ use super::peer_fsm::{Event, FsmRegistry};
 use super::signal_session::SignalSessionHandle;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
+const MIGRATION_VALIDATION: Duration = Duration::from_secs(5);
 
 pub fn spawn(
     session: SignalSessionHandle,
@@ -93,6 +94,7 @@ async fn kick(
     match super::endpoint_migrate::try_migrate(endpoint) {
         Ok(new_port) => {
             session.report_candidates(new_port);
+            spawn_migration_watchdog(session.clone(), fsm_registry.clone());
         }
         Err(e) => {
             tracing::warn!("Path migration failed to rebind ({e:#}); falling back to reconnect");
@@ -100,6 +102,36 @@ async fn kick(
             fsm_registry.broadcast(Event::WakeKick).await;
         }
     }
+}
+
+fn spawn_migration_watchdog(session: SignalSessionHandle, fsm_registry: FsmRegistry) {
+    tokio::spawn(async move {
+        let Some(conn) = session.connection() else {
+            return;
+        };
+        let baseline = conn.stats().frame_rx.acks;
+        tokio::time::sleep(MIGRATION_VALIDATION).await;
+        let Some(conn_now) = session.connection() else {
+            return;
+        };
+        if conn_now.stable_id() != conn.stable_id() {
+            return;
+        }
+        let after = conn_now.stats().frame_rx.acks;
+        if after == baseline {
+            tracing::warn!(
+                "Path migration: no ACKs in {MIGRATION_VALIDATION:?} — server likely dropped \
+                 migrated packets; forcing reconnect"
+            );
+            session.kick_reconnect();
+            fsm_registry.broadcast(Event::WakeKick).await;
+        } else {
+            tracing::debug!(
+                "Path migration validated: {} new ACK(s) in {MIGRATION_VALIDATION:?}",
+                after - baseline
+            );
+        }
+    });
 }
 
 fn interesting(event: &if_watch::IfEvent, overlay: OverlayNet) -> bool {
