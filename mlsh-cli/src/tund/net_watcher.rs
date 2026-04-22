@@ -16,11 +16,12 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 pub fn spawn(
     session: SignalSessionHandle,
     fsm_registry: FsmRegistry,
+    endpoint: quinn::Endpoint,
     overlay: OverlayNet,
     cancel: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        if let Err(e) = run(session, fsm_registry, overlay, cancel).await {
+        if let Err(e) = run(session, fsm_registry, endpoint, overlay, cancel).await {
             tracing::warn!("net_watcher exited: {e:#}");
         }
     })
@@ -29,6 +30,7 @@ pub fn spawn(
 async fn run(
     session: SignalSessionHandle,
     fsm_registry: FsmRegistry,
+    endpoint: quinn::Endpoint,
     overlay: OverlayNet,
     cancel: CancellationToken,
 ) -> anyhow::Result<()> {
@@ -54,7 +56,7 @@ async fn run(
                 _ = cancel.cancelled() => break,
                 _ = tokio::time::sleep(DEBOUNCE) => {
                     pending = false;
-                    kick(&session, &fsm_registry).await;
+                    kick(&session, &fsm_registry, &endpoint).await;
                 }
                 ev = next_event(&mut watcher) => {
                     if let Some(ev) = ev {
@@ -83,10 +85,21 @@ async fn run(
     Ok(())
 }
 
-async fn kick(session: &SignalSessionHandle, fsm_registry: &FsmRegistry) {
-    tracing::info!("network change detected — kicking signal + peer FSMs");
-    session.kick_reconnect();
-    fsm_registry.broadcast(Event::WakeKick).await;
+async fn kick(
+    session: &SignalSessionHandle,
+    fsm_registry: &FsmRegistry,
+    endpoint: &quinn::Endpoint,
+) {
+    match super::endpoint_migrate::try_migrate(endpoint) {
+        Ok(new_port) => {
+            session.report_candidates(new_port);
+        }
+        Err(e) => {
+            tracing::warn!("Path migration failed to rebind ({e:#}); falling back to reconnect");
+            session.kick_reconnect();
+            fsm_registry.broadcast(Event::WakeKick).await;
+        }
+    }
 }
 
 fn interesting(event: &if_watch::IfEvent, overlay: OverlayNet) -> bool {

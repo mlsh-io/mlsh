@@ -51,6 +51,7 @@ pub struct SignalSessionHandle {
     pub display_name: watch::Receiver<String>,
     shutdown_tx: watch::Sender<bool>,
     kick_tx: watch::Sender<u64>,
+    candidates_port_tx: watch::Sender<u16>,
 }
 
 impl SignalSessionHandle {
@@ -79,6 +80,13 @@ impl SignalSessionHandle {
     pub fn kick_reconnect(&self) {
         self.kick_tx.send_modify(|v| *v = v.wrapping_add(1));
     }
+
+    /// Re-gather host candidates for the given QUIC port and push them to
+    /// signal on the existing session stream. Used after path migration when
+    /// our local port has changed.
+    pub fn report_candidates(&self, quic_port: u16) {
+        self.candidates_port_tx.send_modify(|v| *v = quic_port);
+    }
 }
 
 /// Shared state for the signal session loop.
@@ -99,6 +107,10 @@ struct SessionContext {
     client_config: quinn::ClientConfig,
     fsm_registry: super::peer_fsm::FsmRegistry,
     kick_rx: watch::Receiver<u64>,
+    /// When changed, the session re-gathers host candidates using this port
+    /// and sends a fresh `ReportCandidates` on the existing stream. Used
+    /// after a path-migration rebind.
+    candidates_port_rx: watch::Receiver<u16>,
     /// Last resolved signal address. Used as a warm fallback when the system
     /// resolver is temporarily unresponsive (e.g. just after a wake).
     last_resolved_addr: Option<SocketAddr>,
@@ -126,6 +138,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
     let (display_name_tx, display_name_rx) = watch::channel(params.initial_display_name);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (kick_tx, kick_rx) = watch::channel::<u64>(0);
+    let (candidates_port_tx, candidates_port_rx) = watch::channel::<u16>(params.overlay_port);
 
     let my_node_id = params.creds.node_id.clone();
     let client_config = match build_client_config(&params.creds) {
@@ -139,6 +152,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
                 display_name: display_name_rx,
                 shutdown_tx,
                 kick_tx,
+                candidates_port_tx,
             };
         }
     };
@@ -158,6 +172,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         client_config,
         fsm_registry: params.fsm_registry,
         kick_rx,
+        candidates_port_rx,
         last_resolved_addr: None,
     };
 
@@ -170,6 +185,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         display_name: display_name_rx,
         shutdown_tx,
         kick_tx,
+        candidates_port_tx,
     }
 }
 
@@ -319,6 +335,7 @@ async fn run_session(
     let conn_for_accept = conn.clone();
 
     ctx.kick_rx.borrow_and_update();
+    ctx.candidates_port_rx.borrow_and_update();
 
     loop {
         tokio::select! {
@@ -331,6 +348,23 @@ async fn run_session(
             reason = conn.closed() => {
                 tracing::warn!("Signal connection lost: {}", reason);
                 return Ok(false);
+            }
+            _ = ctx.candidates_port_rx.changed() => {
+                let port = *ctx.candidates_port_rx.borrow();
+                let candidates = gather_host_candidates(port, overlay_ip, overlay_prefix_len);
+                if !candidates.is_empty() {
+                    let report = StreamMessage::ReportCandidates {
+                        candidates: candidates.clone(),
+                    };
+                    if let Err(e) = framing::write_msg(&mut send, &report).await {
+                        tracing::warn!("Failed to re-report candidates: {e:#}");
+                    } else {
+                        tracing::info!(
+                            "Re-reporting {} host candidate(s) after migration",
+                            candidates.len()
+                        );
+                    }
+                }
             }
             _ = ctx.kick_rx.changed() => {
                 tracing::info!("Signal session kicked; forcing reconnect");

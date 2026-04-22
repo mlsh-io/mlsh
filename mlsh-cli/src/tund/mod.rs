@@ -8,6 +8,7 @@ pub mod acme;
 pub mod client;
 pub mod control;
 pub mod dns;
+pub mod endpoint_migrate;
 pub mod ingress;
 pub mod net_filter;
 pub mod net_watcher;

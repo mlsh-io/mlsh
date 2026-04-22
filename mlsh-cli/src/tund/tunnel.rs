@@ -589,6 +589,7 @@ async fn establish_and_run(
     let _net_watcher = super::net_watcher::spawn(
         session.clone(),
         ctx.fsm_registry.clone(),
+        ctx.endpoint.clone(),
         super::net_filter::OverlayNet::new(overlay_ip, ctx.overlay_prefix_len),
         ctx.cancel.clone(),
     );
