@@ -283,20 +283,20 @@ async fn run_node_session(
         )
         .await;
 
-    // Notify other peers
-    let peer_info = crate::protocol::PeerInfo {
-        node_id: node.node_id.clone(),
-        fingerprint: fingerprint.clone(),
-        overlay_ip: overlay_ip.to_string(),
-        candidates: Vec::new(),
-        public_key: node.public_key.clone(),
-        admission_cert: node.admission_cert.clone(),
-        display_name: node.display_name.clone(),
-    };
-    state
+    // Notify other peers. Build the PeerInfo from the registered session so
+    // the srflx (derived from the quinn connection's remote address) is
+    // included — host_candidates fill in later via ReportCandidates, which
+    // triggers a re-broadcast below.
+    if let Some(peer_info) = state
         .sessions
-        .notify_peer_joined(cluster_id, peer_info)
-        .await;
+        .peer_info_for(cluster_id, &node.node_id)
+        .await
+    {
+        state
+            .sessions
+            .notify_peer_joined(cluster_id, peer_info)
+            .await;
+    }
 
     // Message loop
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
@@ -314,6 +314,13 @@ async fn run_node_session(
                             }
                             StreamMessage::ReportCandidates { candidates } => {
                                 state.sessions.set_candidates(cluster_id, &node.node_id, candidates).await;
+                                if let Some(peer_info) = state
+                                    .sessions
+                                    .peer_info_for(cluster_id, &node.node_id)
+                                    .await
+                                {
+                                    state.sessions.notify_peer_joined(cluster_id, peer_info).await;
+                                }
                             }
                             StreamMessage::ListNodes => {
                                 let online = state.sessions.online_node_ids(cluster_id).await;

@@ -37,6 +37,25 @@ pub struct NodeSessionInfo {
     pub display_name: String,
 }
 
+fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
+    let mut candidates = s.host_candidates.clone();
+    candidates.push(Candidate {
+        kind: "srflx".into(),
+        addr: s.connection.remote_address().to_string(),
+        priority: 200,
+    });
+    candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
+    PeerInfo {
+        node_id: s.node_id.clone(),
+        fingerprint: s.fingerprint.clone(),
+        overlay_ip: s.overlay_ip.to_string(),
+        candidates,
+        public_key: s.public_key.clone(),
+        admission_cert: s.admission_cert.clone(),
+        display_name: s.display_name.clone(),
+    }
+}
+
 /// Thread-safe store of active node sessions, keyed by (cluster_id, node_id).
 pub struct SessionStore {
     sessions: RwLock<HashMap<(String, String), NodeSession>>,
@@ -105,25 +124,19 @@ impl SessionStore {
             .iter()
             .filter(|((cid, _), _)| cid == cluster_id)
             .filter(|((_, nid), _)| nid != exclude_node)
-            .map(|(_, s)| {
-                let mut candidates = s.host_candidates.clone();
-                candidates.push(Candidate {
-                    kind: "srflx".into(),
-                    addr: s.connection.remote_address().to_string(),
-                    priority: 200,
-                });
-                candidates.sort_by(|a, b| b.priority.cmp(&a.priority));
-                PeerInfo {
-                    node_id: s.node_id.clone(),
-                    fingerprint: s.fingerprint.clone(),
-                    overlay_ip: s.overlay_ip.to_string(),
-                    candidates,
-                    public_key: s.public_key.clone(),
-                    admission_cert: s.admission_cert.clone(),
-                    display_name: s.display_name.clone(),
-                }
-            })
+            .map(|(_, s)| session_to_peer_info(s))
             .collect()
+    }
+
+    /// Build a `PeerInfo` for a single registered node (srflx included).
+    /// Returns `None` if the node is not currently connected.
+    pub async fn peer_info_for(&self, cluster_id: &str, node_id: &str) -> Option<PeerInfo> {
+        let key = (cluster_id.to_string(), node_id.to_string());
+        self.sessions
+            .read()
+            .await
+            .get(&key)
+            .map(session_to_peer_info)
     }
 
     /// Broadcast a message to all connected nodes in a cluster.
