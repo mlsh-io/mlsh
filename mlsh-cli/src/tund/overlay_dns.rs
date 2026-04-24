@@ -97,7 +97,7 @@ async fn handle_query(
 
     let (qname, qtype, qclass, _) = parse_question(&query[12..])?;
 
-    if qtype != TYPE_A || qclass != CLASS_IN {
+    if qclass != CLASS_IN {
         return Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl));
     }
 
@@ -111,9 +111,13 @@ async fn handle_query(
     )
     .await;
 
-    match ip {
-        Some(addr) => Ok(build_response(id, RCODE_OK, query, Some(addr), config.ttl)),
-        None => Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl)),
+    match (ip, qtype) {
+        (Some(addr), TYPE_A) => Ok(build_response(id, RCODE_OK, query, Some(addr), config.ttl)),
+        // Name exists in the zone but no record for this qtype → NOERROR/NODATA.
+        // Returning NXDOMAIN here causes negative caching of the whole name on
+        // resolvers that query A and AAAA in parallel (e.g. macOS mDNSResponder).
+        (Some(_), _) => Ok(build_response(id, RCODE_OK, query, None, config.ttl)),
+        (None, _) => Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl)),
     }
 }
 
