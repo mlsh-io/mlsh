@@ -1,15 +1,14 @@
 //! DNS resolver management for overlay tunnels.
 //!
-//! - macOS: writes `/etc/resolver/<zone>` (native per-domain DNS)
-//! - Linux: configures systemd-resolved via D-Bus (`org.freedesktop.resolve1`)
+//! - macOS: publishes `State:/Network/Service/mlsh-<uuid>/DNS` via SCDynamicStore
+//!   (split DNS + search domain, same mechanism as Tailscale).
+//! - Linux: configures systemd-resolved via D-Bus (`org.freedesktop.resolve1`).
 //!
 //! TODO: fallback chain for Linux systems without systemd-resolved:
 //! - NetworkManager D-Bus API (org.freedesktop.NetworkManager) for NM-managed systems
 //! - resolvconf binary for Debian-based systems
 //! - Direct /etc/resolv.conf overwrite as last resort (dirty, no split DNS)
 
-#[cfg(target_os = "macos")]
-use anyhow::Context;
 use anyhow::Result;
 
 /// Validate that a cluster name is safe for use in filesystem paths.
@@ -31,34 +30,31 @@ fn validate_cluster_name(cluster: &str) -> Result<()> {
 
 /// Install a per-domain resolver.
 ///
-/// - macOS: writes `/etc/resolver/<cluster>` (native per-domain DNS).
+/// - macOS: SCDynamicStore session publishing split DNS + search domain.
 /// - Linux: D-Bus call to systemd-resolved (`SetLinkDNS` + `SetLinkDomains`).
-pub fn install_resolver(cluster: &str, ip: &str, #[allow(unused)] port: u16) -> Result<()> {
+pub fn install_resolver(
+    cluster: &str,
+    #[allow(unused)] ip: &str,
+    #[allow(unused)] port: u16,
+    #[allow(unused)] node_uuid: &str,
+    #[allow(unused)] tun_name: &str,
+) -> Result<()> {
     validate_cluster_name(cluster)?;
 
     #[cfg(target_os = "macos")]
     {
-        let resolver_dir = std::path::Path::new("/etc/resolver");
-        if !resolver_dir.exists() {
-            std::fs::create_dir_all(resolver_dir).context("Failed to create /etc/resolver")?;
-        }
-        let path = resolver_dir.join(cluster);
-        // `domain` + `search_order` enable bare-name resolution (`ssh nas` → `nas.<cluster>`).
-        let content = if port == 53 {
-            format!("nameserver {}\ndomain {}\nsearch_order 1\n", ip, cluster)
-        } else {
-            format!(
-                "nameserver {}\nport {}\ndomain {}\nsearch_order 1\n",
-                ip, port, cluster
-            )
-        };
-        std::fs::write(&path, &content)
-            .with_context(|| format!("Failed to write {}", path.display()))?;
+        let resolver = macos::install(cluster, ip, port, node_uuid, tun_name)?;
+        macos::registry()
+            .lock()
+            .unwrap()
+            .insert(cluster.to_string(), resolver);
         tracing::info!(
-            "Installed DNS resolver: {} → {}:{}",
-            path.display(),
+            "Installed DNS resolver: SCDynamicStore mlsh-{} → {}:{} (zone {}, if {})",
+            node_uuid,
             ip,
-            port
+            port,
+            cluster,
+            tun_name
         );
     }
 
@@ -69,7 +65,6 @@ pub fn install_resolver(cluster: &str, ip: &str, #[allow(unused)] port: u16) -> 
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (ip, port);
         tracing::warn!("DNS resolver setup not supported on this platform");
     }
 
@@ -88,26 +83,128 @@ pub fn remove_resolver(cluster: &str) {
 
     #[cfg(target_os = "macos")]
     {
-        let path = std::path::Path::new("/etc/resolver").join(cluster);
-        if path.exists() {
-            if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!("Failed to remove resolver {}: {}", path.display(), e);
-            } else {
-                tracing::info!("Removed DNS resolver: {}", path.display());
-            }
-        }
-        let _ = std::process::Command::new("dscacheutil")
-            .arg("-flushcache")
-            .status();
-        let _ = std::process::Command::new("killall")
-            .args(["-HUP", "mDNSResponder"])
-            .status();
+        // Dropping the MacOsResolver removes the SCDynamicStore key and flushes caches.
+        let _ = macos::registry().lock().unwrap().remove(cluster);
     }
 
     #[cfg(target_os = "linux")]
     {
         if let Err(e) = resolved::remove() {
             tracing::warn!("Failed to revert resolved link: {}", e);
+        }
+    }
+}
+
+// --- macOS SCDynamicStore integration
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use anyhow::Result;
+    use core_foundation::array::CFArray;
+    use core_foundation::base::{CFType, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_foundation_sys::base::CFRelease;
+    use std::collections::HashMap;
+    use std::ptr;
+    use std::sync::{Mutex, OnceLock};
+    use system_configuration_sys::dynamic_store::{
+        SCDynamicStoreCreate, SCDynamicStoreRef, SCDynamicStoreRemoveValue, SCDynamicStoreSetValue,
+    };
+
+    /// Holds an SCDynamicStore session and the key it published. CoreFoundation
+    /// objects are thread-safe (retain/release atomic); we assert Send for the
+    /// raw pointer wrapper since access is serialized through a Mutex.
+    pub struct MacOsResolver {
+        store: SCDynamicStoreRef,
+        key: CFString,
+    }
+
+    unsafe impl Send for MacOsResolver {}
+
+    pub fn registry() -> &'static Mutex<HashMap<String, MacOsResolver>> {
+        static REG: OnceLock<Mutex<HashMap<String, MacOsResolver>>> = OnceLock::new();
+        REG.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    pub fn install(
+        cluster: &str,
+        ip: &str,
+        port: u16,
+        node_uuid: &str,
+        tun_name: &str,
+    ) -> Result<MacOsResolver> {
+        let session = CFString::new(&format!("mlsh-{}", node_uuid));
+        let store = unsafe {
+            SCDynamicStoreCreate(
+                ptr::null(),
+                session.as_concrete_TypeRef(),
+                None,
+                ptr::null_mut(),
+            )
+        };
+        if store.is_null() {
+            anyhow::bail!("SCDynamicStoreCreate returned null");
+        }
+
+        let key = CFString::new(&format!("State:/Network/Service/mlsh-{}/DNS", node_uuid));
+
+        let server_addresses = CFArray::from_CFTypes(&[CFString::new(ip).as_CFType()]).to_untyped();
+        let supplemental =
+            CFArray::from_CFTypes(&[CFString::new(cluster).as_CFType()]).to_untyped();
+        let search = CFArray::from_CFTypes(&[CFString::new(cluster).as_CFType()]).to_untyped();
+
+        let pairs: Vec<(CFString, CFType)> = vec![
+            (
+                CFString::new("ServerAddresses"),
+                server_addresses.as_CFType(),
+            ),
+            (
+                CFString::new("ServerPort"),
+                CFNumber::from(port as i32).as_CFType(),
+            ),
+            (
+                CFString::new("InterfaceName"),
+                CFString::new(tun_name).as_CFType(),
+            ),
+            (
+                CFString::new("SupplementalMatchDomains"),
+                supplemental.as_CFType(),
+            ),
+            (CFString::new("SearchDomains"), search.as_CFType()),
+            (
+                CFString::new("DomainName"),
+                CFString::new(cluster).as_CFType(),
+            ),
+        ];
+
+        let dict = CFDictionary::from_CFType_pairs(&pairs);
+
+        let ok = unsafe {
+            SCDynamicStoreSetValue(store, key.as_concrete_TypeRef(), dict.as_CFTypeRef() as _)
+        };
+
+        if ok == 0 {
+            unsafe { CFRelease(store as _) };
+            anyhow::bail!("SCDynamicStoreSetValue failed");
+        }
+
+        Ok(MacOsResolver { store, key })
+    }
+
+    impl Drop for MacOsResolver {
+        fn drop(&mut self) {
+            unsafe {
+                SCDynamicStoreRemoveValue(self.store, self.key.as_concrete_TypeRef());
+                CFRelease(self.store as _);
+            }
+            let _ = std::process::Command::new("dscacheutil")
+                .arg("-flushcache")
+                .status();
+            let _ = std::process::Command::new("killall")
+                .args(["-HUP", "mDNSResponder"])
+                .status();
         }
     }
 }

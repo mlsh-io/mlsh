@@ -288,8 +288,13 @@ async fn tunnel_task(
     let dns_bind = std::net::SocketAddr::new(std::net::IpAddr::V4(overlay_ip), 53);
 
     // Install DNS resolver
-    if let Err(e) = dns::install_resolver(&config.name, &dns_bind.ip().to_string(), dns_bind.port())
-    {
+    if let Err(e) = dns::install_resolver(
+        &config.name,
+        &dns_bind.ip().to_string(),
+        dns_bind.port(),
+        &config.node_uuid,
+        &tun_name,
+    ) {
         tracing::warn!("DNS setup failed: {}", e);
     }
 
