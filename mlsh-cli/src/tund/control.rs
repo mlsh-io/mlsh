@@ -121,38 +121,6 @@ where
             let mgr = manager.lock().await;
             mgr.status()
         }
-        DaemonRequest::IngressAdd {
-            cluster,
-            domain,
-            target,
-            email,
-            acme_staging,
-        } => {
-            crate::tund::ingress::add(&domain, &target);
-            if !cluster.is_empty() {
-                let directory = if acme_staging {
-                    crate::tund::acme::Directory::Staging
-                } else {
-                    crate::tund::acme::Directory::Production
-                };
-                crate::tund::acme::spawn_issuance(
-                    manager.clone(),
-                    cluster,
-                    domain.clone(),
-                    email,
-                    directory,
-                );
-            }
-            DaemonResponse::Ok {
-                message: Some(format!("Ingress target registered for {}", domain)),
-            }
-        }
-        DaemonRequest::IngressRemove { domain } => {
-            crate::tund::ingress::remove(&domain);
-            DaemonResponse::Ok {
-                message: Some(format!("Ingress target removed for {}", domain)),
-            }
-        }
         DaemonRequest::ListNodes { cluster } => {
             let mgr = manager.lock().await;
             match mgr.list_nodes(&cluster).await {

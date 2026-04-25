@@ -63,31 +63,6 @@ impl DaemonClient {
         self.request(&DaemonRequest::Status).await
     }
 
-    pub async fn ingress_add(
-        &mut self,
-        cluster: &str,
-        domain: &str,
-        target: &str,
-        email: Option<&str>,
-        acme_staging: bool,
-    ) -> Result<DaemonResponse> {
-        self.request(&DaemonRequest::IngressAdd {
-            cluster: cluster.to_string(),
-            domain: domain.to_string(),
-            target: target.to_string(),
-            email: email.map(|s| s.to_string()),
-            acme_staging,
-        })
-        .await
-    }
-
-    pub async fn ingress_remove(&mut self, domain: &str) -> Result<DaemonResponse> {
-        self.request(&DaemonRequest::IngressRemove {
-            domain: domain.to_string(),
-        })
-        .await
-    }
-
     pub async fn list_nodes(&mut self, cluster: &str) -> Result<DaemonResponse> {
         self.request(&DaemonRequest::ListNodes {
             cluster: cluster.to_string(),
