@@ -215,6 +215,73 @@ where
                 },
             }
         }
+        DaemonRequest::Expose {
+            cluster,
+            domain,
+            target,
+            email,
+            acme_staging,
+        } => {
+            // Step 1: register the route with signal so it knows where to
+            // route inbound traffic.
+            let signal_resp = {
+                let mgr = manager.lock().await;
+                mgr.expose(&cluster, &domain, &target).await
+            };
+            match signal_resp {
+                Ok((d, public_mode, public_ip)) => {
+                    // Step 2: register the local forwarder + kick ACME so
+                    // the cert is available when the first request arrives.
+                    crate::tund::ingress::add(&d, &target);
+                    let directory = if acme_staging {
+                        crate::tund::acme::Directory::Staging
+                    } else {
+                        crate::tund::acme::Directory::Production
+                    };
+                    crate::tund::acme::spawn_issuance(
+                        manager.clone(),
+                        cluster,
+                        d.clone(),
+                        email,
+                        directory,
+                    );
+                    DaemonResponse::ExposeOk {
+                        domain: d,
+                        public_mode,
+                        public_ip,
+                    }
+                }
+                Err(e) => DaemonResponse::Error {
+                    code: "expose_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Unexpose { cluster, domain } => {
+            let mgr = manager.lock().await;
+            match mgr.unexpose(&cluster, &domain).await {
+                Ok(()) => {
+                    crate::tund::ingress::remove(&domain);
+                    DaemonResponse::Ok {
+                        message: Some(format!("Unexposed '{}'.", domain)),
+                    }
+                }
+                Err(e) => DaemonResponse::Error {
+                    code: "unexpose_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::ListExposed { cluster } => {
+            let mgr = manager.lock().await;
+            match mgr.list_exposed(&cluster).await {
+                Ok(routes) => DaemonResponse::ExposedList { routes },
+                Err(e) => DaemonResponse::Error {
+                    code: "list_exposed_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;

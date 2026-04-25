@@ -76,6 +76,24 @@ pub enum DaemonRequest {
         target_node_id: String,
         new_role: String,
     },
+    /// Expose a local service publicly: forward `ExposeService` to signal
+    /// and, on success, register the local ingress route (so the daemon
+    /// splices incoming streams to `target`) plus kick off ACME issuance.
+    /// All atomic in the daemon — the CLI sees one round-trip.
+    Expose {
+        cluster: String,
+        domain: String,
+        target: String,
+        #[serde(default)]
+        email: Option<String>,
+        #[serde(default)]
+        acme_staging: bool,
+    },
+    /// Inverse of `Expose`: forward `UnexposeService` to signal and, on
+    /// success, drop the local ingress mapping.
+    Unexpose { cluster: String, domain: String },
+    /// List all public ingress routes registered for this cluster.
+    ListExposed { cluster: String },
 }
 
 // Daemon → Client
@@ -95,6 +113,17 @@ pub enum DaemonResponse {
     /// List of nodes in a cluster (response to `ListNodes`).
     NodeList {
         nodes: Vec<mlsh_protocol::types::NodeInfo>,
+    },
+    /// Successful response to `Expose`. Mirrors signal's `ExposeOk`.
+    ExposeOk {
+        domain: String,
+        public_mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_ip: Option<String>,
+    },
+    /// Response to `ListExposed`.
+    ExposedList {
+        routes: Vec<mlsh_protocol::types::IngressRoute>,
     },
 }
 
