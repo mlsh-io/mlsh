@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use super::protocol::{DaemonResponse, TunnelState};
 use super::tunnel::{ClusterConfig, ManagedTunnel};
@@ -79,6 +79,36 @@ impl TunnelManager {
         self.tunnels
             .get(cluster)
             .and_then(|t| t.signal_connection())
+    }
+
+    /// Forward a `ListNodes` request to signal via the persistent QUIC
+    /// connection. Used by `mlsh-control` (and future admin clients) to
+    /// query the cluster roster without opening their own QUIC connection.
+    pub async fn list_nodes(&self, cluster: &str) -> Result<Vec<mlsh_protocol::types::NodeInfo>> {
+        use mlsh_protocol::framing;
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+
+        let conn = self
+            .signal_connection_for(cluster)
+            .with_context(|| format!("No active signal connection for cluster '{}'", cluster))?;
+
+        let (mut send, mut recv) = conn
+            .open_bi()
+            .await
+            .context("Failed to open stream to signal")?;
+
+        framing::write_msg(&mut send, &StreamMessage::ListNodes).await?;
+
+        loop {
+            let msg: ServerMessage = framing::read_msg(&mut recv).await?;
+            match msg {
+                ServerMessage::NodeList { nodes } => return Ok(nodes),
+                ServerMessage::Error { code, message } => {
+                    anyhow::bail!("signal error ({}): {}", code, message);
+                }
+                _ => continue,
+            }
+        }
     }
 
     pub async fn shutdown_all(&mut self) {

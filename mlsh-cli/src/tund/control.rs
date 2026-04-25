@@ -153,6 +153,16 @@ where
                 message: Some(format!("Ingress target removed for {}", domain)),
             }
         }
+        DaemonRequest::ListNodes { cluster } => {
+            let mgr = manager.lock().await;
+            match mgr.list_nodes(&cluster).await {
+                Ok(nodes) => DaemonResponse::NodeList { nodes },
+                Err(e) => DaemonResponse::Error {
+                    code: "list_nodes_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;

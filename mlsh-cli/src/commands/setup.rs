@@ -106,6 +106,8 @@ pub async fn handle_setup(
     let clusters_dir = config_dir.join("clusters");
     std::fs::create_dir_all(&clusters_dir)?;
 
+    // First node holds all three roles (ADR-030 §2). The control role can be
+    // migrated later via `mlsh control migrate <node>`.
     let cluster_toml = format!(
         "[cluster]\n\
          name = \"{cluster_name}\"\n\
@@ -118,6 +120,7 @@ pub async fn handle_setup(
          [node_auth]\n\
          node_id = \"{node_id}\"\n\
          fingerprint = \"{fp}\"\n\
+         roles = [\"node\", \"admin\", \"control\"]\n\
          \n\
          [overlay]\n\
          ip = \"{overlay_ip}\"\n\
@@ -137,7 +140,7 @@ pub async fn handle_setup(
     println!();
     println!("{}", "Setup completed!".green().bold());
     println!("  Cluster:    {}", cluster_name);
-    println!("  Node:       {} (admin)", node_id);
+    println!("  Node:       {} (node + admin + control)", node_id);
     println!("  Overlay IP: {}", overlay_ip);
     println!();
     println!("{}", "Next steps:".cyan().bold());
@@ -145,6 +148,8 @@ pub async fn handle_setup(
         "  1. Connect: {}",
         format!("mlsh connect {}", cluster_name).bold()
     );
+    println!("     This will start mlshtund, which forks mlsh-control");
+    println!("     (admin UI on https://localhost:8443).");
     println!(
         "  2. Invite:  {}",
         format!("mlsh invite {} --ttl 3600", cluster_name).bold()

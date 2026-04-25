@@ -68,9 +68,9 @@ async fn handle_stream(
             fingerprint,
             node_uuid,
             display_name,
-            public_key,
+            public_key: _,
             expires_at: _,
-            admission_cert,
+            admission_cert: _,
         } => {
             let resp = handle_adopt(
                 state,
@@ -80,8 +80,6 @@ async fn handle_stream(
                     fingerprint,
                     node_uuid,
                     display_name,
-                    public_key,
-                    admission_cert,
                 },
             )
             .await;
@@ -175,6 +173,11 @@ async fn handle_stream(
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
         }
+        StreamMessage::ListNodes => {
+            let resp = handle_list_nodes(state, conn).await;
+            protocol::write_message(&mut send, &resp).await?;
+            send.finish()?;
+        }
         _ => {
             let resp = ServerMessage::error(
                 "auth_required",
@@ -228,13 +231,6 @@ async fn run_node_session(
         }
     };
 
-    // Update public_key if the node sent one and it was previously empty
-    if !public_key.is_empty() && node.public_key.is_empty() {
-        db::update_node_public_key(&state.db, cluster_id, &node.node_id, public_key)
-            .await
-            .ok();
-    }
-
     // Allocate a fresh overlay IP from the current subnet (no persistent leases)
     let overlay_ip =
         db::allocate_ip(&state.db, cluster_id, &node.node_id, &state.overlay_subnet).await?;
@@ -254,14 +250,6 @@ async fn run_node_session(
     };
     protocol::write_message(&mut send, &reply).await?;
     info!(id, cluster_id, node_id = %node.node_id, %overlay_ip, "Node session authenticated");
-    db::audit(
-        &state.db,
-        cluster_id,
-        "auth",
-        &node.node_id,
-        "session started",
-    )
-    .await;
 
     // Register session + push channel
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<ServerMessage>>();
@@ -276,12 +264,18 @@ async fn run_node_session(
                 display_name: node.display_name.clone(),
                 connection: conn.clone(),
                 push_tx,
-                public_key: node.public_key.clone(),
-                admission_cert: node.admission_cert.clone(),
             },
             id,
         )
         .await;
+
+    // Store the public key in the session so sponsor-invite verification can access it.
+    if !public_key.is_empty() {
+        state
+            .sessions
+            .set_public_key(cluster_id, &node.node_id, public_key)
+            .await;
+    }
 
     // Notify other peers. Build the PeerInfo from the registered session so
     // the srflx (derived from the quinn connection's remote address) is
@@ -331,7 +325,7 @@ async fn run_node_session(
                                         overlay_ip: n.overlay_ip.to_string(),
                                         role: n.role,
                                         online: online.contains(&n.node_id),
-                                        has_admission_cert: !n.admission_cert.is_empty(),
+                                        has_admission_cert: false,
                                         display_name: n.display_name,
                                     }
                                 }).collect();
@@ -399,8 +393,6 @@ struct AdoptRequest {
     fingerprint: String,
     node_uuid: String,
     display_name: String,
-    public_key: String,
-    admission_cert: String,
 }
 
 async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
@@ -409,8 +401,6 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
     let fingerprint = &req.fingerprint;
     let node_uuid = &req.node_uuid;
     let display_name = &req.display_name;
-    let public_key = &req.public_key;
-    let client_admission_cert = &req.admission_cert;
     // Two adoption paths:
     // 1. One-time setup code → first node (role: admin), code is burned after use.
     // 2. Sponsor-signed invite → subsequent nodes (role from invite).
@@ -423,46 +413,22 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
             .unwrap_or(false)
     };
 
-    let (role, sponsored_by, admission_cert_json) = if is_setup_code {
-        // First node — becomes admin via one-time setup code (now burned).
-        // The client sends a self-signed admission cert.
-        (
-            "admin".to_string(),
-            String::new(),
-            client_admission_cert.to_string(),
-        )
+    let role = if is_setup_code {
+        "admin".to_string()
     } else {
-        // Sponsor-signed Ed25519 invite — build admission cert from it
         match verify_sponsor_invite(state, cluster_id, pre_auth_token).await {
-            Ok((target_role, sponsor_uuid)) => {
-                let cert = mlsh_crypto::invite::build_sponsored_admission_cert(
-                    node_uuid,
-                    fingerprint,
-                    cluster_id,
-                    &target_role,
-                    &sponsor_uuid,
-                    pre_auth_token,
-                );
-                let cert_json = serde_json::to_string(&cert).unwrap_or_default();
-                (target_role, sponsor_uuid, cert_json)
-            }
-            Err(e) => {
-                return ServerMessage::error("unauthorized", &e);
-            }
+            Ok(target_role) => target_role,
+            Err(e) => return ServerMessage::error("unauthorized", &e),
         }
     };
 
-    // Register the node with role, sponsor, admission cert, and display name
     let overlay_ip = match db::register_node_full(
         &state.db,
         &db::NodeRegistration {
             cluster_id,
             node_id: node_uuid,
             fingerprint,
-            public_key,
             role: &role,
-            sponsored_by: &sponsored_by,
-            admission_cert: &admission_cert_json,
             display_name,
         },
         &state.overlay_subnet,
@@ -479,14 +445,6 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
     let peers = state.sessions.get_peer_list(cluster_id, node_uuid).await;
 
     info!(cluster_id, node_uuid, %overlay_ip, role, "Node adopted");
-    db::audit(
-        &state.db,
-        cluster_id,
-        "adopt",
-        node_uuid,
-        &format!("role={}, sponsor={}", role, sponsored_by),
-    )
-    .await;
 
     ServerMessage::AdoptOk {
         cluster_id: cluster_id.to_string(),
@@ -499,22 +457,25 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
 }
 
 /// Verify a sponsor-signed invite token.
-/// Returns (target_role, sponsor_node_id) on success, or error message.
+///
+/// The sponsor's public key is obtained from the active session (TLS
+/// connection carries the node's Ed25519 cert). This avoids storing public
+/// keys in signal's DB — identity is the cert fingerprint alone.
+///
+/// Returns target_role on success, or error message.
 async fn verify_sponsor_invite(
     state: &QuicState,
     cluster_id: &str,
     invite_token: &str,
-) -> Result<(String, String), String> {
-    // Decode the invite payload to extract sponsor_node_id (before signature verification)
+) -> Result<String, String> {
     let invite_payload = mlsh_crypto::invite::decode_invite_payload(invite_token)
         .map_err(|e| format!("Invalid invite: {}", e))?;
 
-    // Verify cluster_id matches
     if invite_payload.cluster_id != cluster_id {
         return Err("Invite is for a different cluster".to_string());
     }
 
-    // Look up the sponsor in the DB
+    // Verify sponsor exists and has admin role
     let sponsor = db::list_nodes(&state.db, cluster_id)
         .await
         .map_err(|_| "Database error".to_string())?
@@ -526,26 +487,25 @@ async fn verify_sponsor_invite(
         None => return Err("Sponsor node not found".to_string()),
     };
 
-    // Verify sponsor has admin role
     if sponsor.role != "admin" {
         return Err("Sponsor does not have admin role".to_string());
     }
 
-    // Verify the signature using the sponsor's public key
-    if sponsor.public_key.is_empty() {
-        return Err("Sponsor has no public key — cannot verify invite signature".to_string());
-    }
+    // Get the sponsor's public key from its active session (TLS connection)
+    let sponsor_public_key = state
+        .sessions
+        .get_public_key(cluster_id, &sponsor.node_id)
+        .await
+        .ok_or("Sponsor is not currently connected — cannot verify invite")?;
 
-    // Decode the public key
     let pubkey_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&sponsor.public_key)
+        .decode(&sponsor_public_key)
         .map_err(|_| "Invalid sponsor public key encoding".to_string())?;
 
-    // Verify the full signed invite
     mlsh_crypto::invite::verify_signed_invite(invite_token, &pubkey_bytes)
         .map_err(|e| format!("Invite signature verification failed: {}", e))?;
 
-    Ok((invite_payload.target_role, invite_payload.sponsor_node_uuid))
+    Ok(invite_payload.target_role)
 }
 
 // --- Revoke handler
@@ -597,14 +557,6 @@ async fn handle_revoke(
                 .notify_peer_left(cluster_id, &target_uuid)
                 .await;
             info!(cluster_id, target_name, target_uuid, "Node revoked");
-            db::audit(
-                &state.db,
-                cluster_id,
-                "revoke",
-                &target_uuid,
-                &format!("target_name={}, by={}", target_name, caller.node_id),
-            )
-            .await;
             ServerMessage::RevokeOk
         }
         Ok(false) => ServerMessage::error("not_found", "Node not found"),
@@ -719,17 +671,6 @@ async fn handle_rename(
         caller = %caller.node_id,
         "Node renamed"
     );
-    db::audit(
-        &state.db,
-        cluster_id,
-        "rename",
-        &target_uuid,
-        &format!(
-            "from={}, to={}, by={}",
-            target_name, new_display_name, caller.node_id
-        ),
-    )
-    .await;
 
     ServerMessage::RenameOk {
         display_name: new_display_name.to_string(),
@@ -744,7 +685,7 @@ async fn handle_promote(
     cluster_id: &str,
     target_node_id: &str,
     new_role: &str,
-    admission_cert: &str,
+    _admission_cert: &str,
 ) -> ServerMessage {
     // Validate role
     if new_role != "admin" && new_role != "node" {
@@ -787,33 +728,17 @@ async fn handle_promote(
         }
     }
 
-    // Update the node's role and admission cert
-    match db::update_node_role(
-        &state.db,
-        cluster_id,
-        target_node_id,
-        new_role,
-        admission_cert,
-    )
-    .await
-    {
+    // Update the node's role
+    match db::update_node_role(&state.db, cluster_id, target_node_id, new_role).await {
         Ok(true) => {
             info!(cluster_id, target_node_id, new_role, caller = %caller.node_id, "Node role updated");
-            db::audit(
-                &state.db,
-                cluster_id,
-                "promote",
-                target_node_id,
-                &format!("role={}, by={}", new_role, caller.node_id),
-            )
-            .await;
 
             // Broadcast PeerUpdated to all connected peers
             let msg = ServerMessage::PeerUpdated {
                 node_id: target_node_id.to_string(),
                 cluster_id: cluster_id.to_string(),
                 new_role: new_role.to_string(),
-                admission_cert: admission_cert.to_string(),
+                admission_cert: String::new(),
             };
             state.sessions.broadcast(cluster_id, msg).await;
 
@@ -982,14 +907,6 @@ async fn handle_expose(
         target,
         "Ingress route registered"
     );
-    db::audit(
-        &state.db,
-        cluster_id,
-        "expose",
-        &caller.node_id,
-        &format!("domain={}, target={}", domain, target),
-    )
-    .await;
 
     ServerMessage::ExposeOk {
         domain: domain.to_ascii_lowercase(),
@@ -1039,16 +956,50 @@ async fn handle_unexpose(
     }
 
     info!(cluster_id, domain = %d, caller = %caller.node_id, "Ingress route removed");
-    db::audit(
-        &state.db,
-        cluster_id,
-        "unexpose",
-        &caller.node_id,
-        &format!("domain={}", d),
-    )
-    .await;
-
     ServerMessage::UnexposeOk
+}
+
+/// Handler for `ListNodes` as a one-shot first-stream message (used by
+/// `mlsh-control` via mlshtund's Unix socket — no long-lived session).
+/// Authentication is by TLS client certificate; cluster is derived from the
+/// caller's fingerprint.
+async fn handle_list_nodes(state: &QuicState, conn: &quinn::Connection) -> ServerMessage {
+    let caller_fp = match extract_peer_fingerprint(conn) {
+        Some(fp) => fp,
+        None => return ServerMessage::error("auth_failed", "Client certificate required"),
+    };
+
+    let caller = match db::lookup_node_by_fingerprint_any_cluster(&state.db, &caller_fp).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
+        Err(e) => {
+            warn!(error = %e, "Failed to look up caller for list_nodes");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    let online = state.sessions.online_node_ids(&caller.cluster_id).await;
+    let all_nodes = match db::list_nodes(&state.db, &caller.cluster_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            warn!(error = %e, "Failed to list nodes");
+            return ServerMessage::error("internal", "Database error");
+        }
+    };
+
+    let nodes: Vec<protocol::NodeInfo> = all_nodes
+        .into_iter()
+        .map(|n| protocol::NodeInfo {
+            node_id: n.node_id.clone(),
+            overlay_ip: n.overlay_ip.to_string(),
+            role: n.role,
+            online: online.contains(&n.node_id),
+            has_admission_cert: false,
+            display_name: n.display_name,
+        })
+        .collect();
+
+    ServerMessage::NodeList { nodes }
 }
 
 async fn handle_list_exposed(

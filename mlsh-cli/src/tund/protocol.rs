@@ -49,6 +49,10 @@ pub enum DaemonRequest {
     },
     /// Remove a previously-registered ingress target.
     IngressRemove { domain: String },
+    /// List all nodes in a cluster, including offline ones.
+    /// Forwarded to signal over the daemon's persistent QUIC connection.
+    /// Used by `mlsh-control` to populate its admin UI.
+    ListNodes { cluster: String },
 }
 
 // Daemon → Client
@@ -65,6 +69,10 @@ pub enum DaemonResponse {
     Error { code: String, message: String },
     /// Status of all tunnels.
     Status { tunnels: Vec<TunnelStatus> },
+    /// List of nodes in a cluster (response to `ListNodes`).
+    NodeList {
+        nodes: Vec<mlsh_protocol::types::NodeInfo>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
