@@ -108,6 +108,42 @@ impl DaemonClient {
         })
         .await
     }
+
+    pub async fn revoke(&mut self, cluster: &str, target: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Revoke {
+            cluster: cluster.to_string(),
+            target: target.to_string(),
+        })
+        .await
+    }
+
+    pub async fn rename(
+        &mut self,
+        cluster: &str,
+        target: &str,
+        new_display_name: &str,
+    ) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Rename {
+            cluster: cluster.to_string(),
+            target: target.to_string(),
+            new_display_name: new_display_name.to_string(),
+        })
+        .await
+    }
+
+    pub async fn promote(
+        &mut self,
+        cluster: &str,
+        target_node_id: &str,
+        new_role: &str,
+    ) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Promote {
+            cluster: cluster.to_string(),
+            target_node_id: target_node_id.to_string(),
+            new_role: new_role.to_string(),
+        })
+        .await
+    }
 }
 
 /// Discover the daemon endpoint.

@@ -81,33 +81,124 @@ impl TunnelManager {
             .and_then(|t| t.signal_connection())
     }
 
-    /// Forward a `ListNodes` request to signal via the persistent QUIC
-    /// connection. Used by `mlsh-control` (and future admin clients) to
-    /// query the cluster roster without opening their own QUIC connection.
-    pub async fn list_nodes(&self, cluster: &str) -> Result<Vec<mlsh_protocol::types::NodeInfo>> {
+    /// Look up the cluster UUID for a named cluster.
+    fn cluster_id_for(&self, cluster: &str) -> Result<String> {
+        self.tunnels
+            .get(cluster)
+            .map(|t| t.cluster_id.clone())
+            .with_context(|| format!("No active tunnel for cluster '{}'", cluster))
+    }
+
+    /// Send a one-shot `StreamMessage` over the persistent QUIC connection
+    /// for the given cluster and read back a single `ServerMessage`.
+    /// Push messages (PeerJoined etc.) are skipped.
+    async fn forward_one_shot(
+        &self,
+        cluster: &str,
+        msg: mlsh_protocol::messages::StreamMessage,
+    ) -> Result<mlsh_protocol::messages::ServerMessage> {
         use mlsh_protocol::framing;
-        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        use mlsh_protocol::messages::ServerMessage;
 
         let conn = self
             .signal_connection_for(cluster)
             .with_context(|| format!("No active signal connection for cluster '{}'", cluster))?;
-
         let (mut send, mut recv) = conn
             .open_bi()
             .await
             .context("Failed to open stream to signal")?;
-
-        framing::write_msg(&mut send, &StreamMessage::ListNodes).await?;
+        framing::write_msg(&mut send, &msg).await?;
 
         loop {
-            let msg: ServerMessage = framing::read_msg(&mut recv).await?;
-            match msg {
-                ServerMessage::NodeList { nodes } => return Ok(nodes),
-                ServerMessage::Error { code, message } => {
-                    anyhow::bail!("signal error ({}): {}", code, message);
-                }
-                _ => continue,
+            let resp: ServerMessage = framing::read_msg(&mut recv).await?;
+            // Filter out asynchronous push messages so callers always get a
+            // direct reply.
+            match resp {
+                ServerMessage::PeerJoined { .. }
+                | ServerMessage::PeerLeft { .. }
+                | ServerMessage::PeerRenamed { .. }
+                | ServerMessage::PeerUpdated { .. }
+                | ServerMessage::Pong => continue,
+                other => return Ok(other),
             }
+        }
+    }
+
+    /// Forward a `ListNodes` request to signal via the persistent QUIC
+    /// connection. Used by `mlsh-control` (and future admin clients) to
+    /// query the cluster roster without opening their own QUIC connection.
+    pub async fn list_nodes(&self, cluster: &str) -> Result<Vec<mlsh_protocol::types::NodeInfo>> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        match self
+            .forward_one_shot(cluster, StreamMessage::ListNodes)
+            .await?
+        {
+            ServerMessage::NodeList { nodes } => Ok(nodes),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
+    /// Forward a `Revoke` request to signal.
+    pub async fn revoke(&self, cluster: &str, target: &str) -> Result<()> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::Revoke {
+            cluster_id,
+            target_name: target.to_string(),
+        };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::RevokeOk => Ok(()),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
+    /// Forward a `Rename` request to signal.
+    pub async fn rename(
+        &self,
+        cluster: &str,
+        target: &str,
+        new_display_name: &str,
+    ) -> Result<String> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::Rename {
+            cluster_id,
+            target_name: target.to_string(),
+            new_display_name: new_display_name.to_string(),
+        };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::RenameOk { display_name } => Ok(display_name),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
+    /// Forward a `Promote` request to signal.
+    pub async fn promote(&self, cluster: &str, target_node_id: &str, new_role: &str) -> Result<()> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::Promote {
+            cluster_id,
+            target_node_id: target_node_id.to_string(),
+            new_role: new_role.to_string(),
+            // admission_cert is no longer stored signal-side (ADR-030 strip);
+            // empty here, signal accepts and broadcasts an empty cert.
+            admission_cert: String::new(),
+        };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::PromoteOk => Ok(()),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
         }
     }
 
