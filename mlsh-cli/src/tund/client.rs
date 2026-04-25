@@ -94,6 +94,20 @@ impl DaemonClient {
         })
         .await
     }
+
+    pub async fn control_start(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ControlStart {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
+
+    pub async fn control_stop(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ControlStop {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
 }
 
 /// Discover the daemon endpoint.

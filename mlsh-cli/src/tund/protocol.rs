@@ -53,6 +53,12 @@ pub enum DaemonRequest {
     /// Forwarded to signal over the daemon's persistent QUIC connection.
     /// Used by `mlsh-control` to populate its admin UI.
     ListNodes { cluster: String },
+    /// Stop the local `mlsh-control` child if one is running for this cluster.
+    /// Used by `mlsh control demote/migrate` before flipping the role.
+    ControlStop { cluster: String },
+    /// Start a `mlsh-control` child for this cluster (no-op if already running).
+    /// Used by `mlsh control promote` after the role flip.
+    ControlStart { cluster: String },
 }
 
 // Daemon → Client

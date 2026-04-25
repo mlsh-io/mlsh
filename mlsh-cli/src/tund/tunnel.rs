@@ -165,6 +165,30 @@ impl ManagedTunnel {
             .and_then(|rx| rx.borrow().clone())
     }
 
+    /// Whether the control-plane child process is currently running.
+    pub fn has_control_child(&self) -> bool {
+        self.control_child.is_some()
+    }
+
+    /// Start the `mlsh-control` child process for this tunnel. No-op if
+    /// already running.
+    pub fn start_control(&mut self) {
+        if self.control_child.is_some() {
+            return;
+        }
+        self.control_child = spawn_control_child(&self.cluster_name);
+    }
+
+    /// Stop the `mlsh-control` child process for this tunnel. No-op if not
+    /// running. Awaits the kill so the caller can be sure the port is
+    /// released before returning.
+    pub async fn stop_control(&mut self) {
+        if let Some(mut child) = self.control_child.take() {
+            tracing::info!("Stopping mlsh-control for '{}'", self.cluster_name);
+            let _ = child.kill().await;
+        }
+    }
+
     /// Shut down this tunnel.
     pub async fn stop(&mut self) {
         let _ = self.shutdown_tx.send(true);

@@ -163,6 +163,14 @@ where
                 },
             }
         }
+        DaemonRequest::ControlStart { cluster } => {
+            let mut mgr = manager.lock().await;
+            mgr.start_control(&cluster)
+        }
+        DaemonRequest::ControlStop { cluster } => {
+            let mut mgr = manager.lock().await;
+            mgr.stop_control(&cluster).await
+        }
     };
 
     write_message(&mut writer, &response).await?;
