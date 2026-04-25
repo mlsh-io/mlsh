@@ -171,6 +171,50 @@ where
             let mut mgr = manager.lock().await;
             mgr.stop_control(&cluster).await
         }
+        DaemonRequest::Revoke { cluster, target } => {
+            let mgr = manager.lock().await;
+            match mgr.revoke(&cluster, &target).await {
+                Ok(()) => DaemonResponse::Ok {
+                    message: Some(format!("Node '{}' revoked.", target)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "revoke_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Rename {
+            cluster,
+            target,
+            new_display_name,
+        } => {
+            let mgr = manager.lock().await;
+            match mgr.rename(&cluster, &target, &new_display_name).await {
+                Ok(name) => DaemonResponse::Ok {
+                    message: Some(format!("Renamed to '{}'.", name)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "rename_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Promote {
+            cluster,
+            target_node_id,
+            new_role,
+        } => {
+            let mgr = manager.lock().await;
+            match mgr.promote(&cluster, &target_node_id, &new_role).await {
+                Ok(()) => DaemonResponse::Ok {
+                    message: Some(format!("Role updated to '{}'.", new_role)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "promote_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;

@@ -59,6 +59,23 @@ pub enum DaemonRequest {
     /// Start a `mlsh-control` child for this cluster (no-op if already running).
     /// Used by `mlsh control promote` after the role flip.
     ControlStart { cluster: String },
+    /// Revoke a node from the cluster (admin only). Forwarded to signal as
+    /// `StreamMessage::Revoke`. `target` is a display name.
+    Revoke { cluster: String, target: String },
+    /// Rename a node in the cluster. Forwarded to signal as
+    /// `StreamMessage::Rename`. `target` is the current display name.
+    Rename {
+        cluster: String,
+        target: String,
+        new_display_name: String,
+    },
+    /// Change a node's role (admin/node). Forwarded to signal as
+    /// `StreamMessage::Promote`. `target_node_id` is the UUID.
+    Promote {
+        cluster: String,
+        target_node_id: String,
+        new_role: String,
+    },
 }
 
 // Daemon → Client

@@ -84,6 +84,9 @@ struct SharedInfo {
 /// A managed tunnel for a single cluster.
 pub struct ManagedTunnel {
     pub cluster_name: String,
+    /// Cluster UUID — needed to build signal-facing messages (Revoke/Rename/
+    /// Promote) that the daemon forwards on behalf of the CLI.
+    pub cluster_id: String,
     state_rx: watch::Receiver<TunnelState>,
     shutdown_tx: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
@@ -117,6 +120,7 @@ impl ManagedTunnel {
             .context("Invalid overlay IP in cluster config")?;
 
         let cluster_name = config.name.clone();
+        let cluster_id = config.cluster_id.clone();
         let info_task = info.clone();
 
         // Spawn mlsh-control if this node holds the `control` role.
@@ -146,6 +150,7 @@ impl ManagedTunnel {
 
         Ok(Self {
             cluster_name,
+            cluster_id,
             state_rx,
             shutdown_tx,
             task: Some(task),
