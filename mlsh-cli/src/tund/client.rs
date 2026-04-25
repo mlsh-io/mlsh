@@ -144,6 +144,39 @@ impl DaemonClient {
         })
         .await
     }
+
+    pub async fn expose(
+        &mut self,
+        cluster: &str,
+        domain: &str,
+        target: &str,
+        email: Option<&str>,
+        acme_staging: bool,
+    ) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Expose {
+            cluster: cluster.to_string(),
+            domain: domain.to_string(),
+            target: target.to_string(),
+            email: email.map(|s| s.to_string()),
+            acme_staging,
+        })
+        .await
+    }
+
+    pub async fn unexpose(&mut self, cluster: &str, domain: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Unexpose {
+            cluster: cluster.to_string(),
+            domain: domain.to_string(),
+        })
+        .await
+    }
+
+    pub async fn list_exposed(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ListExposed {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
 }
 
 /// Discover the daemon endpoint.

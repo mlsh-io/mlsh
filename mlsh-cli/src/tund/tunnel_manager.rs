@@ -202,6 +202,70 @@ impl TunnelManager {
         }
     }
 
+    /// Forward an `ExposeService` to signal.
+    /// Returned tuple is `(domain, public_mode, public_ip)`.
+    pub async fn expose(
+        &self,
+        cluster: &str,
+        domain: &str,
+        target: &str,
+    ) -> Result<(String, String, Option<String>)> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        use mlsh_protocol::types::IngressMode;
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::ExposeService {
+            cluster_id,
+            domain: domain.to_string(),
+            target: target.to_string(),
+            mode: IngressMode::Http,
+        };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::ExposeOk {
+                domain,
+                public_mode,
+                public_ip,
+            } => Ok((domain, public_mode, public_ip)),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
+    /// Forward an `UnexposeService` to signal.
+    pub async fn unexpose(&self, cluster: &str, domain: &str) -> Result<()> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::UnexposeService {
+            cluster_id,
+            domain: domain.to_string(),
+        };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::UnexposeOk => Ok(()),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
+    /// Forward a `ListExposed` request to signal.
+    pub async fn list_exposed(
+        &self,
+        cluster: &str,
+    ) -> Result<Vec<mlsh_protocol::types::IngressRoute>> {
+        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+        let cluster_id = self.cluster_id_for(cluster)?;
+        let msg = StreamMessage::ListExposed { cluster_id };
+        match self.forward_one_shot(cluster, msg).await? {
+            ServerMessage::ExposedList { routes } => Ok(routes),
+            ServerMessage::Error { code, message } => {
+                anyhow::bail!("signal error ({}): {}", code, message);
+            }
+            other => anyhow::bail!("Unexpected signal response: {:?}", other),
+        }
+    }
+
     /// Start `mlsh-control` for the named cluster. Returns an error if there
     /// is no active tunnel for that cluster (the daemon must be connected to
     /// signal first — control plane runs alongside, not standalone).
