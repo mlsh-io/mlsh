@@ -244,8 +244,14 @@ fn is_control_invocation() -> bool {
     argv0_stem().is_some_and(|name| name == "mlsh-control")
 }
 
-#[cfg(feature = "control-plane")]
-fn run_control() {
+/// Boot a multi-threaded tokio runtime, run `f` to completion, and exit
+/// with the appropriate code. Used by every daemon-mode entry point that
+/// shouldn't return to the outer dispatch.
+fn run_daemon<F, Fut>(f: F) -> !
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     use tracing_subscriber::EnvFilter;
 
     tracing_subscriber::fmt()
@@ -259,7 +265,7 @@ fn run_control() {
         .build()
         .expect("Failed to build tokio runtime");
 
-    let code = match rt.block_on(mlsh_cli::control::run()) {
+    let code = match rt.block_on(f()) {
         Ok(()) => 0,
         Err(e) => {
             tracing::error!("Fatal: {:#}", e);
@@ -270,23 +276,16 @@ fn run_control() {
     std::process::exit(code);
 }
 
+#[cfg(feature = "control-plane")]
+fn run_control() {
+    run_daemon(mlsh_cli::control::run);
+}
+
 fn run_tund() {
     use std::sync::Arc;
     use tokio::sync::{watch, Mutex};
-    use tracing_subscriber::EnvFilter;
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("mlsh_cli=info")),
-        )
-        .init();
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to build tokio runtime");
-
-    let code = match rt.block_on(async {
+    run_daemon(|| async {
         use mlsh_cli::tund::{acme, control, tunnel_manager::TunnelManager};
 
         #[derive(Parser)]
@@ -321,15 +320,7 @@ fn run_tund() {
         manager.lock().await.shutdown_all().await;
         tracing::info!("mlshtund exiting");
         result
-    }) {
-        Ok(()) => 0,
-        Err(e) => {
-            tracing::error!("Fatal: {:#}", e);
-            eprintln!("Error: {:#}", e);
-            1
-        }
-    };
-    std::process::exit(code);
+    });
 }
 
 async fn run_cli() -> Result<()> {
