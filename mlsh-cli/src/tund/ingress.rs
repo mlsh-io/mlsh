@@ -56,23 +56,13 @@ pub fn remove(domain: &str) {
 }
 
 /// Look up an ingress target for `domain`.
-pub fn lookup(domain: &str) -> Option<String> {
+fn lookup(domain: &str) -> Option<String> {
     let key = domain.to_ascii_lowercase();
     targets()
         .read()
         .expect("ingress registry poisoned")
         .get(&key)
         .cloned()
-}
-
-/// Snapshot the current registry (used for daemon status / debug).
-pub fn snapshot() -> Vec<(String, String)> {
-    targets()
-        .read()
-        .expect("ingress registry poisoned")
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
 }
 
 // -------------------------------------------------------------------------
