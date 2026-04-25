@@ -1,139 +1,50 @@
-//! `mlsh setup <cluster> --signal-host <host> --token <SECRET@FINGERPRINT>` — bootstrap a cluster.
+//! `mlsh setup <cluster> --signal-host <host> --token <CODE@CLUSTER_ID@FP>`
+//! bootstraps the first node of a cluster against an existing signal.
 //!
-//! Uses the signal server's setup token (displayed at startup) to register
-//! the first admin node via QUIC. The token contains both the cluster_secret
-//! (for authentication) and the signal fingerprint (for QUIC cert verification).
-//!
-//! After setup, use `mlsh invite` to add more nodes.
+//! After setup, `mlsh invite` adds more nodes.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::quic::client::{connect_to_signal, resolve_addr};
+use super::bootstrap::{self, BootstrapInput};
 
 const DEFAULT_SIGNAL_PORT: u16 = 4433;
 
-/// Handle `mlsh setup <cluster> --signal-host <host> --token <token>`.
 pub async fn handle_setup(
     cluster_name: &str,
     signal_host: &str,
     token: &str,
     name_override: Option<&str>,
 ) -> Result<()> {
-    // Parse token: CODE@CLUSTER_ID@FINGERPRINT
     let (setup_code, cluster_id, signal_fingerprint) = parse_setup_token(token)?;
 
     println!("{}", "MLSH Cluster Setup".cyan().bold());
     println!("  Cluster: {}", cluster_name);
     println!("  Signal:  {}", signal_host);
 
-    // Generate or load node identity
-    let config_dir = crate::config::config_dir()?;
-    let identity_dir = config_dir.join("identity");
-    let node_id = name_override
-        .map(String::from)
-        .unwrap_or_else(|| whoami::hostname().unwrap_or_else(|_| "node".to_string()));
-    let identity = mlsh_crypto::identity::load_or_generate(&identity_dir, &node_id)
-        .map_err(|e| anyhow::anyhow!("Failed to generate identity: {}", e))?;
+    let node_id = bootstrap::default_node_id(name_override);
+    let signal_endpoint = bootstrap::ensure_port(signal_host, DEFAULT_SIGNAL_PORT);
 
-    println!("  Node:    {}", node_id);
-    println!("  Fingerprint: {}...", &identity.fingerprint[..16]);
-
-    use base64::Engine;
-    let public_key = mlsh_crypto::invite::extract_public_key_from_cert_pem(&identity.cert_pem)
-        .map(|pk| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pk))
-        .unwrap_or_default();
-
-    // Connect to signal via QUIC (verified by fingerprint from token)
-    let signal_endpoint = ensure_port(signal_host, DEFAULT_SIGNAL_PORT);
-    println!(
-        "{}",
-        format!("Connecting to signal at {}...", signal_endpoint).cyan()
-    );
-
-    let addr = resolve_addr(&signal_endpoint)?;
-    let conn = connect_to_signal(addr, &signal_endpoint, &signal_fingerprint, &identity).await?;
-
-    // Send Adopt with setup code as pre_auth_token (registers as admin)
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .context("Failed to open signal stream")?;
-
-    use mlsh_protocol::framing;
-    use mlsh_protocol::messages::{ServerMessage, StreamMessage};
-
-    let adopt_msg = StreamMessage::Adopt {
-        cluster_id: cluster_id.clone(),
-        pre_auth_token: setup_code.to_string(),
-        fingerprint: identity.fingerprint.clone(),
-        node_uuid: node_id.clone(),
-        display_name: node_id.clone(),
-        public_key: public_key.clone(),
-        expires_at: 0,
-        // Signal stripped admission_cert in ADR-030; field kept in the
-        // protocol for now but ignored on the server.
-        admission_cert: String::new(),
-    };
-    framing::write_msg(&mut send, &adopt_msg).await?;
-
-    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
-    conn.close(quinn::VarInt::from_u32(0), b"done");
-
-    let (overlay_ip, overlay_subnet) = match resp {
-        ServerMessage::AdoptOk {
-            overlay_ip,
-            overlay_subnet,
-            ..
-        } => (overlay_ip, overlay_subnet),
-        ServerMessage::Error { code, message } => {
-            anyhow::bail!("Setup failed: {} ({})", message, code);
-        }
-        other => {
-            anyhow::bail!("Unexpected response: {:?}", other);
-        }
-    };
-
-    // Save cluster config
-    let clusters_dir = config_dir.join("clusters");
-    std::fs::create_dir_all(&clusters_dir)?;
-
-    // First node holds all three roles (ADR-030 §2). The control role can be
-    // migrated later via `mlsh control migrate <node>`.
-    let cluster_toml = format!(
-        "[cluster]\n\
-         name = \"{cluster_name}\"\n\
-         id = \"{cluster_id}\"\n\
-         mode = \"mtls\"\n\
-         signal_endpoint = \"{signal_endpoint}\"\n\
-         signal_fingerprint = \"{signal_fingerprint}\"\n\
-         root_fingerprint = \"{fp}\"\n\
-         \n\
-         [node_auth]\n\
-         node_id = \"{node_id}\"\n\
-         fingerprint = \"{fp}\"\n\
-         roles = [\"node\", \"admin\", \"control\"]\n\
-         \n\
-         [overlay]\n\
-         ip = \"{overlay_ip}\"\n\
-         subnet = \"{overlay_subnet}\"\n",
-        fp = identity.fingerprint,
-    );
-
-    let cluster_file = clusters_dir.join(format!("{}.toml", cluster_name));
-    std::fs::write(&cluster_file, &cluster_toml)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cluster_file, std::fs::Permissions::from_mode(0o600))?;
-    }
+    let out = bootstrap::run(BootstrapInput {
+        cluster_name,
+        cluster_id: &cluster_id,
+        signal_endpoint: &signal_endpoint,
+        signal_fingerprint: &signal_fingerprint,
+        // Setup creates the cluster — this node IS the root admin.
+        root_fingerprint: "",
+        node_id: &node_id,
+        pre_auth_token: &setup_code,
+        // First node holds all three roles (ADR-030 §2). The control role
+        // can be migrated later via `mlsh control migrate <node>`.
+        roles: &["node", "admin", "control"],
+    })
+    .await?;
 
     println!();
     println!("{}", "Setup completed!".green().bold());
     println!("  Cluster:    {}", cluster_name);
     println!("  Node:       {} (node + admin + control)", node_id);
-    println!("  Overlay IP: {}", overlay_ip);
+    println!("  Overlay IP: {}", out.overlay_ip);
     println!();
     println!("{}", "Next steps:".cyan().bold());
     println!(
@@ -146,7 +57,6 @@ pub async fn handle_setup(
         "  2. Invite:  {}",
         format!("mlsh invite {} --ttl 3600", cluster_name).bold()
     );
-
     println!();
     println!(
         "{}",
@@ -157,12 +67,11 @@ pub async fn handle_setup(
         )
         .yellow()
     );
-
     Ok(())
 }
 
 /// Managed mode: authenticate via mlsh.io device flow, create cluster, then
-/// delegate to the existing `handle_setup` with the token from cloud.
+/// delegate to the existing self-hosted setup flow with the token from cloud.
 pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str>) -> Result<()> {
     use crate::cloud::CloudClient;
 
@@ -171,10 +80,8 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
 
     let cloud = CloudClient::new();
 
-    // Step 1: Device flow
     println!("{}", "Authenticating with mlsh.io...".cyan());
     let device = cloud.request_device_code()?;
-
     println!();
     println!(
         "  Open {} and enter code: {}",
@@ -187,15 +94,12 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
     let tokens = cloud.poll_device_token(&device.device_code, device.interval)?;
     println!("{}", "Authenticated!".green());
 
-    // Step 2: Create cluster via cloud → signal
     println!("{}", "Creating cluster...".cyan());
     let cluster = cloud.create_cluster(&tokens.access_token, cluster_name)?;
-
     let setup_token = cluster
         .setup_token
         .context("Cloud did not return a setup token")?;
 
-    // Step 3: Delegate to the existing self-hosted setup flow
     handle_setup(
         cluster_name,
         &cluster.signal_endpoint,
@@ -204,8 +108,6 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
     )
     .await
 }
-
-// --- Token parsing
 
 /// Parse a setup token: `CODE@CLUSTER_ID@FINGERPRINT`.
 fn parse_setup_token(token: &str) -> Result<(String, String, String)> {
@@ -221,15 +123,6 @@ fn parse_setup_token(token: &str) -> Result<(String, String, String)> {
             ))
         }
         _ => anyhow::bail!("Invalid setup token format. Expected: CODE@CLUSTER_ID@FINGERPRINT"),
-    }
-}
-
-/// Ensure the endpoint has a port suffix.
-fn ensure_port(host: &str, default_port: u16) -> String {
-    if host.contains(':') {
-        host.to_string()
-    } else {
-        format!("{}:{}", host, default_port)
     }
 }
 
