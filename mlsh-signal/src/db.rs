@@ -28,16 +28,12 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     // --- Node registry
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS nodes (
-            cluster_id     TEXT NOT NULL,
-            node_id        TEXT NOT NULL,
-            fingerprint    TEXT NOT NULL,
-            public_key     TEXT NOT NULL DEFAULT '',
-            overlay_ip     TEXT NOT NULL,
-            role           TEXT NOT NULL DEFAULT 'node',
-            sponsored_by   TEXT NOT NULL DEFAULT '',
-            admission_cert TEXT NOT NULL DEFAULT '',
-            display_name   TEXT NOT NULL DEFAULT '',
-            created_at     TEXT NOT NULL,
+            cluster_id   TEXT NOT NULL,
+            node_id      TEXT NOT NULL,
+            fingerprint  TEXT NOT NULL,
+            overlay_ip   TEXT NOT NULL,
+            role         TEXT NOT NULL DEFAULT 'node',
+            display_name TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (cluster_id, node_id)
         )",
     )
@@ -62,16 +58,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     .await;
 
     // Migrations for existing databases
-    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN public_key TEXT NOT NULL DEFAULT ''")
-        .execute(&pool)
-        .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'node'")
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN sponsored_by TEXT NOT NULL DEFAULT ''")
-        .execute(&pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN admission_cert TEXT NOT NULL DEFAULT ''")
         .execute(&pool)
         .await;
     let _ = sqlx::query("ALTER TABLE nodes ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
@@ -106,21 +93,6 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     .execute(&pool)
     .await
     .context("Failed to create setup_codes table")?;
-
-    // --- Audit log
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS audit_log (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp  TEXT NOT NULL,
-            cluster_id TEXT NOT NULL,
-            action     TEXT NOT NULL,
-            node_id    TEXT NOT NULL DEFAULT '',
-            details    TEXT NOT NULL DEFAULT ''
-        )",
-    )
-    .execute(&pool)
-    .await
-    .context("Failed to create audit_log table")?;
 
     // --- Ingress routes (public reverse-proxy registrations)
     sqlx::query(
@@ -181,12 +153,6 @@ pub async fn delete_cluster(pool: &SqlitePool, cluster_id: &str) -> Result<bool>
         .execute(pool)
         .await
         .context("Failed to delete cluster setup codes")?;
-
-    sqlx::query("DELETE FROM audit_log WHERE cluster_id = ?1")
-        .bind(cluster_id)
-        .execute(pool)
-        .await
-        .context("Failed to delete cluster audit log")?;
 
     let result = sqlx::query("DELETE FROM clusters WHERE id = ?1")
         .bind(cluster_id)
@@ -298,32 +264,6 @@ pub async fn verify_and_burn_setup_code(
     Ok(true)
 }
 
-// --- Audit log
-
-/// Record an audit event.
-pub async fn audit(
-    pool: &SqlitePool,
-    cluster_id: &str,
-    action: &str,
-    node_id: &str,
-    details: &str,
-) {
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-
-    let _ = sqlx::query(
-        "INSERT INTO audit_log (timestamp, cluster_id, action, node_id, details) VALUES (?1, ?2, ?3, ?4, ?5)",
-    )
-    .bind(&now)
-    .bind(cluster_id)
-    .bind(action)
-    .bind(node_id)
-    .bind(details)
-    .execute(pool)
-    .await;
-}
-
 // --- Config key-value store
 
 pub async fn get_config(pool: &SqlitePool, key: &str) -> Result<Option<String>> {
@@ -412,13 +352,9 @@ pub struct NodeRecord {
     pub cluster_id: String,
     pub node_id: String,
     pub fingerprint: String,
-    pub public_key: String,
     pub overlay_ip: std::net::Ipv4Addr,
     pub role: String,
-    pub sponsored_by: String,
-    pub admission_cert: String,
     pub display_name: String,
-    pub created_at: String,
 }
 
 /// Register a node and allocate an overlay IP. Idempotent: if the node already
@@ -437,10 +373,7 @@ pub async fn register_node(
             cluster_id,
             node_id,
             fingerprint,
-            public_key: "",
             role: "node",
-            sponsored_by: "",
-            admission_cert: "",
             display_name: "",
         },
         subnet,
@@ -453,10 +386,7 @@ pub struct NodeRegistration<'a> {
     pub cluster_id: &'a str,
     pub node_id: &'a str,
     pub fingerprint: &'a str,
-    pub public_key: &'a str,
     pub role: &'a str,
-    pub sponsored_by: &'a str,
-    pub admission_cert: &'a str,
     pub display_name: &'a str,
 }
 
@@ -469,10 +399,7 @@ pub async fn register_node_full(
     let cluster_id = reg.cluster_id;
     let node_id = reg.node_id;
     let fingerprint = reg.fingerprint;
-    let public_key = reg.public_key;
     let role = reg.role;
-    let sponsored_by = reg.sponsored_by;
-    let admission_cert = reg.admission_cert;
     let display_name = reg.display_name;
 
     // Check if this node already exists
@@ -490,22 +417,16 @@ pub async fn register_node_full(
             .parse()
             .map_err(|e| anyhow::anyhow!("Bad IP in DB: {}", e))?;
 
-        // Update fingerprint, public_key, role, and display_name if changed
-        // (cert rotation, re-setup, or initial name assignment).
         // Only overwrite display_name if the caller provides a non-empty value;
         // preserve an existing name when re-registering without a name.
         sqlx::query(
             "UPDATE nodes
-             SET fingerprint = ?1, public_key = ?2, role = ?3, sponsored_by = ?4,
-                 admission_cert = ?5,
-                 display_name = CASE WHEN ?6 != '' THEN ?6 ELSE display_name END
-             WHERE cluster_id = ?7 AND node_id = ?8",
+             SET fingerprint = ?1, role = ?2,
+                 display_name = CASE WHEN ?3 != '' THEN ?3 ELSE display_name END
+             WHERE cluster_id = ?4 AND node_id = ?5",
         )
         .bind(fingerprint)
-        .bind(public_key)
         .bind(role)
-        .bind(sponsored_by)
-        .bind(admission_cert)
         .bind(display_name)
         .bind(cluster_id)
         .bind(node_id)
@@ -548,24 +469,17 @@ pub async fn register_node_full(
     }
 
     let overlay_ip = std::net::Ipv4Addr::from(next_ip_u32);
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
 
     sqlx::query(
-        "INSERT INTO nodes (cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        "INSERT INTO nodes (cluster_id, node_id, fingerprint, overlay_ip, role, display_name)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
     )
     .bind(cluster_id)
     .bind(node_id)
     .bind(fingerprint)
-    .bind(public_key)
     .bind(overlay_ip.to_string())
     .bind(role)
-    .bind(sponsored_by)
-    .bind(admission_cert)
     .bind(display_name)
-    .bind(&now)
     .execute(pool)
     .await
     .context("Failed to register node")?;
@@ -626,25 +540,13 @@ pub async fn allocate_ip(
 }
 
 /// Look up a node by its certificate fingerprint.
-#[allow(clippy::type_complexity)]
 pub async fn lookup_node_by_fingerprint(
     pool: &SqlitePool,
     cluster_id: &str,
     fingerprint: &str,
 ) -> Result<Option<NodeRecord>> {
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
          FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2",
     )
     .bind(cluster_id)
@@ -653,55 +555,45 @@ pub async fn lookup_node_by_fingerprint(
     .await
     .context("Failed to lookup node by fingerprint")?;
 
-    Ok(
-        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
-            cluster_id: cid,
-            node_id: nid,
-            fingerprint: fp,
-            public_key: pk,
-            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-            role,
-            sponsored_by: sb,
-            admission_cert: ac,
-            display_name: dn,
-            created_at: ca,
-        }),
-    )
+    Ok(row.map(|(cid, nid, fp, ip, role, dn)| NodeRecord {
+        cluster_id: cid,
+        node_id: nid,
+        fingerprint: fp,
+        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+        role,
+        display_name: dn,
+    }))
 }
 
-/// Update a node's public key (backfill for nodes registered before public_key existed).
-pub async fn update_node_public_key(
+/// Look up a node by its certificate fingerprint across all clusters.
+/// Used by handlers that don't know the caller's cluster_id upfront.
+pub async fn lookup_node_by_fingerprint_any_cluster(
     pool: &SqlitePool,
-    cluster_id: &str,
-    node_id: &str,
-    public_key: &str,
-) -> Result<()> {
-    sqlx::query("UPDATE nodes SET public_key = ?1 WHERE cluster_id = ?2 AND node_id = ?3")
-        .bind(public_key)
-        .bind(cluster_id)
-        .bind(node_id)
-        .execute(pool)
-        .await
-        .context("Failed to update node public_key")?;
-    Ok(())
+    fingerprint: &str,
+) -> Result<Option<NodeRecord>> {
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
+         FROM nodes WHERE fingerprint = ?1",
+    )
+    .bind(fingerprint)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to lookup node by fingerprint")?;
+
+    Ok(row.map(|(cid, nid, fp, ip, role, dn)| NodeRecord {
+        cluster_id: cid,
+        node_id: nid,
+        fingerprint: fp,
+        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+        role,
+        display_name: dn,
+    }))
 }
 
 /// List all nodes in a cluster.
-#[allow(clippy::type_complexity)]
 pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRecord>> {
-    let rows: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+    let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
          FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip",
     )
     .bind(cluster_id)
@@ -711,40 +603,31 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
 
     Ok(rows
         .into_iter()
-        .map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
+        .map(|(cid, nid, fp, ip, role, dn)| NodeRecord {
             cluster_id: cid,
             node_id: nid,
             fingerprint: fp,
-            public_key: pk,
             overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
             role,
-            sponsored_by: sb,
-            admission_cert: ac,
             display_name: dn,
-            created_at: ca,
         })
         .collect())
 }
 
-/// Remove a node from a cluster. Returns true if a row was deleted.
-/// Update a node's role and admission cert. Returns true if the node was found.
+/// Update a node's role. Returns true if the node was found.
 pub async fn update_node_role(
     pool: &SqlitePool,
     cluster_id: &str,
     node_id: &str,
     new_role: &str,
-    admission_cert: &str,
 ) -> Result<bool> {
-    let result = sqlx::query(
-        "UPDATE nodes SET role = ?1, admission_cert = ?2 WHERE cluster_id = ?3 AND node_id = ?4",
-    )
-    .bind(new_role)
-    .bind(admission_cert)
-    .bind(cluster_id)
-    .bind(node_id)
-    .execute(pool)
-    .await
-    .context("Failed to update node role")?;
+    let result = sqlx::query("UPDATE nodes SET role = ?1 WHERE cluster_id = ?2 AND node_id = ?3")
+        .bind(new_role)
+        .bind(cluster_id)
+        .bind(node_id)
+        .execute(pool)
+        .await
+        .context("Failed to update node role")?;
     Ok(result.rows_affected() > 0)
 }
 
@@ -821,7 +704,6 @@ pub async fn rename_node(
 /// Look up a node by its human-readable display name within a cluster.
 ///
 /// Returns `None` when no node has that display name or if the name is empty.
-#[allow(clippy::type_complexity)]
 pub async fn lookup_node_by_display_name(
     pool: &SqlitePool,
     cluster_id: &str,
@@ -831,19 +713,8 @@ pub async fn lookup_node_by_display_name(
         return Ok(None);
     }
 
-    let row: Option<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    )> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, public_key, overlay_ip, role, sponsored_by, admission_cert, display_name, created_at
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
          FROM nodes WHERE cluster_id = ?1 AND display_name = ?2",
     )
     .bind(cluster_id)
@@ -852,20 +723,14 @@ pub async fn lookup_node_by_display_name(
     .await
     .context("Failed to lookup node by display name")?;
 
-    Ok(
-        row.map(|(cid, nid, fp, pk, ip, role, sb, ac, dn, ca)| NodeRecord {
-            cluster_id: cid,
-            node_id: nid,
-            fingerprint: fp,
-            public_key: pk,
-            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-            role,
-            sponsored_by: sb,
-            admission_cert: ac,
-            display_name: dn,
-            created_at: ca,
-        }),
-    )
+    Ok(row.map(|(cid, nid, fp, ip, role, dn)| NodeRecord {
+        cluster_id: cid,
+        node_id: nid,
+        fingerprint: fp,
+        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+        role,
+        display_name: dn,
+    }))
 }
 
 // --- Ingress routes
@@ -1084,11 +949,10 @@ mod tests {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS nodes (
                 cluster_id TEXT NOT NULL, node_id TEXT NOT NULL,
-                fingerprint TEXT NOT NULL, public_key TEXT NOT NULL DEFAULT '',
-                overlay_ip TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'node',
-                sponsored_by TEXT NOT NULL DEFAULT '', admission_cert TEXT NOT NULL DEFAULT '',
+                fingerprint TEXT NOT NULL, overlay_ip TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'node',
                 display_name TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL, PRIMARY KEY (cluster_id, node_id))",
+                PRIMARY KEY (cluster_id, node_id))",
         )
         .execute(&pool)
         .await
@@ -1122,15 +986,6 @@ mod tests {
             "CREATE TABLE IF NOT EXISTS setup_codes (
                 cluster_id TEXT NOT NULL, code_hash TEXT NOT NULL,
                 expires_at TEXT NOT NULL, PRIMARY KEY (cluster_id))",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "CREATE TABLE IF NOT EXISTS audit_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL,
-                cluster_id TEXT NOT NULL, action TEXT NOT NULL,
-                node_id TEXT NOT NULL DEFAULT '', details TEXT NOT NULL DEFAULT '')",
         )
         .execute(&pool)
         .await
@@ -1246,10 +1101,7 @@ mod tests {
                 cluster_id: "c1",
                 node_id: "nas",
                 fingerprint: "fp-1",
-                public_key: "pk-1",
                 role: "admin",
-                sponsored_by: "",
-                admission_cert: "",
                 display_name: "",
             },
             &s,
@@ -1264,10 +1116,7 @@ mod tests {
                 cluster_id: "c1",
                 node_id: "rack",
                 fingerprint: "fp-2",
-                public_key: "pk-2",
                 role: "node",
-                sponsored_by: "nas",
-                admission_cert: "",
                 display_name: "",
             },
             &s,
@@ -1279,9 +1128,7 @@ mod tests {
         let nodes = list_nodes(&pool, "c1").await.unwrap();
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0].role, "admin");
-        assert_eq!(nodes[0].sponsored_by, "");
         assert_eq!(nodes[1].role, "node");
-        assert_eq!(nodes[1].sponsored_by, "nas");
     }
 
     #[tokio::test]
@@ -1426,10 +1273,7 @@ mod tests {
                 cluster_id: "c1",
                 node_id: "uuid-aaa",
                 fingerprint: "fp-new",
-                public_key: "",
                 role: "node",
-                sponsored_by: "",
-                admission_cert: "",
                 display_name: "",
             },
             &s,

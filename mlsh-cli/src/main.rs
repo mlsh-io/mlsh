@@ -174,6 +174,14 @@ fn main() {
         return run_tund();
     }
 
+    // If invoked as "mlsh-control" (via symlink) or with MLSH_RUN_AS=control
+    // (used by mlshtund to fork the control process from the same binary),
+    // run the control plane.
+    #[cfg(feature = "control-plane")]
+    if is_control_invocation() || std::env::var("MLSH_RUN_AS").as_deref() == Ok("control") {
+        return run_control();
+    }
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -189,17 +197,49 @@ fn main() {
     std::process::exit(code);
 }
 
+fn argv0_stem() -> Option<String> {
+    std::env::args().next().and_then(|arg0| {
+        std::path::Path::new(&arg0)
+            .file_stem()
+            .and_then(|f| f.to_str())
+            .map(|s| s.to_owned())
+    })
+}
+
 /// Check if we were invoked as "mlshtund" (argv[0] ends with "mlshtund" or "mlshtund.exe").
 fn is_tund_invocation() -> bool {
-    std::env::args()
-        .next()
-        .map(|arg0| {
-            std::path::Path::new(&arg0)
-                .file_stem()
-                .and_then(|f| f.to_str())
-                .is_some_and(|name| name == "mlshtund")
-        })
-        .unwrap_or(false)
+    argv0_stem().is_some_and(|name| name == "mlshtund")
+}
+
+#[cfg(feature = "control-plane")]
+fn is_control_invocation() -> bool {
+    argv0_stem().is_some_and(|name| name == "mlsh-control")
+}
+
+#[cfg(feature = "control-plane")]
+fn run_control() {
+    use tracing_subscriber::EnvFilter;
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("mlsh_cli=info")),
+        )
+        .init();
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to build tokio runtime");
+
+    let code = match rt.block_on(mlsh_cli::control::run()) {
+        Ok(()) => 0,
+        Err(e) => {
+            tracing::error!("Fatal: {:#}", e);
+            eprintln!("Error: {:#}", e);
+            1
+        }
+    };
+    std::process::exit(code);
 }
 
 fn run_tund() {

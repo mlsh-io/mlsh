@@ -19,8 +19,9 @@ struct NodeSession {
     fingerprint: String,
     overlay_ip: std::net::Ipv4Addr,
     host_candidates: Vec<Candidate>,
+    /// Ed25519 public key (base64url, no padding) — provided by the node at auth time.
+    /// Stored here so invite verification can access it without a DB round-trip.
     public_key: String,
-    admission_cert: String,
     display_name: String,
     session_id: u64,
 }
@@ -32,8 +33,6 @@ pub struct NodeSessionInfo {
     pub overlay_ip: std::net::Ipv4Addr,
     pub connection: quinn::Connection,
     pub push_tx: tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>,
-    pub public_key: String,
-    pub admission_cert: String,
     pub display_name: String,
 }
 
@@ -51,7 +50,7 @@ fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
         overlay_ip: s.overlay_ip.to_string(),
         candidates,
         public_key: s.public_key.clone(),
-        admission_cert: s.admission_cert.clone(),
+        admission_cert: String::new(),
         display_name: s.display_name.clone(),
     }
 }
@@ -80,8 +79,7 @@ impl SessionStore {
             fingerprint: info.fingerprint,
             overlay_ip: info.overlay_ip,
             host_candidates: Vec::new(),
-            public_key: info.public_key,
-            admission_cert: info.admission_cert,
+            public_key: String::new(),
             display_name: info.display_name,
             session_id,
         };
@@ -102,6 +100,25 @@ impl SessionStore {
             }
         }
         false
+    }
+
+    /// Store the Ed25519 public key for a node session (provided at auth time).
+    pub async fn set_public_key(&self, cluster_id: &str, node_id: &str, public_key: &str) {
+        let key = (cluster_id.to_string(), node_id.to_string());
+        if let Some(session) = self.sessions.write().await.get_mut(&key) {
+            session.public_key = public_key.to_string();
+        }
+    }
+
+    /// Return the Ed25519 public key for a currently-connected node, or None if offline.
+    pub async fn get_public_key(&self, cluster_id: &str, node_id: &str) -> Option<String> {
+        let key = (cluster_id.to_string(), node_id.to_string());
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(&key)?;
+        if session.public_key.is_empty() {
+            return None;
+        }
+        Some(session.public_key.clone())
     }
 
     /// Update host candidates for a node.

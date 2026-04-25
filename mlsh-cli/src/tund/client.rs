@@ -87,6 +87,13 @@ impl DaemonClient {
         })
         .await
     }
+
+    pub async fn list_nodes(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ListNodes {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
 }
 
 /// Discover the daemon endpoint.

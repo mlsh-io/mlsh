@@ -48,8 +48,8 @@ pub async fn handle_connect(name: &str, foreground: bool) -> Result<()> {
         DaemonResponse::Error { code, message } => {
             anyhow::bail!("{} ({})", message, code);
         }
-        DaemonResponse::Status { .. } => {
-            anyhow::bail!("Unexpected status response");
+        DaemonResponse::Status { .. } | DaemonResponse::NodeList { .. } => {
+            anyhow::bail!("Unexpected daemon response");
         }
     }
 
@@ -70,8 +70,8 @@ pub async fn handle_disconnect(name: &str) -> Result<()> {
         DaemonResponse::Error { code, message } => {
             anyhow::bail!("{} ({})", message, code);
         }
-        DaemonResponse::Status { .. } => {
-            anyhow::bail!("Unexpected status response");
+        DaemonResponse::Status { .. } | DaemonResponse::NodeList { .. } => {
+            anyhow::bail!("Unexpected daemon response");
         }
     }
 
@@ -124,8 +124,8 @@ pub async fn handle_status() -> Result<()> {
         DaemonResponse::Error { code, message } => {
             anyhow::bail!("{} ({})", message, code);
         }
-        DaemonResponse::Ok { .. } => {
-            anyhow::bail!("Unexpected ok response");
+        DaemonResponse::Ok { .. } | DaemonResponse::NodeList { .. } => {
+            anyhow::bail!("Unexpected daemon response");
         }
     }
 
