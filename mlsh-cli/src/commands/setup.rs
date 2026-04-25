@@ -60,16 +60,6 @@ pub async fn handle_setup(
         .await
         .context("Failed to open signal stream")?;
 
-    // Generate self-signed admission cert for the root admin
-    let admission_cert = mlsh_crypto::invite::generate_self_signed_admission_cert(
-        &identity.key_pem,
-        &node_id,
-        &identity.fingerprint,
-        &cluster_id,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to generate admission cert: {}", e))?;
-    let admission_cert_json = serde_json::to_string(&admission_cert)?;
-
     use mlsh_protocol::framing;
     use mlsh_protocol::messages::{ServerMessage, StreamMessage};
 
@@ -81,7 +71,9 @@ pub async fn handle_setup(
         display_name: node_id.clone(),
         public_key: public_key.clone(),
         expires_at: 0,
-        admission_cert: admission_cert_json,
+        // Signal stripped admission_cert in ADR-030; field kept in the
+        // protocol for now but ignored on the server.
+        admission_cert: String::new(),
     };
     framing::write_msg(&mut send, &adopt_msg).await?;
 

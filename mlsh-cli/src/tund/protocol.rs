@@ -25,30 +25,6 @@ pub enum DaemonRequest {
     Disconnect { cluster: String },
     /// Query the status of all tunnels.
     Status,
-    /// Register a public-ingress route on the local daemon.
-    /// Paired with `StreamMessage::ExposeService` sent to signal by the CLI.
-    /// The peer's ingress stream handler splices inbound traffic to `target`
-    /// after terminating TLS with the cert issued for `domain`.
-    IngressAdd {
-        /// Cluster whose signal session publishes the HTTP-01 challenge
-        /// response. Looked up against `TunnelManager`. If empty / not
-        /// connected, the daemon falls back to a self-signed cert and logs
-        /// a warning.
-        #[serde(default)]
-        cluster: String,
-        /// Public domain (e.g. "myapp.mlsh.io").
-        domain: String,
-        /// Local upstream URL (e.g. "http://localhost:3000").
-        target: String,
-        /// Contact email for the ACME account.
-        #[serde(default)]
-        email: Option<String>,
-        /// When true, target Let's Encrypt staging instead of production.
-        #[serde(default)]
-        acme_staging: bool,
-    },
-    /// Remove a previously-registered ingress target.
-    IngressRemove { domain: String },
     /// List all nodes in a cluster, including offline ones.
     /// Forwarded to signal over the daemon's persistent QUIC connection.
     /// Used by `mlsh-control` to populate its admin UI.
