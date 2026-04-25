@@ -111,6 +111,51 @@ impl TunnelManager {
         }
     }
 
+    /// Start `mlsh-control` for the named cluster. Returns an error if there
+    /// is no active tunnel for that cluster (the daemon must be connected to
+    /// signal first — control plane runs alongside, not standalone).
+    pub fn start_control(&mut self, cluster: &str) -> DaemonResponse {
+        match self.tunnels.get_mut(cluster) {
+            Some(t) => {
+                let was_running = t.has_control_child();
+                t.start_control();
+                let msg = if was_running {
+                    "mlsh-control already running".into()
+                } else {
+                    "mlsh-control started".into()
+                };
+                DaemonResponse::Ok { message: Some(msg) }
+            }
+            None => DaemonResponse::Error {
+                code: "not_connected".into(),
+                message: format!(
+                    "No active tunnel for '{}' — run `mlsh connect` first",
+                    cluster
+                ),
+            },
+        }
+    }
+
+    /// Stop `mlsh-control` for the named cluster. No-op if not running or
+    /// no such cluster.
+    pub async fn stop_control(&mut self, cluster: &str) -> DaemonResponse {
+        match self.tunnels.get_mut(cluster) {
+            Some(t) => {
+                let was_running = t.has_control_child();
+                t.stop_control().await;
+                let msg = if was_running {
+                    "mlsh-control stopped".into()
+                } else {
+                    "mlsh-control was not running".into()
+                };
+                DaemonResponse::Ok { message: Some(msg) }
+            }
+            None => DaemonResponse::Ok {
+                message: Some(format!("No active tunnel for '{}'", cluster)),
+            },
+        }
+    }
+
     pub async fn shutdown_all(&mut self) {
         let names: Vec<String> = self.tunnels.keys().cloned().collect();
         for name in names {

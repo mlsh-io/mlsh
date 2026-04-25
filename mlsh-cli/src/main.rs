@@ -161,6 +161,34 @@ enum Commands {
     /// Manage the overlay tunnel daemon
     #[command(subcommand)]
     Tunnel(commands::daemon::DaemonCommands),
+
+    /// Manage the control-plane role on this node (ADR-030)
+    #[command(subcommand)]
+    Control(ControlCommands),
+}
+
+#[derive(Subcommand)]
+enum ControlCommands {
+    /// Start mlsh-control on this node and add the `control` role to its config.
+    Promote {
+        /// Cluster name
+        cluster: String,
+    },
+    /// Stop mlsh-control on this node and remove the `control` role from its config.
+    Demote {
+        /// Cluster name
+        cluster: String,
+    },
+    /// Demote this node and print the steps to promote a target node.
+    /// Peer-to-peer transfer of the SQLite is a future enhancement; for now
+    /// the operator copies the data dir manually and runs `mlsh control
+    /// promote` on the target.
+    Migrate {
+        /// Cluster name
+        cluster: String,
+        /// Target node display name (informational; printed in instructions)
+        node: String,
+    },
 }
 
 fn main() {
@@ -371,6 +399,15 @@ async fn run_cli() -> Result<()> {
         }
         Commands::Exposed { cluster } => commands::expose::handle_list_exposed(&cluster).await,
         Commands::Tunnel(cmd) => commands::daemon::handle(cmd).await,
+        Commands::Control(cmd) => match cmd {
+            ControlCommands::Promote { cluster } => {
+                commands::control::handle_promote(&cluster).await
+            }
+            ControlCommands::Demote { cluster } => commands::control::handle_demote(&cluster).await,
+            ControlCommands::Migrate { cluster, node } => {
+                commands::control::handle_migrate(&cluster, &node).await
+            }
+        },
     }
 }
 
