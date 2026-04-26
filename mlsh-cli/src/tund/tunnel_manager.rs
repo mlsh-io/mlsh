@@ -249,39 +249,6 @@ impl TunnelManager {
         }
     }
 
-    /// Open an admin tunnel: bind a local TCP listener that forwards each
-    /// connection through the overlay to the named target peer's
-    /// mlsh-control. Returns the locally-bound port.
-    pub async fn open_admin_tunnel(&self, cluster: &str, target: &str) -> Result<u16> {
-        let nodes = self.list_nodes(cluster).await?;
-        let target_node = nodes
-            .iter()
-            .find(|n| n.display_name == target || n.node_id == target)
-            .with_context(|| format!("No node named '{}' in cluster '{}'", target, cluster))?;
-        if target_node.role != "admin" {
-            anyhow::bail!(
-                "Target '{}' has role '{}', expected 'admin'",
-                target,
-                target_node.role
-            );
-        }
-        if !target_node.online {
-            anyhow::bail!("Target '{}' is offline", target);
-        }
-        let target_ip: std::net::Ipv4Addr = target_node
-            .overlay_ip
-            .parse()
-            .with_context(|| format!("Invalid overlay IP '{}'", target_node.overlay_ip))?;
-
-        let peer_table = self
-            .tunnels
-            .get(cluster)
-            .and_then(|t| t.peer_table())
-            .with_context(|| format!("No active peer table for cluster '{}'", cluster))?;
-
-        super::admin_tunnel::spawn_listener(peer_table, target_ip).await
-    }
-
     /// Forward a `ListExposed` request to signal.
     pub async fn list_exposed(
         &self,

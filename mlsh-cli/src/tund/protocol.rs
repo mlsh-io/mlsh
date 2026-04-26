@@ -70,11 +70,6 @@ pub enum DaemonRequest {
     Unexpose { cluster: String, domain: String },
     /// List all public ingress routes registered for this cluster.
     ListExposed { cluster: String },
-    /// Open an admin tunnel to a remote control node. Daemon binds a local
-    /// TCP port; each accepted connection is spliced through the overlay
-    /// to `target`'s `mlsh-control` (target's mlshtund role-checks the
-    /// caller fingerprint before forwarding).
-    OpenAdminTunnel { cluster: String, target: String },
 }
 
 // Daemon → Client
@@ -106,9 +101,6 @@ pub enum DaemonResponse {
     ExposedList {
         routes: Vec<mlsh_protocol::types::IngressRoute>,
     },
-    /// Response to `OpenAdminTunnel` — the local port the daemon is now
-    /// listening on; CLI prints `http://127.0.0.1:<port>` to the user.
-    AdminTunnelOpened { local_port: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

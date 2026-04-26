@@ -97,9 +97,6 @@ pub struct ManagedTunnel {
     /// Watch exposing the currently-active signal QUIC connection. Used by
     /// the ACME client to publish HTTP-01 challenge responses via signal.
     signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
-    /// Watch exposing the cluster's `PeerTable`. Used by the admin tunnel
-    /// to find the target peer's QUIC connection.
-    peer_table_rx: Option<watch::Receiver<Option<PeerTable>>>,
     /// Forked `mlsh-control` child process, when this node holds the
     /// `control` role (ADR-030 §1).
     control_child: Option<tokio::process::Child>,
@@ -111,7 +108,6 @@ impl ManagedTunnel {
         let (state_tx, state_rx) = watch::channel(TunnelState::Connecting);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (signal_conn_tx, signal_conn_rx) = watch::channel(None::<quinn::Connection>);
-        let (peer_table_tx, peer_table_rx) = watch::channel(None::<PeerTable>);
         let bytes_tx = Arc::new(AtomicU64::new(0));
         let bytes_rx = Arc::new(AtomicU64::new(0));
         let info = Arc::new(std::sync::Mutex::new(SharedInfo::default()));
@@ -148,7 +144,6 @@ impl ManagedTunnel {
                 tx_counter,
                 rx_counter,
                 signal_conn_tx,
-                peer_table_tx,
             )
             .await;
         });
@@ -164,16 +159,8 @@ impl ManagedTunnel {
             overlay_ip: Some(overlay_ip),
             info,
             signal_conn_rx: Some(signal_conn_rx),
-            peer_table_rx: Some(peer_table_rx),
             control_child,
         })
-    }
-
-    /// Return the current cluster `PeerTable`, if available.
-    pub fn peer_table(&self) -> Option<PeerTable> {
-        self.peer_table_rx
-            .as_ref()
-            .and_then(|rx| rx.borrow().clone())
     }
 
     /// Return the current signal QUIC connection, if one is active.
@@ -296,7 +283,6 @@ async fn tunnel_task(
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     signal_conn_tx: watch::Sender<Option<quinn::Connection>>,
-    peer_table_tx: watch::Sender<Option<PeerTable>>,
 ) {
     let mut backoff = Duration::from_secs(1);
 
@@ -398,7 +384,6 @@ async fn tunnel_task(
     // Shared routing table — used by TUN outbound, quic_server, relay_handler, and DNS.
     let mut peer_table = PeerTable::with_tun_name(tun_name);
     peer_table.bytes_rx = bytes_rx.clone();
-    let _ = peer_table_tx.send(Some(peer_table.clone()));
 
     // Cancellation token — cancelled on shutdown to stop all spawned tasks and release resources.
     let cancel = tokio_util::sync::CancellationToken::new();

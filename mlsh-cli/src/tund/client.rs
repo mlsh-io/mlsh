@@ -152,18 +152,6 @@ impl DaemonClient {
         })
         .await
     }
-
-    pub async fn open_admin_tunnel(
-        &mut self,
-        cluster: &str,
-        target: &str,
-    ) -> Result<DaemonResponse> {
-        self.request(&DaemonRequest::OpenAdminTunnel {
-            cluster: cluster.to_string(),
-            target: target.to_string(),
-        })
-        .await
-    }
 }
 
 /// Discover the daemon endpoint.

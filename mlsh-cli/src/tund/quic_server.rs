@@ -100,15 +100,9 @@ async fn accept_loop(
                 table.insert_direct(ip, conn.clone()).await;
                 tracing::info!("Inserted direct route to {}", ip);
 
-                // Uni streams carry IP packets to TUN; bi streams are
-                // claimed by the admin tunnel.
+                // Inbound only: read packets from peer, write to TUN
                 tokio::select! {
                     _ = run_inbound(conn.clone(), &device, &table) => {}
-                    _ = super::admin_tunnel::run_inbound_acceptor(
-                        conn.clone(),
-                        peer_fingerprint.clone(),
-                        table.clone(),
-                    ) => {}
                     _ = conn_cancel.cancelled() => {}
                 }
 

@@ -5,7 +5,6 @@
 //! a Unix socket.
 
 pub mod acme;
-pub mod admin_tunnel;
 pub mod client;
 pub mod control;
 pub mod dns;

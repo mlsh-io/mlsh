@@ -21,10 +21,11 @@ pub async fn serve() -> Result<()> {
         .route("/api/v1/clusters/{cluster}/nodes", get(list_nodes))
         .fallback(get(serve_ui));
 
-    // Loopback only. Remote access goes through `mlsh control open` which
-    // tunnels via the overlay (mTLS-authenticated peers, role-checked by the
-    // target mlshtund). No direct internet exposure for the admin UI.
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8443));
+    // Bind on all interfaces so peers in the overlay (and only peers — the
+    // public 0.0.0.0 is masked by the host firewall typically; the overlay
+    // is the only path) can reach it via `http://<peer-overlay-ip>:8443`.
+    // No app-level auth yet (TODO: JWT signed by an admin node, ADR-029).
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8443));
     tracing::info!("mlsh-control listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
