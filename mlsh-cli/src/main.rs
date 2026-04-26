@@ -324,7 +324,6 @@ fn run_tund() {
 }
 
 async fn run_cli() -> Result<()> {
-    env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {

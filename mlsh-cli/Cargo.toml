@@ -14,7 +14,6 @@ control-plane = [
     "dep:axum-server",
     "dep:sqlx",
     "dep:rust-embed",
-    "dep:tower-http",
 ]
 
 [dependencies]
@@ -48,9 +47,8 @@ tun-rs = { version = "2", features = ["async"] }
 # Local IP address discovery (for candidate gathering)
 local-ip-address = "0.6"
 # Logging
-env_logger = "0.11"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
 # Base64 encoding for invite payloads
 base64 = "0.22"
 # TLS over relay stream for E2E encryption
@@ -85,7 +83,6 @@ axum = { version = "0.8", optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
 rust-embed = { version = "8", features = ["compression"], optional = true }
-tower-http = { version = "0.6", features = ["compression-gzip", "fs"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"
