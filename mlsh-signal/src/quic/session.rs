@@ -866,7 +866,7 @@ async fn handle_expose(
         }
     };
 
-    if let Err(reason) = validate_ingress_domain("mlsh.io", &cluster_name, domain) {
+    if let Err(reason) = validate_ingress_domain(&state.config.zone, &cluster_name, domain) {
         return ServerMessage::error("invalid_request", reason);
     }
 
