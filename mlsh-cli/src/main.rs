@@ -197,16 +197,18 @@ fn main() {
         .install_default()
         .expect("Failed to install crypto provider");
 
-    // If invoked as "mlshtund" (via symlink), run the tunnel daemon directly.
+    // MLSH_RUN_AS=control wins over argv[0] so mlshtund can fork itself.
+    #[cfg(feature = "control-plane")]
+    if std::env::var("MLSH_RUN_AS").as_deref() == Ok("control") {
+        return run_control();
+    }
+
     if is_tund_invocation() {
         return run_tund();
     }
 
-    // If invoked as "mlsh-control" (via symlink) or with MLSH_RUN_AS=control
-    // (used by mlshtund to fork the control process from the same binary),
-    // run the control plane.
     #[cfg(feature = "control-plane")]
-    if is_control_invocation() || std::env::var("MLSH_RUN_AS").as_deref() == Ok("control") {
+    if is_control_invocation() {
         return run_control();
     }
 

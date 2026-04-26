@@ -51,8 +51,7 @@ pub async fn handle_setup(
         "  1. Connect: {}",
         format!("mlsh connect {}", cluster_name).bold()
     );
-    println!("     This will start mlshtund, which forks mlsh-control");
-    println!("     (admin UI on https://localhost:8443).");
+    println!("     Starts the tunnel and the admin UI on https://localhost:8443.");
     println!(
         "  2. Invite:  {}",
         format!("mlsh invite {} --ttl 3600", cluster_name).bold()
