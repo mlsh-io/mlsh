@@ -712,6 +712,16 @@ async fn handle_promote(
         return ServerMessage::error("forbidden", "Only admin nodes can change roles");
     }
 
+    // Resolve display_name → UUID (parity with revoke/rename). If the
+    // caller passed a UUID directly, the lookup misses and we fall through
+    // to using it as-is.
+    let resolved_target =
+        match db::lookup_node_by_display_name(&state.db, cluster_id, target_node_id).await {
+            Ok(Some(n)) => n.node_id,
+            _ => target_node_id.to_string(),
+        };
+    let target_node_id = resolved_target.as_str();
+
     // Prevent demoting the last admin
     if new_role == "node" {
         match db::count_admins(&state.db, cluster_id).await {

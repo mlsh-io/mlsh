@@ -496,18 +496,15 @@ async fn run_session(
 /// Verify a peer's admission certificate before accepting it into the peer list.
 ///
 /// Returns `true` if the cert is valid, `false` if it should be rejected.
-/// Peers without admission certs are accepted with a warning (backward compat).
+/// Signal stripped admission-cert storage in ADR-030 (the field is empty
+/// from the wire); when admission certs are reintroduced via the daemon
+/// path, this function does the verification.
 fn verify_admission(
     peer: &PeerInfo,
     peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
     root_fingerprint: &str,
 ) -> bool {
     if peer.admission_cert.is_empty() {
-        // No admission cert — accept with warning (backward compat with pre-admission nodes)
-        tracing::warn!(
-            "Peer {} has no admission cert — accepting (legacy)",
-            peer.node_id
-        );
         return true;
     }
 
@@ -614,12 +611,18 @@ fn handle_push_message(
 ) {
     match msg {
         ServerMessage::PeerJoined { peer } => {
-            // Verify admission cert before accepting the peer
             if !verify_admission(peer, peers_tx, root_fingerprint) {
-                tracing::warn!("Rejected peer {} — invalid admission cert", peer.node_id,);
+                tracing::warn!("Rejected peer {} — invalid admission cert", peer.node_id);
                 return;
             }
-            tracing::info!("Peer joined: {} ({})", peer.node_id, peer.overlay_ip);
+            // Signal sends PeerJoined a second time when a peer reports host
+            // candidates; treat that as an update rather than a fresh join.
+            let already_known = peers_tx.borrow().iter().any(|p| p.node_id == peer.node_id);
+            if already_known {
+                tracing::debug!("Peer updated: {} ({})", peer.node_id, peer.overlay_ip);
+            } else {
+                tracing::info!("Peer joined: {} ({})", peer.node_id, peer.overlay_ip);
+            }
             let mut new_peers: Vec<PeerInfo> = peers_tx
                 .borrow()
                 .iter()
