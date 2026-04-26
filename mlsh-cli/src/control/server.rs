@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use anyhow::{Context, Result};
 use axum::{
     extract::Path as AxumPath,
@@ -8,7 +6,6 @@ use axum::{
     routing::get,
     Router,
 };
-use axum_server::tls_rustls::RustlsConfig;
 use rust_embed::RustEmbed;
 
 use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
@@ -24,61 +21,23 @@ pub async fn serve() -> Result<()> {
         .route("/api/v1/clusters/{cluster}/nodes", get(list_nodes))
         .fallback(get(serve_ui));
 
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 8443));
+    // Loopback only. Remote access goes through `mlsh control open` which
+    // tunnels via the overlay (mTLS-authenticated peers, role-checked by the
+    // target mlshtund). No direct internet exposure for the admin UI.
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 8443));
+    tracing::info!("mlsh-control listening on http://{addr}");
 
-    let tls = ensure_self_signed_tls(&data_dir()).await?;
-    tracing::info!("mlsh-control listening on https://{addr} (self-signed TLS)");
-
-    axum_server::bind_rustls(addr, tls)
-        .serve(app.into_make_service())
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app)
         .await
-        .context("axum-server crashed")?;
+        .context("mlsh-control HTTP server crashed")?;
     Ok(())
-}
-
-fn data_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("mlsh")
-        .join("control")
-}
-
-/// Load the TLS cert+key from `<data_dir>/tls/{cert,key}.pem`, generating
-/// a fresh self-signed pair on first run. Sufficient for local browser
-/// access in dev; production exposure goes through signal's SNI passthrough
-/// and uses an ACME-issued cert (TODO).
-async fn ensure_self_signed_tls(data_dir: &Path) -> Result<RustlsConfig> {
-    let tls_dir = data_dir.join("tls");
-    std::fs::create_dir_all(&tls_dir)?;
-
-    let cert_path = tls_dir.join("cert.pem");
-    let key_path = tls_dir.join("key.pem");
-
-    if !cert_path.exists() || !key_path.exists() {
-        let (cert_pem, key_pem) =
-            crate::tund::ingress::generate_self_signed(&["mlsh-control.local", "localhost"])?;
-        std::fs::write(&cert_path, &cert_pem).context("write cert.pem")?;
-        std::fs::write(&key_path, &key_pem).context("write key.pem")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
-        }
-        tracing::info!(path = %cert_path.display(), "Generated self-signed TLS cert");
-    }
-
-    RustlsConfig::from_pem_file(&cert_path, &key_path)
-        .await
-        .context("load TLS cert/key")
 }
 
 async fn health() -> &'static str {
     "ok"
 }
 
-/// Serve the embedded SPA. Unknown paths fall back to `index.html` so the
-/// router can handle client-side routes; `*.{js,css,…}` resolve directly
-/// to their compiled asset.
 async fn serve_ui(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
