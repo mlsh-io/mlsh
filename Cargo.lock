@@ -1942,6 +1942,7 @@ dependencies = [
  "tracing-subscriber",
  "tun-rs",
  "ureq",
+ "uuid",
  "whoami 2.1.1",
  "zbus",
 ]

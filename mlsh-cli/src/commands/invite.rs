@@ -46,9 +46,14 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
         .context("Missing [node_auth] section")?;
 
     let node_id = node_auth
-        .get("node_id")
+        .get("node_uuid")
         .and_then(|v| v.as_str())
-        .context("Missing node_auth.node_id")?;
+        .or_else(|| node_auth.get("node_id").and_then(|v| v.as_str()))
+        .context("Missing node_auth.node_uuid")?;
+    let display_name = node_auth
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(node_id);
 
     let signal_fingerprint = cluster
         .get("signal_fingerprint")
@@ -114,7 +119,7 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
     println!();
     println!("  URL:     {}", url);
     println!("  Role:    {}", role);
-    println!("  Sponsor: {}", node_id);
+    println!("  Sponsor: {}", display_name);
     println!("  Expires: {}", expires_dt);
     println!();
     println!("On the new machine, run:");

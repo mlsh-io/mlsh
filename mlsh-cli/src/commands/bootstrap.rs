@@ -17,6 +17,7 @@ pub struct BootstrapInput<'a> {
     pub signal_fingerprint: &'a str,
     pub root_fingerprint: &'a str,
     pub node_id: &'a str,
+    pub display_name: &'a str,
     pub pre_auth_token: &'a str,
     /// Roles this node holds locally (written to the TOML).
     pub roles: &'a [&'a str],
@@ -66,7 +67,7 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
         pre_auth_token: input.pre_auth_token.to_string(),
         fingerprint: identity.fingerprint.clone(),
         node_uuid: input.node_id.to_string(),
-        display_name: input.node_id.to_string(),
+        display_name: input.display_name.to_string(),
         public_key,
         expires_at: 0,
         // Signal stripped admission_cert in ADR-030 (still in the wire
@@ -136,7 +137,8 @@ fn write_cluster_toml(
          root_fingerprint = \"{root_fingerprint}\"\n\
          \n\
          [node_auth]\n\
-         node_id = \"{node_id}\"\n\
+         node_uuid = \"{node_uuid}\"\n\
+         display_name = \"{display_name}\"\n\
          fingerprint = \"{fingerprint}\"\n\
          roles = [{roles_toml}]\n\
          \n\
@@ -147,7 +149,8 @@ fn write_cluster_toml(
         signal_endpoint = input.signal_endpoint,
         signal_fingerprint = input.signal_fingerprint,
         root_fingerprint = input.root_fingerprint,
-        node_id = input.node_id,
+        node_uuid = input.node_id,
+        display_name = input.display_name,
     );
 
     let cluster_file = clusters_dir.join(format!("{}.toml", input.cluster_name));
@@ -160,8 +163,14 @@ fn write_cluster_toml(
     Ok(())
 }
 
-/// Default node_id from CLI flag or hostname.
-pub fn default_node_id(name_override: Option<&str>) -> String {
+/// Generate a fresh UUID v4 to identify the node in signal and on the wire.
+/// Stable across renames; the human-facing label is `display_name`.
+pub fn generate_node_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+/// Default display name from CLI flag or hostname.
+pub fn default_display_name(name_override: Option<&str>) -> String {
     name_override
         .map(String::from)
         .unwrap_or_else(|| whoami::hostname().unwrap_or_else(|_| "node".to_string()))

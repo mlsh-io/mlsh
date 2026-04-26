@@ -27,7 +27,8 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     }
     let root_fingerprint = invite.root_fingerprint.unwrap_or_default();
 
-    let node_id = bootstrap::default_node_id(name_override);
+    let node_id = bootstrap::generate_node_id();
+    let display_name = bootstrap::default_display_name(name_override);
     let signal_endpoint = bootstrap::ensure_port(&signal_host, DEFAULT_SIGNAL_PORT);
 
     let out = bootstrap::run(BootstrapInput {
@@ -37,6 +38,7 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
         signal_fingerprint: &signal_fingerprint,
         root_fingerprint: &root_fingerprint,
         node_id: &node_id,
+        display_name: &display_name,
         pre_auth_token: &payload,
         roles: &["node"],
     })

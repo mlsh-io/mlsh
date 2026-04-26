@@ -180,7 +180,7 @@ async fn handle_connect_foreground(cluster_name: &str) -> Result<()> {
         config.overlay_ip.as_deref().unwrap_or("pending")
     );
     println!("  Signal:     {}", config.signal_endpoint.dimmed());
-    println!("  Node:       {}", config.node_id);
+    println!("  Node:       {}", config.display_name);
 
     let cluster_name_for_dns = config.name.clone();
     let mut tunnel = ManagedTunnel::start(config)?;

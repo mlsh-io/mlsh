@@ -22,7 +22,8 @@ pub async fn handle_setup(
     println!("  Cluster: {}", cluster_name);
     println!("  Signal:  {}", signal_host);
 
-    let node_id = bootstrap::default_node_id(name_override);
+    let node_id = bootstrap::generate_node_id();
+    let display_name = bootstrap::default_display_name(name_override);
     let signal_endpoint = bootstrap::ensure_port(signal_host, DEFAULT_SIGNAL_PORT);
 
     let out = bootstrap::run(BootstrapInput {
@@ -33,6 +34,7 @@ pub async fn handle_setup(
         // Setup creates the cluster — this node IS the root admin.
         root_fingerprint: "",
         node_id: &node_id,
+        display_name: &display_name,
         pre_auth_token: &setup_code,
         // First node holds all three roles (ADR-030 §2). The control role
         // can be migrated later via `mlsh control migrate <node>`.
@@ -43,7 +45,8 @@ pub async fn handle_setup(
     println!();
     println!("{}", "Setup completed!".green().bold());
     println!("  Cluster:    {}", cluster_name);
-    println!("  Node:       {} (node + admin + control)", node_id);
+    println!("  Node:       {} (node + admin + control)", display_name);
+    println!("  Node ID:    {}", node_id);
     println!("  Overlay IP: {}", out.overlay_ip);
     println!();
     println!("{}", "Next steps:".cyan().bold());

@@ -60,6 +60,8 @@ instant-acme = "0.8"
 ureq = { version = "3", features = ["json"] }
 # Username detection
 whoami = "2"
+# UUID v4 for node identifiers
+uuid = { version = "1", features = ["v4"] }
 # Cross-platform interface/address change notifications.
 if-watch = { version = "3", features = ["tokio"] }
 
