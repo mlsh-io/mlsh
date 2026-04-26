@@ -161,6 +161,34 @@ enum Commands {
     /// Manage the overlay tunnel daemon
     #[command(subcommand)]
     Tunnel(commands::daemon::DaemonCommands),
+
+    /// Manage the control-plane role on this node (ADR-030)
+    #[command(subcommand)]
+    Control(ControlCommands),
+}
+
+#[derive(Subcommand)]
+enum ControlCommands {
+    /// Start mlsh-control on this node and add the `control` role to its config.
+    Promote {
+        /// Cluster name
+        cluster: String,
+    },
+    /// Stop mlsh-control on this node and remove the `control` role from its config.
+    Demote {
+        /// Cluster name
+        cluster: String,
+    },
+    /// Demote this node and print the steps to promote a target node.
+    /// Peer-to-peer transfer of the SQLite is a future enhancement; for now
+    /// the operator copies the data dir manually and runs `mlsh control
+    /// promote` on the target.
+    Migrate {
+        /// Cluster name
+        cluster: String,
+        /// Target node display name (informational; printed in instructions)
+        node: String,
+    },
 }
 
 fn main() {
@@ -172,6 +200,14 @@ fn main() {
     // If invoked as "mlshtund" (via symlink), run the tunnel daemon directly.
     if is_tund_invocation() {
         return run_tund();
+    }
+
+    // If invoked as "mlsh-control" (via symlink) or with MLSH_RUN_AS=control
+    // (used by mlshtund to fork the control process from the same binary),
+    // run the control plane.
+    #[cfg(feature = "control-plane")]
+    if is_control_invocation() || std::env::var("MLSH_RUN_AS").as_deref() == Ok("control") {
+        return run_control();
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -189,22 +225,33 @@ fn main() {
     std::process::exit(code);
 }
 
-/// Check if we were invoked as "mlshtund" (argv[0] ends with "mlshtund" or "mlshtund.exe").
-fn is_tund_invocation() -> bool {
-    std::env::args()
-        .next()
-        .map(|arg0| {
-            std::path::Path::new(&arg0)
-                .file_stem()
-                .and_then(|f| f.to_str())
-                .is_some_and(|name| name == "mlshtund")
-        })
-        .unwrap_or(false)
+fn argv0_stem() -> Option<String> {
+    std::env::args().next().and_then(|arg0| {
+        std::path::Path::new(&arg0)
+            .file_stem()
+            .and_then(|f| f.to_str())
+            .map(|s| s.to_owned())
+    })
 }
 
-fn run_tund() {
-    use std::sync::Arc;
-    use tokio::sync::{watch, Mutex};
+/// Check if we were invoked as "mlshtund" (argv[0] ends with "mlshtund" or "mlshtund.exe").
+fn is_tund_invocation() -> bool {
+    argv0_stem().is_some_and(|name| name == "mlshtund")
+}
+
+#[cfg(feature = "control-plane")]
+fn is_control_invocation() -> bool {
+    argv0_stem().is_some_and(|name| name == "mlsh-control")
+}
+
+/// Boot a multi-threaded tokio runtime, run `f` to completion, and exit
+/// with the appropriate code. Used by every daemon-mode entry point that
+/// shouldn't return to the outer dispatch.
+fn run_daemon<F, Fut>(f: F) -> !
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     use tracing_subscriber::EnvFilter;
 
     tracing_subscriber::fmt()
@@ -218,7 +265,27 @@ fn run_tund() {
         .build()
         .expect("Failed to build tokio runtime");
 
-    let code = match rt.block_on(async {
+    let code = match rt.block_on(f()) {
+        Ok(()) => 0,
+        Err(e) => {
+            tracing::error!("Fatal: {:#}", e);
+            eprintln!("Error: {:#}", e);
+            1
+        }
+    };
+    std::process::exit(code);
+}
+
+#[cfg(feature = "control-plane")]
+fn run_control() {
+    run_daemon(mlsh_cli::control::run);
+}
+
+fn run_tund() {
+    use std::sync::Arc;
+    use tokio::sync::{watch, Mutex};
+
+    run_daemon(|| async {
         use mlsh_cli::tund::{acme, control, tunnel_manager::TunnelManager};
 
         #[derive(Parser)]
@@ -253,19 +320,10 @@ fn run_tund() {
         manager.lock().await.shutdown_all().await;
         tracing::info!("mlshtund exiting");
         result
-    }) {
-        Ok(()) => 0,
-        Err(e) => {
-            tracing::error!("Fatal: {:#}", e);
-            eprintln!("Error: {:#}", e);
-            1
-        }
-    };
-    std::process::exit(code);
+    });
 }
 
 async fn run_cli() -> Result<()> {
-    env_logger::init();
     let cli = Cli::parse();
 
     match cli.command {
@@ -331,6 +389,15 @@ async fn run_cli() -> Result<()> {
         }
         Commands::Exposed { cluster } => commands::expose::handle_list_exposed(&cluster).await,
         Commands::Tunnel(cmd) => commands::daemon::handle(cmd).await,
+        Commands::Control(cmd) => match cmd {
+            ControlCommands::Promote { cluster } => {
+                commands::control::handle_promote(&cluster).await
+            }
+            ControlCommands::Demote { cluster } => commands::control::handle_demote(&cluster).await,
+            ControlCommands::Migrate { cluster, node } => {
+                commands::control::handle_migrate(&cluster, &node).await
+            }
+        },
     }
 }
 

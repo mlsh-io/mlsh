@@ -63,7 +63,64 @@ impl DaemonClient {
         self.request(&DaemonRequest::Status).await
     }
 
-    pub async fn ingress_add(
+    pub async fn list_nodes(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ListNodes {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
+
+    pub async fn control_start(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ControlStart {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
+
+    pub async fn control_stop(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ControlStop {
+            cluster: cluster.to_string(),
+        })
+        .await
+    }
+
+    pub async fn revoke(&mut self, cluster: &str, target: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Revoke {
+            cluster: cluster.to_string(),
+            target: target.to_string(),
+        })
+        .await
+    }
+
+    pub async fn rename(
+        &mut self,
+        cluster: &str,
+        target: &str,
+        new_display_name: &str,
+    ) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Rename {
+            cluster: cluster.to_string(),
+            target: target.to_string(),
+            new_display_name: new_display_name.to_string(),
+        })
+        .await
+    }
+
+    pub async fn promote(
+        &mut self,
+        cluster: &str,
+        target_node_id: &str,
+        new_role: &str,
+    ) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Promote {
+            cluster: cluster.to_string(),
+            target_node_id: target_node_id.to_string(),
+            new_role: new_role.to_string(),
+        })
+        .await
+    }
+
+    pub async fn expose(
         &mut self,
         cluster: &str,
         domain: &str,
@@ -71,7 +128,7 @@ impl DaemonClient {
         email: Option<&str>,
         acme_staging: bool,
     ) -> Result<DaemonResponse> {
-        self.request(&DaemonRequest::IngressAdd {
+        self.request(&DaemonRequest::Expose {
             cluster: cluster.to_string(),
             domain: domain.to_string(),
             target: target.to_string(),
@@ -81,9 +138,17 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn ingress_remove(&mut self, domain: &str) -> Result<DaemonResponse> {
-        self.request(&DaemonRequest::IngressRemove {
+    pub async fn unexpose(&mut self, cluster: &str, domain: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::Unexpose {
+            cluster: cluster.to_string(),
             domain: domain.to_string(),
+        })
+        .await
+    }
+
+    pub async fn list_exposed(&mut self, cluster: &str) -> Result<DaemonResponse> {
+        self.request(&DaemonRequest::ListExposed {
+            cluster: cluster.to_string(),
         })
         .await
     }

@@ -1,18 +1,13 @@
 //! `mlsh expose` / `mlsh unexpose` / `mlsh exposed`.
 //!
-//! These commands register/remove public reverse-proxy routes with
-//! mlsh-signal.
+//! Routed through mlshtund's Unix socket (ADR-030). The daemon performs the
+//! expose end-to-end: signal-side route registration plus the local ingress
+//! mapping and ACME issuance, atomically per request.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use colored::Colorize;
 
-use mlsh_protocol::framing;
-use mlsh_protocol::messages::{ServerMessage, StreamMessage};
-use mlsh_protocol::types::IngressMode;
-
-use crate::quic::client::{connect_to_signal, resolve_addr};
-use crate::tund::client::DaemonClient;
-use crate::tund::tunnel::load_cluster_config;
+use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
 
 pub async fn handle_expose(
     cluster: &str,
@@ -21,74 +16,24 @@ pub async fn handle_expose(
     email: Option<&str>,
     acme_staging: bool,
 ) -> Result<()> {
-    let base = crate::config::config_dir()?;
-    let config = load_cluster_config(cluster, &base)?;
-
     println!(
         "Exposing {} as {} in cluster {}...",
         target.bold(),
         domain.bold(),
-        config.name.bold()
+        cluster.bold()
     );
 
-    let identity = mlsh_crypto::identity::load_or_generate(&config.identity_dir, &config.node_id)
-        .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
-
-    let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(
-        addr,
-        &config.signal_endpoint,
-        &config.signal_fingerprint,
-        &identity,
-    )
-    .await?;
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .context("Failed to open signal stream")?;
-
-    let msg = StreamMessage::ExposeService {
-        cluster_id: config.cluster_id.clone(),
-        domain: domain.to_string(),
-        target: target.to_string(),
-        mode: IngressMode::Http,
-    };
-    framing::write_msg(&mut send, &msg).await?;
-
-    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
-    conn.close(quinn::VarInt::from_u32(0), b"done");
+    let mut client = DaemonClient::connect_default().await?;
+    let resp = client
+        .expose(cluster, domain, target, email, acme_staging)
+        .await?;
 
     match resp {
-        ServerMessage::ExposeOk {
+        DaemonResponse::ExposeOk {
             domain,
             public_mode,
             public_ip,
         } => {
-            // Also push the target to the local daemon so its ingress handler
-            // knows where to splice incoming streams. Non-fatal if the daemon
-            // isn't running — signal has the authoritative record.
-            match DaemonClient::connect_default().await {
-                Ok(mut c) => {
-                    if let Err(e) = c
-                        .ingress_add(&config.name, &domain, target, email, acme_staging)
-                        .await
-                    {
-                        eprintln!(
-                            "{} Failed to register target with local daemon: {}",
-                            "warning:".yellow(),
-                            e
-                        );
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "{} mlshtund is not running — signal knows the route but no local forwarder: {}",
-                        "warning:".yellow(),
-                        e
-                    );
-                }
-            }
-
             let ip_line = public_ip
                 .as_deref()
                 .map(|ip| format!(" (via {})", ip))
@@ -104,125 +49,73 @@ pub async fn handle_expose(
             );
             Ok(())
         }
-        ServerMessage::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code)
+        DaemonResponse::Error { code, message } => {
+            anyhow::bail!("{} ({})", message, code);
         }
-        other => anyhow::bail!("Unexpected response: {:?}", other),
+        _ => anyhow::bail!("Unexpected daemon response"),
     }
 }
 
 pub async fn handle_unexpose(cluster: &str, domain: &str) -> Result<()> {
-    let base = crate::config::config_dir()?;
-    let config = load_cluster_config(cluster, &base)?;
-
     println!(
         "Removing {} from cluster {}...",
         domain.bold(),
-        config.name.bold()
+        cluster.bold()
     );
 
-    let identity = mlsh_crypto::identity::load_or_generate(&config.identity_dir, &config.node_id)
-        .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
-
-    let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(
-        addr,
-        &config.signal_endpoint,
-        &config.signal_fingerprint,
-        &identity,
-    )
-    .await?;
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .context("Failed to open signal stream")?;
-
-    let msg = StreamMessage::UnexposeService {
-        cluster_id: config.cluster_id.clone(),
-        domain: domain.to_string(),
-    };
-    framing::write_msg(&mut send, &msg).await?;
-
-    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
-    conn.close(quinn::VarInt::from_u32(0), b"done");
+    let mut client = DaemonClient::connect_default().await?;
+    let resp = client.unexpose(cluster, domain).await?;
 
     match resp {
-        ServerMessage::UnexposeOk => {
-            if let Ok(mut c) = DaemonClient::connect_default().await {
-                let _ = c.ingress_remove(domain).await;
-            }
+        DaemonResponse::Ok { .. } => {
             println!("{}", format!("Unexposed {}.", domain).green().bold());
             Ok(())
         }
-        ServerMessage::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code)
+        DaemonResponse::Error { code, message } => {
+            anyhow::bail!("{} ({})", message, code);
         }
-        other => anyhow::bail!("Unexpected response: {:?}", other),
+        _ => anyhow::bail!("Unexpected daemon response"),
     }
 }
 
 pub async fn handle_list_exposed(cluster: &str) -> Result<()> {
-    let base = crate::config::config_dir()?;
-    let config = load_cluster_config(cluster, &base)?;
+    let mut client = DaemonClient::connect_default().await?;
+    let resp = client.list_exposed(cluster).await?;
 
-    let identity = mlsh_crypto::identity::load_or_generate(&config.identity_dir, &config.node_id)
-        .map_err(|e| anyhow::anyhow!("Failed to load identity: {}", e))?;
-
-    let addr = resolve_addr(&config.signal_endpoint)?;
-    let conn = connect_to_signal(
-        addr,
-        &config.signal_endpoint,
-        &config.signal_fingerprint,
-        &identity,
-    )
-    .await?;
-    let (mut send, mut recv) = conn
-        .open_bi()
-        .await
-        .context("Failed to open signal stream")?;
-
-    let msg = StreamMessage::ListExposed {
-        cluster_id: config.cluster_id.clone(),
+    let routes = match resp {
+        DaemonResponse::ExposedList { routes } => routes,
+        DaemonResponse::Error { code, message } => {
+            anyhow::bail!("{} ({})", message, code);
+        }
+        _ => anyhow::bail!("Unexpected daemon response"),
     };
-    framing::write_msg(&mut send, &msg).await?;
 
-    let resp: ServerMessage = framing::read_msg(&mut recv).await?;
-    conn.close(quinn::VarInt::from_u32(0), b"done");
-
-    match resp {
-        ServerMessage::ExposedList { routes } => {
-            if routes.is_empty() {
-                println!("No services exposed in cluster {}.", config.name.bold());
-                return Ok(());
-            }
-            println!(
-                "{:<32}  {:<10}  {:<28}  {:<16}",
-                "DOMAIN".bold(),
-                "MODE".bold(),
-                "TARGET".bold(),
-                "NODE".bold()
-            );
-            for r in &routes {
-                let mode_colored = if r.public_mode == "direct" {
-                    r.public_mode.green()
-                } else {
-                    r.public_mode.yellow()
-                };
-                println!(
-                    "{:<32}  {:<10}  {:<28}  {:<16}",
-                    r.domain,
-                    mode_colored,
-                    r.target,
-                    short_id(&r.node_id)
-                );
-            }
-            Ok(())
-        }
-        ServerMessage::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code)
-        }
-        other => anyhow::bail!("Unexpected response: {:?}", other),
+    if routes.is_empty() {
+        println!("No services exposed in cluster {}.", cluster.bold());
+        return Ok(());
     }
+    println!(
+        "{:<32}  {:<10}  {:<28}  {:<16}",
+        "DOMAIN".bold(),
+        "MODE".bold(),
+        "TARGET".bold(),
+        "NODE".bold()
+    );
+    for r in &routes {
+        let mode_colored = if r.public_mode == "direct" {
+            r.public_mode.green()
+        } else {
+            r.public_mode.yellow()
+        };
+        println!(
+            "{:<32}  {:<10}  {:<28}  {:<16}",
+            r.domain,
+            mode_colored,
+            r.target,
+            short_id(&r.node_id)
+        );
+    }
+    Ok(())
 }
 
 fn short_id(id: &str) -> &str {

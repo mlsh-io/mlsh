@@ -25,30 +25,51 @@ pub enum DaemonRequest {
     Disconnect { cluster: String },
     /// Query the status of all tunnels.
     Status,
-    /// Register a public-ingress route on the local daemon.
-    /// Paired with `StreamMessage::ExposeService` sent to signal by the CLI.
-    /// The peer's ingress stream handler splices inbound traffic to `target`
-    /// after terminating TLS with the cert issued for `domain`.
-    IngressAdd {
-        /// Cluster whose signal session publishes the HTTP-01 challenge
-        /// response. Looked up against `TunnelManager`. If empty / not
-        /// connected, the daemon falls back to a self-signed cert and logs
-        /// a warning.
-        #[serde(default)]
+    /// List all nodes in a cluster, including offline ones.
+    /// Forwarded to signal over the daemon's persistent QUIC connection.
+    /// Used by `mlsh-control` to populate its admin UI.
+    ListNodes { cluster: String },
+    /// Stop the local `mlsh-control` child if one is running for this cluster.
+    /// Used by `mlsh control demote/migrate` before flipping the role.
+    ControlStop { cluster: String },
+    /// Start a `mlsh-control` child for this cluster (no-op if already running).
+    /// Used by `mlsh control promote` after the role flip.
+    ControlStart { cluster: String },
+    /// Revoke a node from the cluster (admin only). Forwarded to signal as
+    /// `StreamMessage::Revoke`. `target` is a display name.
+    Revoke { cluster: String, target: String },
+    /// Rename a node in the cluster. Forwarded to signal as
+    /// `StreamMessage::Rename`. `target` is the current display name.
+    Rename {
         cluster: String,
-        /// Public domain (e.g. "myapp.mlsh.io").
-        domain: String,
-        /// Local upstream URL (e.g. "http://localhost:3000").
         target: String,
-        /// Contact email for the ACME account.
+        new_display_name: String,
+    },
+    /// Change a node's role (admin/node). Forwarded to signal as
+    /// `StreamMessage::Promote`. `target_node_id` is the UUID.
+    Promote {
+        cluster: String,
+        target_node_id: String,
+        new_role: String,
+    },
+    /// Expose a local service publicly: forward `ExposeService` to signal
+    /// and, on success, register the local ingress route (so the daemon
+    /// splices incoming streams to `target`) plus kick off ACME issuance.
+    /// All atomic in the daemon — the CLI sees one round-trip.
+    Expose {
+        cluster: String,
+        domain: String,
+        target: String,
         #[serde(default)]
         email: Option<String>,
-        /// When true, target Let's Encrypt staging instead of production.
         #[serde(default)]
         acme_staging: bool,
     },
-    /// Remove a previously-registered ingress target.
-    IngressRemove { domain: String },
+    /// Inverse of `Expose`: forward `UnexposeService` to signal and, on
+    /// success, drop the local ingress mapping.
+    Unexpose { cluster: String, domain: String },
+    /// List all public ingress routes registered for this cluster.
+    ListExposed { cluster: String },
 }
 
 // Daemon → Client
@@ -65,6 +86,21 @@ pub enum DaemonResponse {
     Error { code: String, message: String },
     /// Status of all tunnels.
     Status { tunnels: Vec<TunnelStatus> },
+    /// List of nodes in a cluster (response to `ListNodes`).
+    NodeList {
+        nodes: Vec<mlsh_protocol::types::NodeInfo>,
+    },
+    /// Successful response to `Expose`. Mirrors signal's `ExposeOk`.
+    ExposeOk {
+        domain: String,
+        public_mode: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        public_ip: Option<String>,
+    },
+    /// Response to `ListExposed`.
+    ExposedList {
+        routes: Vec<mlsh_protocol::types::IngressRoute>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

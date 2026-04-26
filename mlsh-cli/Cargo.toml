@@ -8,6 +8,14 @@ license = "MIT"
 name = "mlsh"
 path = "src/main.rs"
 
+[features]
+control-plane = [
+    "dep:axum",
+    "dep:axum-server",
+    "dep:sqlx",
+    "dep:rust-embed",
+]
+
 [dependencies]
 # CLI framework
 clap = { version = "4.6", features = ["derive", "cargo", "env"] }
@@ -24,7 +32,7 @@ toml = "1.1"
 # Date/time
 time = { version = "0.3", features = ["formatting", "parsing"] }
 # Async runtime
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "signal", "net", "io-util"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros", "signal", "net", "io-util", "process"] }
 tokio-util = "0.7"
 # QUIC transport (ADR-011) — prefer-post-quantum enables X25519Kyber768 via aws-lc-rs
 quinn = "0.11"
@@ -39,9 +47,8 @@ tun-rs = { version = "2", features = ["async"] }
 # Local IP address discovery (for candidate gathering)
 local-ip-address = "0.6"
 # Logging
-env_logger = "0.11"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
 # Base64 encoding for invite payloads
 base64 = "0.22"
 # TLS over relay stream for E2E encryption
@@ -70,6 +77,12 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 system-configuration-sys = "0.6"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+
+# control-plane feature deps (optional)
+axum = { version = "0.8", optional = true }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+rust-embed = { version = "8", features = ["compression"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

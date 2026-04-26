@@ -121,36 +121,133 @@ where
             let mgr = manager.lock().await;
             mgr.status()
         }
-        DaemonRequest::IngressAdd {
+        DaemonRequest::ListNodes { cluster } => {
+            let mgr = manager.lock().await;
+            match mgr.list_nodes(&cluster).await {
+                Ok(nodes) => DaemonResponse::NodeList { nodes },
+                Err(e) => DaemonResponse::Error {
+                    code: "list_nodes_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::ControlStart { cluster } => {
+            let mut mgr = manager.lock().await;
+            mgr.start_control(&cluster)
+        }
+        DaemonRequest::ControlStop { cluster } => {
+            let mut mgr = manager.lock().await;
+            mgr.stop_control(&cluster).await
+        }
+        DaemonRequest::Revoke { cluster, target } => {
+            let mgr = manager.lock().await;
+            match mgr.revoke(&cluster, &target).await {
+                Ok(()) => DaemonResponse::Ok {
+                    message: Some(format!("Node '{}' revoked.", target)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "revoke_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Rename {
+            cluster,
+            target,
+            new_display_name,
+        } => {
+            let mgr = manager.lock().await;
+            match mgr.rename(&cluster, &target, &new_display_name).await {
+                Ok(name) => DaemonResponse::Ok {
+                    message: Some(format!("Renamed to '{}'.", name)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "rename_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Promote {
+            cluster,
+            target_node_id,
+            new_role,
+        } => {
+            let mgr = manager.lock().await;
+            match mgr.promote(&cluster, &target_node_id, &new_role).await {
+                Ok(()) => DaemonResponse::Ok {
+                    message: Some(format!("Role updated to '{}'.", new_role)),
+                },
+                Err(e) => DaemonResponse::Error {
+                    code: "promote_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::Expose {
             cluster,
             domain,
             target,
             email,
             acme_staging,
         } => {
-            crate::tund::ingress::add(&domain, &target);
-            if !cluster.is_empty() {
-                let directory = if acme_staging {
-                    crate::tund::acme::Directory::Staging
-                } else {
-                    crate::tund::acme::Directory::Production
-                };
-                crate::tund::acme::spawn_issuance(
-                    manager.clone(),
-                    cluster,
-                    domain.clone(),
-                    email,
-                    directory,
-                );
-            }
-            DaemonResponse::Ok {
-                message: Some(format!("Ingress target registered for {}", domain)),
+            // Step 1: register the route with signal so it knows where to
+            // route inbound traffic.
+            let signal_resp = {
+                let mgr = manager.lock().await;
+                mgr.expose(&cluster, &domain, &target).await
+            };
+            match signal_resp {
+                Ok((d, public_mode, public_ip)) => {
+                    // Step 2: register the local forwarder + kick ACME so
+                    // the cert is available when the first request arrives.
+                    crate::tund::ingress::add(&d, &target);
+                    let directory = if acme_staging {
+                        crate::tund::acme::Directory::Staging
+                    } else {
+                        crate::tund::acme::Directory::Production
+                    };
+                    crate::tund::acme::spawn_issuance(
+                        manager.clone(),
+                        cluster,
+                        d.clone(),
+                        email,
+                        directory,
+                    );
+                    DaemonResponse::ExposeOk {
+                        domain: d,
+                        public_mode,
+                        public_ip,
+                    }
+                }
+                Err(e) => DaemonResponse::Error {
+                    code: "expose_failed".into(),
+                    message: format!("{:#}", e),
+                },
             }
         }
-        DaemonRequest::IngressRemove { domain } => {
-            crate::tund::ingress::remove(&domain);
-            DaemonResponse::Ok {
-                message: Some(format!("Ingress target removed for {}", domain)),
+        DaemonRequest::Unexpose { cluster, domain } => {
+            let mgr = manager.lock().await;
+            match mgr.unexpose(&cluster, &domain).await {
+                Ok(()) => {
+                    crate::tund::ingress::remove(&domain);
+                    DaemonResponse::Ok {
+                        message: Some(format!("Unexposed '{}'.", domain)),
+                    }
+                }
+                Err(e) => DaemonResponse::Error {
+                    code: "unexpose_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
+        DaemonRequest::ListExposed { cluster } => {
+            let mgr = manager.lock().await;
+            match mgr.list_exposed(&cluster).await {
+                Ok(routes) => DaemonResponse::ExposedList { routes },
+                Err(e) => DaemonResponse::Error {
+                    code: "list_exposed_failed".into(),
+                    message: format!("{:#}", e),
+                },
             }
         }
     };

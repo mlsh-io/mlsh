@@ -43,6 +43,9 @@ pub struct ClusterConfig {
     pub public_key: String,
     /// Root admin fingerprint for peer-side admission cert verification.
     pub root_fingerprint: String,
+    /// Roles this node holds: `node` (always), optionally `admin` and `control`
+    /// (ADR-030). When `control` is present, mlshtund forks `mlsh-control`.
+    pub roles: Vec<String>,
     /// Path to the identity directory containing cert.pem and key.pem.
     pub identity_dir: std::path::PathBuf,
 }
@@ -81,6 +84,9 @@ struct SharedInfo {
 /// A managed tunnel for a single cluster.
 pub struct ManagedTunnel {
     pub cluster_name: String,
+    /// Cluster UUID — needed to build signal-facing messages (Revoke/Rename/
+    /// Promote) that the daemon forwards on behalf of the CLI.
+    pub cluster_id: String,
     state_rx: watch::Receiver<TunnelState>,
     shutdown_tx: watch::Sender<bool>,
     task: Option<JoinHandle<()>>,
@@ -91,6 +97,9 @@ pub struct ManagedTunnel {
     /// Watch exposing the currently-active signal QUIC connection. Used by
     /// the ACME client to publish HTTP-01 challenge responses via signal.
     signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
+    /// Forked `mlsh-control` child process, when this node holds the
+    /// `control` role (ADR-030 §1).
+    control_child: Option<tokio::process::Child>,
 }
 
 impl ManagedTunnel {
@@ -111,7 +120,17 @@ impl ManagedTunnel {
             .context("Invalid overlay IP in cluster config")?;
 
         let cluster_name = config.name.clone();
+        let cluster_id = config.cluster_id.clone();
         let info_task = info.clone();
+
+        // Spawn mlsh-control if this node holds the `control` role.
+        // The child runs as the current user with no extra privileges.
+        // Lifecycle is tied to this ManagedTunnel — killed on stop().
+        let control_child = if config.roles.iter().any(|r| r == "control") {
+            spawn_control_child(&cluster_name)
+        } else {
+            None
+        };
 
         let tx_counter = bytes_tx.clone();
         let rx_counter = bytes_rx.clone();
@@ -131,6 +150,7 @@ impl ManagedTunnel {
 
         Ok(Self {
             cluster_name,
+            cluster_id,
             state_rx,
             shutdown_tx,
             task: Some(task),
@@ -139,6 +159,7 @@ impl ManagedTunnel {
             overlay_ip: Some(overlay_ip),
             info,
             signal_conn_rx: Some(signal_conn_rx),
+            control_child,
         })
     }
 
@@ -147,6 +168,30 @@ impl ManagedTunnel {
         self.signal_conn_rx
             .as_ref()
             .and_then(|rx| rx.borrow().clone())
+    }
+
+    /// Whether the control-plane child process is currently running.
+    pub fn has_control_child(&self) -> bool {
+        self.control_child.is_some()
+    }
+
+    /// Start the `mlsh-control` child process for this tunnel. No-op if
+    /// already running.
+    pub fn start_control(&mut self) {
+        if self.control_child.is_some() {
+            return;
+        }
+        self.control_child = spawn_control_child(&self.cluster_name);
+    }
+
+    /// Stop the `mlsh-control` child process for this tunnel. No-op if not
+    /// running. Awaits the kill so the caller can be sure the port is
+    /// released before returning.
+    pub async fn stop_control(&mut self) {
+        if let Some(mut child) = self.control_child.take() {
+            tracing::info!("Stopping mlsh-control for '{}'", self.cluster_name);
+            let _ = child.kill().await;
+        }
     }
 
     /// Shut down this tunnel.
@@ -163,6 +208,10 @@ impl ManagedTunnel {
                 );
                 task.abort();
             }
+        }
+        if let Some(mut child) = self.control_child.take() {
+            tracing::info!("Stopping mlsh-control for '{}'", self.cluster_name);
+            let _ = child.kill().await;
         }
         dns::remove_resolver(&self.cluster_name);
     }
@@ -185,6 +234,40 @@ impl ManagedTunnel {
             bytes_tx: self.bytes_tx.load(Ordering::Relaxed),
             bytes_rx: self.bytes_rx.load(Ordering::Relaxed),
             last_error: info.last_error.clone(),
+        }
+    }
+}
+
+/// Spawn `mlsh-control` as a child process for the given cluster.
+///
+/// Re-execs the same binary with `MLSH_RUN_AS=control` (the binary's main
+/// dispatch detects the env var and runs the control plane). Child runs as
+/// the current user with no extra privileges (ADR-030 §1).
+///
+/// Returns `None` and logs a warning if spawning fails — the tunnel itself
+/// continues to work, only the admin UI is unavailable.
+fn spawn_control_child(cluster: &str) -> Option<tokio::process::Child> {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "current_exe() failed; mlsh-control not spawned");
+            return None;
+        }
+    };
+
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.env("MLSH_RUN_AS", "control")
+        .env("MLSH_CONTROL_CLUSTER", cluster)
+        .kill_on_drop(true);
+
+    match cmd.spawn() {
+        Ok(child) => {
+            tracing::info!(cluster, exe = %exe.display(), "mlsh-control forked");
+            Some(child)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to spawn mlsh-control; admin UI unavailable");
+            None
         }
     }
 }
@@ -1509,6 +1592,17 @@ fn parse_cluster_config_from_toml(
         .and_then(|v| v.as_str())
         .map(String::from);
 
+    // Roles default to ["node"] when absent (legacy configs).
+    let roles: Vec<String> = node_auth
+        .get("roles")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["node".to_string()]);
+
     // Derive public_key from the node's identity certificate
     let public_key =
         if let Ok(identity) = mlsh_crypto::identity::load_or_generate(identity_dir, &node_id) {
@@ -1532,6 +1626,7 @@ fn parse_cluster_config_from_toml(
         fingerprint,
         public_key,
         root_fingerprint,
+        roles,
         identity_dir: identity_dir.to_path_buf(),
     })
 }
