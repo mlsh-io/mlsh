@@ -5,6 +5,8 @@ import StatusDot from '@/components/StatusDot.vue'
 import Btn from '@/components/Btn.vue'
 import { useSession } from '@/composables/useSession'
 import { useNodes, nodeStatus, type NodeStatus } from '@/composables/useNodes'
+import { api } from '@/api/client'
+import type { NodeInfo } from '@/api/types'
 
 const { session } = useSession()
 const { nodes, summary, loading, error, reload } = useNodes()
@@ -18,6 +20,57 @@ const filtered = computed(() => {
 })
 
 const offlineCount = computed(() => nodes.value.length - summary.value.online)
+
+const openMenuFor = ref<string | null>(null)
+const busyNodeId = ref<string | null>(null)
+const actionError = ref<string | null>(null)
+
+function toggleMenu(nodeId: string) {
+  openMenuFor.value = openMenuFor.value === nodeId ? null : nodeId
+}
+
+function closeMenu() {
+  openMenuFor.value = null
+}
+
+async function runAction(node: NodeInfo, action: () => Promise<unknown>) {
+  closeMenu()
+  busyNodeId.value = node.node_id
+  actionError.value = null
+  try {
+    await action()
+    await reload()
+  } catch (e) {
+    actionError.value = (e as Error).message
+  } finally {
+    busyNodeId.value = null
+  }
+}
+
+function onRevoke(node: NodeInfo) {
+  const cluster = session.value?.cluster
+  if (!cluster) return
+  const label = node.display_name || node.node_id.slice(0, 8)
+  if (!confirm(`Revoke node "${label}"? This removes it from the cluster.`)) return
+  runAction(node, () => api.revokeNode(cluster, node.display_name || node.node_id))
+}
+
+function onRename(node: NodeInfo) {
+  const cluster = session.value?.cluster
+  if (!cluster) return
+  const current = node.display_name || ''
+  const next = prompt('New display name:', current)
+  if (next === null) return
+  const trimmed = next.trim()
+  if (!trimmed || trimmed === current) return
+  runAction(node, () => api.renameNode(cluster, node.display_name || node.node_id, trimmed))
+}
+
+function onPromote(node: NodeInfo, role: 'admin' | 'node') {
+  const cluster = session.value?.cluster
+  if (!cluster) return
+  runAction(node, () => api.promoteNode(cluster, node.node_id, role))
+}
 </script>
 
 <template>
@@ -98,9 +151,39 @@ const offlineCount = computed(() => nodes.value.length - summary.value.online)
         {{ node.has_admission_cert ? 'signed' : 'pending' }}
       </div>
       <div class="ip">{{ node.node_id.slice(0, 12) }}…</div>
-      <div class="row-action">⋯</div>
+      <div class="row-action">
+        <button
+          class="row-action-btn"
+          :disabled="busyNodeId === node.node_id"
+          @click.stop="toggleMenu(node.node_id)"
+          :aria-label="`Actions for ${node.display_name || node.node_id}`"
+        >
+          <span v-if="busyNodeId === node.node_id">…</span>
+          <span v-else>⋯</span>
+        </button>
+        <div v-if="openMenuFor === node.node_id" class="action-menu" @click.stop>
+          <button class="menu-item" @click="onRename(node)">Rename…</button>
+          <button
+            v-if="node.role !== 'admin'"
+            class="menu-item"
+            @click="onPromote(node, 'admin')"
+          >
+            Promote to admin
+          </button>
+          <button
+            v-if="node.role === 'admin'"
+            class="menu-item"
+            @click="onPromote(node, 'node')"
+          >
+            Demote to node
+          </button>
+          <button class="menu-item danger" @click="onRevoke(node)">Revoke</button>
+        </div>
+      </div>
     </div>
   </div>
+
+  <div v-if="actionError" class="action-error">{{ actionError }}</div>
 
   <div class="footer-note">
     cluster {{ session?.cluster ?? '—' }} · {{ nodes.length }} nodes ·
@@ -204,8 +287,58 @@ const offlineCount = computed(() => nodes.value.length - summary.value.online)
   color: var(--muted-2);
 }
 .cert.ok { color: var(--green); }
-.row-action { color: var(--muted-2); cursor: pointer; text-align: right; }
-.row-action:hover { color: var(--text); }
+.row-action { position: relative; text-align: right; }
+.row-action-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted-2);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: var(--radius-sm);
+}
+.row-action-btn:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.row-action-btn:disabled { cursor: wait; opacity: 0.5; }
+
+.action-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 10;
+  min-width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.menu-item {
+  background: transparent;
+  border: none;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 12px;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.menu-item:hover { background: var(--surface-2); }
+.menu-item.danger { color: var(--red, #f87171); }
+.menu-item.danger:hover { background: rgba(248, 113, 113, 0.1); }
+
+.action-error {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  background: rgba(248, 113, 113, 0.06);
+  color: var(--red, #f87171);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
+}
 
 .footer-note {
   margin-top: var(--space-6);

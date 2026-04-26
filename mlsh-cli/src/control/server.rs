@@ -3,10 +3,11 @@ use axum::{
     extract::Path as AxumPath,
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Json, Response},
-    routing::get,
+    routing::{delete, get, post},
     Router,
 };
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 
 use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
 
@@ -19,6 +20,14 @@ pub async fn serve() -> Result<()> {
         .route("/health", get(health))
         .route("/api/v1/whoami", get(whoami))
         .route("/api/v1/clusters/{cluster}/nodes", get(list_nodes))
+        .route(
+            "/api/v1/clusters/{cluster}/nodes/{target}",
+            delete(revoke_node).patch(rename_node),
+        )
+        .route(
+            "/api/v1/clusters/{cluster}/nodes/{target}/promote",
+            post(promote_node),
+        )
         .fallback(get(serve_ui));
 
     // Bind on all interfaces so peers in the overlay (and only peers — the
@@ -76,8 +85,73 @@ async fn whoami() -> impl IntoResponse {
     }))
 }
 
-async fn list_nodes(AxumPath(cluster): AxumPath<String>) -> impl IntoResponse {
-    let mut client = match DaemonClient::connect_default().await {
+async fn list_nodes(AxumPath(cluster): AxumPath<String>) -> Response {
+    daemon_call(
+        |mut c| async move { c.list_nodes(&cluster).await },
+        |resp| match resp {
+            DaemonResponse::NodeList { nodes } => Ok(Json(nodes).into_response()),
+            other => Err(other),
+        },
+    )
+    .await
+}
+
+async fn revoke_node(AxumPath((cluster, target)): AxumPath<(String, String)>) -> Response {
+    daemon_call(
+        |mut c| async move { c.revoke(&cluster, &target).await },
+        ok_response,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct RenameBody {
+    display_name: String,
+}
+
+async fn rename_node(
+    AxumPath((cluster, target)): AxumPath<(String, String)>,
+    Json(body): Json<RenameBody>,
+) -> Response {
+    daemon_call(
+        |mut c| async move { c.rename(&cluster, &target, &body.display_name).await },
+        ok_response,
+    )
+    .await
+}
+
+#[derive(Deserialize)]
+struct PromoteBody {
+    role: String,
+}
+
+async fn promote_node(
+    AxumPath((cluster, target)): AxumPath<(String, String)>,
+    Json(body): Json<PromoteBody>,
+) -> Response {
+    daemon_call(
+        |mut c| async move { c.promote(&cluster, &target, &body.role).await },
+        ok_response,
+    )
+    .await
+}
+
+fn ok_response(resp: DaemonResponse) -> Result<Response, DaemonResponse> {
+    match resp {
+        DaemonResponse::Ok { message } => {
+            Ok(Json(serde_json::json!({ "ok": true, "message": message })).into_response())
+        }
+        other => Err(other),
+    }
+}
+
+async fn daemon_call<F, Fut, M>(call: F, map: M) -> Response
+where
+    F: FnOnce(DaemonClient) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<DaemonResponse>>,
+    M: FnOnce(DaemonResponse) -> Result<Response, DaemonResponse>,
+{
+    let client = match DaemonClient::connect_default().await {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -88,18 +162,20 @@ async fn list_nodes(AxumPath(cluster): AxumPath<String>) -> impl IntoResponse {
         }
     };
 
-    match client.list_nodes(&cluster).await {
-        Ok(DaemonResponse::NodeList { nodes }) => Json(nodes).into_response(),
-        Ok(DaemonResponse::Error { code, message }) => (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": message, "code": code })),
-        )
-            .into_response(),
-        Ok(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": "unexpected daemon response" })),
-        )
-            .into_response(),
+    match call(client).await {
+        Ok(resp) => match map(resp) {
+            Ok(r) => r,
+            Err(DaemonResponse::Error { code, message }) => (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": message, "code": code })),
+            )
+                .into_response(),
+            Err(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "unexpected daemon response" })),
+            )
+                .into_response(),
+        },
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": format!("{:#}", e) })),
