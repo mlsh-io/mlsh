@@ -30,6 +30,11 @@ pub struct PeerInfo {
     pub admission_cert: String,
     #[serde(default)]
     pub display_name: String,
+    /// Cluster role: "node" (default), "admin", or "control" (implies admin).
+    /// Used by peers to gate sensitive overlay operations like the admin
+    /// tunnel without round-tripping to signal.
+    #[serde(default)]
+    pub role: String,
 }
 
 /// Information about a registered node (returned by ListNodes).

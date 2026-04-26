@@ -368,6 +368,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: String::new(),
+                role: String::new(),
             }]))
             .await;
 
@@ -416,6 +417,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: "Rack Toulouse NUC".into(),
+                role: String::new(),
             }]))
             .await;
 
@@ -449,6 +451,7 @@ mod tests {
                     public_key: String::new(),
                     admission_cert: String::new(),
                     display_name: "Other".into(),
+                    role: String::new(),
                 },
                 PeerInfo {
                     node_id: "xyz".into(),
@@ -458,6 +461,7 @@ mod tests {
                     public_key: String::new(),
                     admission_cert: String::new(),
                     display_name: "pi".into(),
+                    role: String::new(),
                 },
             ]))
             .await;

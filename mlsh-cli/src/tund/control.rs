@@ -250,6 +250,16 @@ where
                 },
             }
         }
+        DaemonRequest::OpenAdminTunnel { cluster, target } => {
+            let mgr = manager.lock().await;
+            match mgr.open_admin_tunnel(&cluster, &target).await {
+                Ok(local_port) => DaemonResponse::AdminTunnelOpened { local_port },
+                Err(e) => DaemonResponse::Error {
+                    code: "open_admin_tunnel_failed".into(),
+                    message: format!("{:#}", e),
+                },
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;

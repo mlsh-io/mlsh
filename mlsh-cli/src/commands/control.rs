@@ -77,6 +77,45 @@ pub async fn handle_promote(cluster_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Open a local TCP tunnel to the admin UI of a remote control node and
+/// hold it open until Ctrl+C. Fails fast if this node isn't admin in the
+/// cluster — the target's mlshtund would reject the connection anyway,
+/// but the local check gives a useful error before any round-trip.
+pub async fn handle_open(cluster_name: &str, target: &str) -> Result<()> {
+    let cluster_file = cluster_config_path(cluster_name)?;
+    let roles = read_roles(&cluster_file)?;
+    if !roles.iter().any(|r| r == "admin") {
+        anyhow::bail!(
+            "This node does not hold the 'admin' role in cluster '{}'. \
+             Ask an admin to promote it (mlsh promote {} <this-node> --role admin).",
+            cluster_name,
+            cluster_name
+        );
+    }
+
+    let mut client = DaemonClient::connect_default().await?;
+    let resp = client.open_admin_tunnel(cluster_name, target).await?;
+    let port = match resp {
+        DaemonResponse::AdminTunnelOpened { local_port } => local_port,
+        DaemonResponse::Error { code, message } => anyhow::bail!("{} ({})", message, code),
+        _ => anyhow::bail!("Unexpected daemon response"),
+    };
+
+    println!(
+        "{}",
+        format!("Admin UI for '{}' available at:", target)
+            .green()
+            .bold()
+    );
+    println!("  {}", format!("http://127.0.0.1:{}", port).bold());
+    println!();
+    println!("{}", "Press Ctrl+C to close the tunnel.".dimmed());
+    tokio::signal::ctrl_c().await?;
+    println!();
+    println!("{}", "Tunnel closed.".yellow());
+    Ok(())
+}
+
 pub async fn handle_migrate(cluster_name: &str, target: &str) -> Result<()> {
     handle_demote(cluster_name).await?;
 

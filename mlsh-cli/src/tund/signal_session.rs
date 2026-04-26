@@ -797,6 +797,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: String::new(),
+                role: String::new(),
             },
         };
         let (dn_tx, _dn_rx) = watch::channel(String::new());
@@ -815,6 +816,7 @@ mod tests {
             public_key: String::new(),
             admission_cert: String::new(),
             display_name: String::new(),
+            role: String::new(),
         }]));
         let msg = ServerMessage::PeerLeft {
             node_id: "nas".into(),
@@ -835,6 +837,7 @@ mod tests {
             public_key: String::new(),
             admission_cert: String::new(),
             display_name: String::new(),
+            role: String::new(),
         }]));
         let msg = ServerMessage::PeerJoined {
             peer: PeerInfo {
@@ -845,6 +848,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: String::new(),
+                role: String::new(),
             },
         };
         let (dn_tx, _dn_rx) = watch::channel(String::new());

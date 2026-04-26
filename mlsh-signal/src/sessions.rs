@@ -23,6 +23,7 @@ struct NodeSession {
     /// Stored here so invite verification can access it without a DB round-trip.
     public_key: String,
     display_name: String,
+    role: String,
     session_id: u64,
 }
 
@@ -34,6 +35,7 @@ pub struct NodeSessionInfo {
     pub connection: quinn::Connection,
     pub push_tx: tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>,
     pub display_name: String,
+    pub role: String,
 }
 
 fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
@@ -52,6 +54,7 @@ fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
         public_key: s.public_key.clone(),
         admission_cert: String::new(),
         display_name: s.display_name.clone(),
+        role: s.role.clone(),
     }
 }
 
@@ -81,6 +84,7 @@ impl SessionStore {
             host_candidates: Vec::new(),
             public_key: String::new(),
             display_name: info.display_name,
+            role: info.role,
             session_id,
         };
         self.sessions.write().await.insert(key, session);

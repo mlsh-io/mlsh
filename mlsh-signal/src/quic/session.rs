@@ -262,6 +262,7 @@ async fn run_node_session(
                 fingerprint: fingerprint.clone(),
                 overlay_ip,
                 display_name: node.display_name.clone(),
+                role: node.role.clone(),
                 connection: conn.clone(),
                 push_tx,
             },

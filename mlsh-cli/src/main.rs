@@ -189,6 +189,15 @@ enum ControlCommands {
         /// Target node display name (informational; printed in instructions)
         node: String,
     },
+    /// Open a local TCP tunnel to the admin UI of a remote control node
+    /// (browser-friendly equivalent of `ssh -L`, routed through the overlay
+    /// with role-checked mTLS at the target).
+    Open {
+        /// Cluster name
+        cluster: String,
+        /// Target control node display name
+        node: String,
+    },
 }
 
 fn main() {
@@ -398,6 +407,9 @@ async fn run_cli() -> Result<()> {
             ControlCommands::Demote { cluster } => commands::control::handle_demote(&cluster).await,
             ControlCommands::Migrate { cluster, node } => {
                 commands::control::handle_migrate(&cluster, &node).await
+            }
+            ControlCommands::Open { cluster, node } => {
+                commands::control::handle_open(&cluster, &node).await
             }
         },
     }

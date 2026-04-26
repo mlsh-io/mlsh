@@ -247,6 +247,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: String::new(),
+                role: String::new(),
             },
             PeerInfo {
                 node_id: "pi".into(),
@@ -256,6 +257,7 @@ mod tests {
                 public_key: String::new(),
                 admission_cert: String::new(),
                 display_name: String::new(),
+                role: String::new(),
             },
         ];
         table.update_peers(Arc::new(peers)).await;
