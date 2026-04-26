@@ -91,9 +91,7 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
         })
         .map_err(|e| anyhow::anyhow!("Failed to generate invite: {}", e))?;
 
-    // Build the URL
-    let host = signal_endpoint.split(':').next().unwrap_or(signal_endpoint);
-    let url = format!("mlsh://{}/adopt/{}", host, invite_token);
+    let url = format!("mlsh://{}/adopt/{}", signal_endpoint, invite_token);
 
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

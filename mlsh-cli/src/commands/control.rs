@@ -80,28 +80,20 @@ pub async fn handle_promote(cluster_name: &str) -> Result<()> {
 pub async fn handle_migrate(cluster_name: &str, target: &str) -> Result<()> {
     handle_demote(cluster_name).await?;
 
-    // The peer-to-peer SQLite transfer is not implemented yet (ADR-030,
-    // future work). Print the manual steps so the operator can finish the
-    // migration with `scp` + `mlsh control promote` on the target.
+    let src = dirs::data_local_dir()
+        .map(|d| d.join("mlsh").join("control"))
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<data-local-dir>/mlsh/control".to_string());
+
     println!();
     println!("{}", "Next steps on the target node:".cyan().bold());
     println!(
         "  1. {}",
-        format!(
-            "scp -r ~/.local/share/mlsh/control/ {}:~/.local/share/mlsh/",
-            target
-        )
-        .bold()
+        format!("scp -r \"{}\" {}:<target-data-dir>/mlsh/", src, target).bold()
     );
     println!(
         "  2. {}",
         format!("mlsh control promote {}", cluster_name).bold()
-    );
-    println!();
-    println!(
-        "  {}",
-        "(Automatic peer-to-peer transfer over the overlay is planned; tracked under ADR-030.)"
-            .dimmed()
     );
 
     Ok(())
