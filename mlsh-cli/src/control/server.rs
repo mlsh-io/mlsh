@@ -55,7 +55,8 @@ async fn ensure_self_signed_tls(data_dir: &Path) -> Result<RustlsConfig> {
     let key_path = tls_dir.join("key.pem");
 
     if !cert_path.exists() || !key_path.exists() {
-        let (cert_pem, key_pem) = generate_self_signed("mlsh-control.local")?;
+        let (cert_pem, key_pem) =
+            crate::tund::ingress::generate_self_signed(&["mlsh-control.local", "localhost"])?;
         std::fs::write(&cert_path, &cert_pem).context("write cert.pem")?;
         std::fs::write(&key_path, &key_pem).context("write key.pem")?;
         #[cfg(unix)]
@@ -69,19 +70,6 @@ async fn ensure_self_signed_tls(data_dir: &Path) -> Result<RustlsConfig> {
     RustlsConfig::from_pem_file(&cert_path, &key_path)
         .await
         .context("load TLS cert/key")
-}
-
-fn generate_self_signed(common_name: &str) -> Result<(String, String)> {
-    let mut params =
-        rcgen::CertificateParams::new(vec![common_name.to_string(), "localhost".to_string()])
-            .context("build self-signed params")?;
-    params.distinguished_name = rcgen::DistinguishedName::new();
-    params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, common_name);
-    let key_pair = rcgen::KeyPair::generate()?;
-    let cert = params.self_signed(&key_pair)?;
-    Ok((cert.pem(), key_pair.serialize_pem()))
 }
 
 async fn health() -> &'static str {

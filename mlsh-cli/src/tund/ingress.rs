@@ -129,7 +129,7 @@ fn load_or_generate(
 
     if !crt_path.exists() || !key_path.exists() {
         warn!(domain, path = %crt_path.display(), "Generating self-signed cert (Phase 2 stub)");
-        let (crt_pem, key_pem) = generate_self_signed(domain)?;
+        let (crt_pem, key_pem) = generate_self_signed(&[domain])?;
         std::fs::create_dir_all(&dir)
             .with_context(|| format!("Failed to create cert dir {}", dir.display()))?;
         write_restricted(&crt_path, &crt_pem, 0o644)?;
@@ -154,13 +154,17 @@ fn load_or_generate(
     Ok((certs, key))
 }
 
-fn generate_self_signed(domain: &str) -> Result<(String, String)> {
-    let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
-        .context("Failed to build self-signed cert params")?;
+/// Build a self-signed cert + key PEM pair for the given DNS names.
+/// First name is used as the Common Name; remaining names become SANs.
+pub fn generate_self_signed(names: &[&str]) -> Result<(String, String)> {
+    let cn = names.first().copied().unwrap_or("self-signed");
+    let mut params =
+        rcgen::CertificateParams::new(names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .context("Failed to build self-signed cert params")?;
     params.distinguished_name = rcgen::DistinguishedName::new();
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, domain);
+        .push(rcgen::DnType::CommonName, cn);
     let key_pair = rcgen::KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
     Ok((cert.pem(), key_pair.serialize_pem()))
@@ -321,7 +325,7 @@ mod tests {
 
     #[test]
     fn generate_self_signed_roundtrip() {
-        let (crt, key) = generate_self_signed("selfsigned.test.mlsh.io").unwrap();
+        let (crt, key) = generate_self_signed(&["selfsigned.test.mlsh.io"]).unwrap();
         assert!(crt.contains("BEGIN CERTIFICATE"));
         assert!(key.contains("BEGIN PRIVATE KEY"));
         let _certs: Vec<_> = rustls_pemfile::certs(&mut crt.as_bytes())
