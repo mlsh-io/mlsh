@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import StatBlock from '@/components/StatBlock.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import Btn from '@/components/Btn.vue'
@@ -24,6 +24,13 @@ const offlineCount = computed(() => nodes.value.length - summary.value.online)
 const openMenuFor = ref<string | null>(null)
 const busyNodeId = ref<string | null>(null)
 const actionError = ref<string | null>(null)
+const renamingNodeId = ref<string | null>(null)
+const renameDraft = ref('')
+const renameInputRef = ref<HTMLInputElement | null>(null)
+function setRenameInputRef(el: unknown) {
+  renameInputRef.value = (el as HTMLInputElement | null) ?? null
+}
+const confirmRevoke = ref<NodeInfo | null>(null)
 
 function toggleMenu(nodeId: string) {
   openMenuFor.value = openMenuFor.value === nodeId ? null : nodeId
@@ -32,6 +39,25 @@ function toggleMenu(nodeId: string) {
 function closeMenu() {
   openMenuFor.value = null
 }
+
+function onDocMousedown(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  if (!target) return
+  if (target.closest('.row-action')) return
+  closeMenu()
+}
+
+watch(openMenuFor, (open) => {
+  if (open) {
+    document.addEventListener('mousedown', onDocMousedown)
+  } else {
+    document.removeEventListener('mousedown', onDocMousedown)
+  }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('mousedown', onDocMousedown)
+})
 
 async function runAction(node: NodeInfo, action: () => Promise<unknown>) {
   closeMenu()
@@ -47,23 +73,45 @@ async function runAction(node: NodeInfo, action: () => Promise<unknown>) {
   }
 }
 
-function onRevoke(node: NodeInfo) {
+function askRevoke(node: NodeInfo) {
+  closeMenu()
+  confirmRevoke.value = node
+}
+
+function cancelRevoke() {
+  confirmRevoke.value = null
+}
+
+function doRevoke() {
+  const node = confirmRevoke.value
   const cluster = session.value?.cluster
-  if (!cluster) return
-  const label = node.display_name || node.node_id.slice(0, 8)
-  if (!confirm(`Revoke node "${label}"? This removes it from the cluster.`)) return
+  confirmRevoke.value = null
+  if (!node || !cluster) return
   runAction(node, () => api.revokeNode(cluster, node.display_name || node.node_id))
 }
 
-function onRename(node: NodeInfo) {
+function startRename(node: NodeInfo) {
+  closeMenu()
+  renamingNodeId.value = node.node_id
+  renameDraft.value = node.display_name || ''
+  nextTick(() => {
+    renameInputRef.value?.focus()
+    renameInputRef.value?.select()
+  })
+}
+
+function cancelRename() {
+  renamingNodeId.value = null
+  renameDraft.value = ''
+}
+
+function commitRename(node: NodeInfo) {
   const cluster = session.value?.cluster
-  if (!cluster) return
+  const trimmed = renameDraft.value.trim()
   const current = node.display_name || ''
-  const next = prompt('New display name:', current)
-  if (next === null) return
-  const trimmed = next.trim()
-  if (!trimmed || trimmed === current) return
-  runAction(node, () => api.renameNode(cluster, node.display_name || node.node_id, trimmed))
+  renamingNodeId.value = null
+  if (!cluster || !trimmed || trimmed === current) return
+  runAction(node, () => api.renameNode(cluster, current || node.node_id, trimmed))
 }
 
 function onPromote(node: NodeInfo, role: 'admin' | 'node') {
@@ -141,7 +189,18 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
       <div class="node-name">
         <StatusDot :state="nodeStatus(node)" />
         <div class="node-meta">
-          <span class="node-hostname">{{ node.display_name || node.node_id.slice(0, 8) }}</span>
+          <input
+            v-if="renamingNodeId === node.node_id"
+            :ref="setRenameInputRef"
+            v-model="renameDraft"
+            class="rename-input"
+            @keydown.enter.prevent="commitRename(node)"
+            @keydown.esc.prevent="cancelRename()"
+            @blur="commitRename(node)"
+          />
+          <span v-else class="node-hostname">
+            {{ node.display_name || node.node_id.slice(0, 8) }}
+          </span>
           <span class="node-tag">{{ nodeStatus(node) }}</span>
         </div>
       </div>
@@ -162,7 +221,7 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
           <span v-else>⋯</span>
         </button>
         <div v-if="openMenuFor === node.node_id" class="action-menu" @click.stop>
-          <button class="menu-item" @click="onRename(node)">Rename…</button>
+          <button class="menu-item" @click="startRename(node)">Rename…</button>
           <button
             v-if="node.role !== 'admin'"
             class="menu-item"
@@ -177,7 +236,7 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
           >
             Demote to node
           </button>
-          <button class="menu-item danger" @click="onRevoke(node)">Revoke</button>
+          <button class="menu-item danger" @click="askRevoke(node)">Revoke</button>
         </div>
       </div>
     </div>
@@ -189,6 +248,28 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
     cluster {{ session?.cluster ?? '—' }} · {{ nodes.length }} nodes ·
     <span v-if="loading">refreshing…</span>
     <span v-else>up to date</span>
+  </div>
+
+  <div
+    v-if="confirmRevoke"
+    class="modal-backdrop"
+    @click.self="cancelRevoke"
+    @keydown.esc="cancelRevoke"
+  >
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 class="modal-title">Revoke node</h3>
+      <p class="modal-body">
+        This removes
+        <span class="modal-highlight">
+          {{ confirmRevoke.display_name || confirmRevoke.node_id.slice(0, 8) }}
+        </span>
+        from the cluster. The node loses overlay access immediately.
+      </p>
+      <div class="modal-actions">
+        <Btn @click="cancelRevoke">Cancel</Btn>
+        <Btn variant="danger" @click="doRevoke">Revoke</Btn>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -246,7 +327,6 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
 }
 .row {
   display: grid;
@@ -257,7 +337,12 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
   border-bottom: 1px solid var(--border);
   transition: background var(--transition-fast);
 }
-.row:last-child { border-bottom: none; }
+.row.head { border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg); }
+.row:last-child {
+  border-bottom: none;
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
 .row:hover:not(.head) { background: var(--surface-2); }
 .row.head {
   font-size: var(--text-xs);
@@ -345,5 +430,60 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
   font-size: var(--text-sm);
   color: var(--muted-2);
   font-family: var(--font-mono);
+}
+
+.rename-input {
+  background: var(--surface-2);
+  border: 1px solid var(--gold);
+  color: var(--text);
+  font-size: var(--text-base);
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+}
+.rename-input:focus { box-shadow: 0 0 0 2px rgba(201, 169, 97, 0.2); }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+  min-width: 420px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.modal-title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0 0 var(--space-3);
+}
+.modal-body {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  margin: 0 0 var(--space-5);
+}
+.modal-highlight {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }
 </style>
