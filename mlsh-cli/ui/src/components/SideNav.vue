@@ -1,29 +1,26 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { RouterLink } from 'vue-router'
 import BrandMark from './BrandMark.vue'
+import { useSession } from '@/composables/useSession'
+import { useNodes } from '@/composables/useNodes'
 
 interface NavItem {
   to: string
   label: string
-  icon: 'nodes' | 'tunnels' | 'acls' | 'dns' | 'signal' | 'audit' | 'prefs' | 'security'
+  icon: 'nodes' | 'prefs'
   count?: number
 }
 
-const network: NavItem[] = [
-  { to: '/nodes', label: 'Nodes', icon: 'nodes', count: 14 },
-  { to: '/tunnels', label: 'Tunnels', icon: 'tunnels', count: 31 },
-  { to: '/acls', label: 'ACLs', icon: 'acls' },
-  { to: '/dns', label: 'DNS', icon: 'dns' },
-]
+const { session } = useSession()
+const { nodes } = useNodes()
 
-const infra: NavItem[] = [
-  { to: '/signal', label: 'Signal Server', icon: 'signal' },
-  { to: '/audit', label: 'Audit Log', icon: 'audit' },
-]
+const network = computed<NavItem[]>(() => [
+  { to: '/nodes', label: 'Nodes', icon: 'nodes', count: nodes.value.length || undefined },
+])
 
 const settings: NavItem[] = [
   { to: '/preferences', label: 'Preferences', icon: 'prefs' },
-  { to: '/security', label: 'Security', icon: 'security' },
 ]
 </script>
 
@@ -37,7 +34,7 @@ const settings: NavItem[] = [
     <button class="cluster-pill" type="button">
       <span class="cluster-label">Cluster</span>
       <span class="cluster-name">
-        <span>orbital-prod</span>
+        <span>{{ session?.cluster ?? '—' }}</span>
         <span class="chev">⌄</span>
       </span>
     </button>
@@ -49,24 +46,14 @@ const settings: NavItem[] = [
       <span v-if="item.count !== undefined" class="count">{{ item.count }}</span>
     </RouterLink>
 
-    <div class="nav-section">Infrastructure</div>
-    <RouterLink v-for="item in infra" :key="item.to" :to="item.to" class="nav-item">
-      <span class="icon"><NavIcon :name="item.icon" /></span>
-      <span>{{ item.label }}</span>
-    </RouterLink>
-
     <div class="nav-section">Settings</div>
     <RouterLink v-for="item in settings" :key="item.to" :to="item.to" class="nav-item">
       <span class="icon"><NavIcon :name="item.icon" /></span>
       <span>{{ item.label }}</span>
     </RouterLink>
 
-    <div class="sidebar-footer">
-      <div class="avatar" />
-      <div>
-        <div class="user-name">Nicolas A.</div>
-        <div class="user-email">nicolas@loftorbital</div>
-      </div>
+    <div v-if="session" class="sidebar-footer">
+      <div class="role-list">{{ session.roles.join(' · ') }}</div>
     </div>
   </aside>
 </template>
@@ -81,13 +68,7 @@ const paths: Record<string, string[]> = {
     'M5 16 a2 2 0 1 0 0.001 0', 'M19 16 a2 2 0 1 0 0.001 0',
     'M7 7 l3 4 M17 7 l-3 4 M7 17 l3-4 M17 17 l-3-4',
   ],
-  tunnels: ['M3 12 L9 12 M15 12 L21 12 M9 12 Q12 6 15 12 Q12 18 9 12'],
-  acls: ['M12 3 L20 7 V13 C20 17 16 20 12 21 C8 20 4 17 4 13 V7 Z'],
-  dns: ['M12 3 V21 M3 12 H21'],
-  signal: ['M3 4 H21 V10 H3 Z M3 14 H21 V20 H3 Z'],
-  audit: ['M4 6 H20 M4 12 H20 M4 18 H14'],
   prefs: ['M12 9 a3 3 0 1 0 0.001 0', 'M12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1'],
-  security: ['M12 2 L4 6 V12 C4 17 8 21 12 22 C16 21 20 17 20 12 V6 Z', 'M9 12 L11 14 L15 10'],
 }
 
 const NavIcon = defineComponent({
@@ -179,15 +160,14 @@ export default { components: { NavIcon } }
   padding: var(--space-3);
   border-top: 1px solid var(--border);
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: var(--space-3);
 }
-.avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #c9a961, #8a7340);
+.role-list {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-2);
+  letter-spacing: 0.04em;
+  text-align: center;
 }
-.user-name { font-size: 13px; }
-.user-email { font-size: 11px; color: var(--muted-2); }
 </style>

@@ -3,7 +3,10 @@
  * Reference: docs.mlsh.io + mockups/control-ui/forge*.html
  */
 
-:root {
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+
   /* Surfaces (dark default) */
   --bg: #0a0a0b;
   --surface: #141416;
@@ -70,6 +73,8 @@
 }
 
 [data-theme="light"] {
+  color-scheme: light;
+
   --bg: #faf9f5;
   --surface: #ffffff;
   --surface-2: #f4f2eb;

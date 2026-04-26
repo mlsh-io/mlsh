@@ -9,5 +9,10 @@ export const router = createRouter({
       name: 'nodes',
       component: () => import('@/views/NodesView.vue'),
     },
+    {
+      path: '/preferences',
+      name: 'preferences',
+      component: () => import('@/views/PreferencesView.vue'),
+    },
   ],
 })
