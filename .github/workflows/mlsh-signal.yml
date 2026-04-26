@@ -2,7 +2,9 @@ name: mlsh-signal
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
+      - "dev/feat/**"
     paths:
       - "mlsh-signal/**"
       - "mlsh-crypto/**"
@@ -78,6 +80,7 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=dev-latest,enable=${{ startsWith(github.ref, 'refs/heads/dev/feat/') }}
             type=sha,prefix=,format=short
 
       - name: Set up QEMU (for cross-arch builds)
@@ -98,7 +101,7 @@ jobs:
           context: .
           file: mlsh-signal/Containerfile
           platforms: linux/amd64,linux/arm64
-          push: ${{ github.ref == 'refs/heads/main' }}
+          push: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/dev/feat/') }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
