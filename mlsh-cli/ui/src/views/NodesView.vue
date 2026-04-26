@@ -3,49 +3,45 @@ import { computed, ref } from 'vue'
 import StatBlock from '@/components/StatBlock.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import Btn from '@/components/Btn.vue'
-import { useNodes, type NodeStatus } from '@/composables/useNodes'
+import { useSession } from '@/composables/useSession'
+import { useNodes, nodeStatus, type NodeStatus } from '@/composables/useNodes'
 
-const { nodes } = useNodes()
+const { session } = useSession()
+const { nodes, summary, loading, error, reload } = useNodes()
 
 type Filter = 'all' | NodeStatus
 const filter = ref<Filter>('all')
 
-const filtered = computed(() =>
-  filter.value === 'all' ? nodes.value : nodes.value.filter(n => n.status === filter.value),
-)
-
-const summary = computed(() => {
-  const online = nodes.value.filter(n => n.status === 'online').length
-  const relayed = nodes.value.filter(n => n.status === 'relayed').length
-  return { online, relayed, total: nodes.value.length }
+const filtered = computed(() => {
+  if (filter.value === 'all') return nodes.value
+  return nodes.value.filter((n) => nodeStatus(n) === filter.value)
 })
 
-function latencyClass(ms: number | null): string {
-  if (ms === null) return ''
-  if (ms < 30) return 'good'
-  if (ms < 100) return 'warn'
-  return 'bad'
-}
+const offlineCount = computed(() => nodes.value.length - summary.value.online)
 </script>
 
 <template>
   <div class="topbar">
     <div class="breadcrumb">
-      <span>orbital-prod</span>
+      <span>{{ session?.cluster ?? '—' }}</span>
       <span class="sep">/</span>
       <span class="current">Nodes</span>
     </div>
     <div class="topbar-actions">
-      <Btn>Invite peer</Btn>
-      <Btn variant="primary">+ Add node</Btn>
+      <Btn @click="reload">Refresh</Btn>
+      <Btn variant="primary">+ Invite node</Btn>
     </div>
   </div>
 
   <header class="page-header">
     <h1 class="page-title">Nodes</h1>
     <p class="page-subtitle">
-      {{ summary.total }} machines across the overlay ·
-      {{ summary.online }} reachable directly · {{ summary.relayed }} relayed
+      <template v-if="loading && !nodes.length">Loading…</template>
+      <template v-else-if="error">{{ error }}</template>
+      <template v-else>
+        {{ summary.total }} machines registered ·
+        {{ summary.online }} online · {{ offlineCount }} offline
+      </template>
     </p>
   </header>
 
@@ -54,19 +50,18 @@ function latencyClass(ms: number | null): string {
       label="Online"
       :value="summary.online"
       :unit="`/${summary.total}`"
-      delta="+2 last hour"
       accent
     />
-    <StatBlock label="Tunnels active" value="31" delta="28 direct · 3 relayed" />
-    <StatBlock label="Throughput" value="142" unit="MB/s" delta="peak 318 MB/s" />
-    <StatBlock label="P50 latency" value="8" unit="ms" delta="P99 · 47 ms" />
+    <StatBlock label="Offline" :value="offlineCount" />
+    <StatBlock label="Cluster" :value="session?.cluster ?? '—'" />
+    <StatBlock label="Roles" :value="session?.roles?.join(' · ') ?? '—'" />
   </div>
 
   <div class="section-header">
     <div class="section-title">All nodes</div>
     <div class="filters">
       <button
-        v-for="f in ['all', 'online', 'relayed', 'offline'] as Filter[]"
+        v-for="f in (['all', 'online', 'offline'] as Filter[])"
         :key="f"
         class="chip"
         :class="{ active: filter === f }"
@@ -81,30 +76,37 @@ function latencyClass(ms: number | null): string {
     <div class="row head">
       <div>Name</div>
       <div>Overlay IP</div>
-      <div>Endpoint</div>
-      <div>Platform</div>
-      <div>Latency</div>
+      <div>Role</div>
+      <div>Admission</div>
+      <div>Node ID</div>
       <div></div>
     </div>
-    <div v-for="node in filtered" :key="node.id" class="row">
+    <div v-if="!filtered.length && !loading" class="empty">
+      No nodes match this filter.
+    </div>
+    <div v-for="node in filtered" :key="node.node_id" class="row">
       <div class="node-name">
-        <StatusDot :state="node.status" />
+        <StatusDot :state="nodeStatus(node)" />
         <div class="node-meta">
-          <span class="node-hostname">{{ node.hostname }}</span>
-          <span class="node-tag">{{ node.tags.join(' ') }}</span>
+          <span class="node-hostname">{{ node.display_name || node.node_id.slice(0, 8) }}</span>
+          <span class="node-tag">{{ nodeStatus(node) }}</span>
         </div>
       </div>
-      <div class="ip">{{ node.overlayIp }}</div>
-      <div class="ip">{{ node.endpoint }}</div>
-      <div class="platform">{{ node.platform }}</div>
-      <div class="latency" :class="latencyClass(node.latencyMs)">
-        {{ node.latencyMs !== null ? `${node.latencyMs} ms` : '—' }}
+      <div class="ip">{{ node.overlay_ip }}</div>
+      <div class="role">{{ node.role }}</div>
+      <div class="cert" :class="{ ok: node.has_admission_cert }">
+        {{ node.has_admission_cert ? 'signed' : 'pending' }}
       </div>
+      <div class="ip">{{ node.node_id.slice(0, 12) }}…</div>
       <div class="row-action">⋯</div>
     </div>
   </div>
 
-  <div class="footer-note">orbital-prod · cluster-id 9f3e…d2cf · last sync 12s ago</div>
+  <div class="footer-note">
+    cluster {{ session?.cluster ?? '—' }} · {{ nodes.length }} nodes ·
+    <span v-if="loading">refreshing…</span>
+    <span v-else>up to date</span>
+  </div>
 </template>
 
 <style scoped>
@@ -165,7 +167,7 @@ function latencyClass(ms: number | null): string {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 140px 200px 130px 100px 60px;
+  grid-template-columns: 1fr 140px 100px 110px 160px 60px;
   gap: var(--space-4);
   padding: 14px var(--space-5);
   align-items: center;
@@ -182,16 +184,26 @@ function latencyClass(ms: number | null): string {
   font-weight: 500;
 }
 
+.empty {
+  padding: var(--space-8) var(--space-5);
+  text-align: center;
+  color: var(--muted-2);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
 .node-name { display: flex; align-items: center; gap: var(--space-3); }
 .node-meta { display: flex; flex-direction: column; }
 .node-hostname { font-weight: 500; }
 .node-tag { font-size: 11px; color: var(--muted-2); font-family: var(--font-mono); }
 .ip { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
-.platform { font-size: var(--text-sm); color: var(--muted); }
-.latency { font-family: var(--font-mono); font-size: 13px; color: var(--muted-2); }
-.latency.good { color: var(--green); }
-.latency.warn { color: var(--amber); }
-.latency.bad { color: var(--red); }
+.role { font-size: var(--text-sm); color: var(--muted); text-transform: capitalize; }
+.cert {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted-2);
+}
+.cert.ok { color: var(--green); }
 .row-action { color: var(--muted-2); cursor: pointer; text-align: right; }
 .row-action:hover { color: var(--text); }
 
