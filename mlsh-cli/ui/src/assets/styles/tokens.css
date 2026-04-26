@@ -1,0 +1,93 @@
+/* mlsh-control · Forge design tokens
+ * Dark + light as twin themes, not derivatives.
+ * Reference: docs.mlsh.io + mockups/control-ui/forge*.html
+ */
+
+:root {
+  /* Surfaces (dark default) */
+  --bg: #0a0a0b;
+  --surface: #141416;
+  --surface-2: #1a1a1d;
+  --border: #1f1f22;
+  --border-hover: #2a2a2e;
+
+  /* Text */
+  --text: #fafafa;
+  --muted: #a1a1aa;
+  --muted-2: #71717a;
+
+  /* Brand */
+  --gold: #c9a961;
+  --gold-bright: #e8dcb8;
+  --gold-on: #1a1300;
+
+  /* Semantic */
+  --green: #4ade80;
+  --red: #f87171;
+  --amber: #fbbf24;
+
+  /* Glow (dark only) */
+  --glow-green: 0 0 8px rgba(74, 222, 128, 0.55);
+  --glow-amber: 0 0 8px rgba(251, 191, 36, 0.4);
+
+  /* Spacing scale (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+
+  /* Radii */
+  --radius-sm: 4px;
+  --radius: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-pill: 999px;
+
+  /* Typography */
+  --font-sans: -apple-system, "Inter", "Geist", system-ui, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  --tracking-uppercase: 0.08em;
+  --tracking-tight: -0.02em;
+
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition: 150ms ease;
+}
+
+[data-theme="light"] {
+  --bg: #faf9f5;
+  --surface: #ffffff;
+  --surface-2: #f4f2eb;
+  --border: #e8e4d8;
+  --border-hover: #d4ceba;
+
+  --text: #1a1815;
+  --muted: #6b6558;
+  --muted-2: #9c9484;
+
+  --gold: #8a6d2a;
+  --gold-bright: #6b541f;
+  --gold-on: #fdfaf0;
+
+  --green: #15803d;
+  --red: #b91c1c;
+  --amber: #b45309;
+
+  --glow-green: 0 0 0 3px rgba(21, 128, 61, 0.12);
+  --glow-amber: 0 0 0 3px rgba(180, 83, 9, 0.12);
+}
