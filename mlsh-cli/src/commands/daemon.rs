@@ -3,8 +3,11 @@
 //! - macOS: LaunchDaemon plist at /Library/LaunchDaemons/io.mlsh.tund.plist
 //! - Linux: systemd system unit at /etc/systemd/system/mlshtund.service
 
-use anyhow::{Context, Result};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use anyhow::Context;
+use anyhow::Result;
 use clap::Subcommand;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use colored::Colorize;
 
 #[derive(Subcommand)]

@@ -7,6 +7,12 @@ use std::net::Ipv4Addr;
 
 /// Add a /32 host route for a peer via the TUN device.
 pub fn add_peer_route(peer_ip: Ipv4Addr, tun_name: &str) {
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (peer_ip, tun_name);
+        return;
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let ip = peer_ip.to_string();
 
     #[cfg(target_os = "macos")]
@@ -51,6 +57,12 @@ pub fn add_peer_route(peer_ip: Ipv4Addr, tun_name: &str) {
 
 /// Remove the /32 host route for a peer.
 pub fn remove_peer_route(peer_ip: Ipv4Addr) {
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = peer_ip;
+        return;
+    }
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let ip = peer_ip.to_string();
 
     #[cfg(target_os = "macos")]

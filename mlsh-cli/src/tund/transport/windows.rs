@@ -33,7 +33,7 @@ impl Transport for WindowsTransport {
         if is_privileged {
             PathBuf::from(SYSTEM_PIPE)
         } else {
-            let user = whoami::username();
+            let user = whoami::username().unwrap_or_else(|_| "user".to_string());
             PathBuf::from(format!(
                 r"\\.\pipe\mlshtund-{}",
                 sanitize_pipe_segment(&user)
