@@ -63,6 +63,11 @@ whoami = "2"
 # Cross-platform interface/address change notifications.
 if-watch = { version = "3", features = ["tokio"] }
 
+# control-plane feature deps (optional)
+axum = { version = "0.8", optional = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
+rust-embed = { version = "8", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 # Unix process management
 libc = "0.2"
@@ -76,11 +81,6 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 system-configuration-sys = "0.6"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
-
-# control-plane feature deps (optional)
-axum = { version = "0.8", optional = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
-rust-embed = { version = "8", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
