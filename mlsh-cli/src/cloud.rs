@@ -63,6 +63,31 @@ impl CloudClient {
         Ok(resp)
     }
 
+    /// One-shot poll. Returns:
+    /// - `Ok(Some(token))` if mlsh-cloud emitted a token
+    /// - `Ok(None)` if authorization is still pending (HTTP 428)
+    /// - `Err(_)` for any other failure
+    pub fn poll_device_token_once(&self, device_code: &str) -> Result<Option<TokenResponse>> {
+        let result = self
+            .agent
+            .post(format!("{}/auth/device/token", self.base_url))
+            .send_json(serde_json::json!({ "device_code": device_code }));
+        match result {
+            Ok(resp) => {
+                let token: TokenResponse = resp
+                    .into_body()
+                    .read_json()
+                    .context("Invalid token response")?;
+                Ok(Some(token))
+            }
+            Err(ureq::Error::StatusCode(428)) => Ok(None),
+            Err(ureq::Error::StatusCode(code)) => {
+                anyhow::bail!("Device token poll failed (HTTP {})", code)
+            }
+            Err(e) => anyhow::bail!("Device token poll failed: {}", e),
+        }
+    }
+
     /// Step 2: Poll for the access token (blocks until authorized or expired).
     pub fn poll_device_token(
         &self,

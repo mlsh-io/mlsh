@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use super::bootstrap::{self, BootstrapInput};
+#[cfg(feature = "control-plane")]
+use crate::control::{write_first_admin, write_mode_init, FirstAdmin, Mode};
 
 const DEFAULT_SIGNAL_PORT: u16 = 4433;
 
@@ -16,11 +18,41 @@ pub async fn handle_setup(
     token: &str,
     name_override: Option<&str>,
 ) -> Result<()> {
+    handle_setup_inner(cluster_name, signal_host, token, name_override, false).await
+}
+
+async fn handle_setup_inner(
+    cluster_name: &str,
+    signal_host: &str,
+    token: &str,
+    name_override: Option<&str>,
+    managed: bool,
+) -> Result<()> {
     let (setup_code, cluster_id, signal_fingerprint) = parse_setup_token(token)?;
 
     println!("{}", "MLSH Cluster Setup".cyan().bold());
     println!("  Cluster: {}", cluster_name);
     println!("  Signal:  {}", signal_host);
+
+    // ADR-032 §2: declare the cluster mode so the control plane and UI render
+    // the right login flow. ADR-032 §3: self-hosted prompts for an admin
+    // password; managed delegates auth to mlsh-cloud (no password here).
+    #[cfg(feature = "control-plane")]
+    {
+        let mode = if managed {
+            Mode::Managed
+        } else {
+            Mode::SelfHosted
+        };
+        write_mode_init(mode).context("writing mode-init file")?;
+        if !managed {
+            if let Some(record) = prompt_first_admin()? {
+                write_first_admin(&record).context("writing first-admin bootstrap file")?;
+            }
+        }
+    }
+    #[cfg(not(feature = "control-plane"))]
+    let _ = managed;
 
     let node_id = bootstrap::generate_node_id();
     let display_name = bootstrap::default_display_name(name_override);
@@ -102,13 +134,46 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
         .setup_token
         .context("Cloud did not return a setup token")?;
 
-    handle_setup(
+    handle_setup_inner(
         cluster_name,
         &cluster.signal_endpoint,
         &setup_token,
         name_override,
+        true,
     )
     .await
+}
+
+/// Prompt for the first admin's email + password. Returns `None` if the
+/// operator declines (empty email) — the UI bootstrap path will handle it.
+#[cfg(feature = "control-plane")]
+fn prompt_first_admin() -> Result<Option<FirstAdmin>> {
+    println!();
+    println!("{}", "Create the first admin user".cyan().bold());
+    println!("  Leave email blank to skip and use the web bootstrap instead.");
+    let email = read_line("  Email: ")?;
+    if email.is_empty() {
+        return Ok(None);
+    }
+    let password = rpassword::prompt_password("  Password: ")?;
+    if password.is_empty() {
+        anyhow::bail!("Password must not be empty");
+    }
+    let confirm = rpassword::prompt_password("  Confirm:  ")?;
+    if confirm != password {
+        anyhow::bail!("Passwords do not match");
+    }
+    Ok(Some(FirstAdmin { email, password }))
+}
+
+#[cfg(feature = "control-plane")]
+fn read_line(prompt: &str) -> Result<String> {
+    use std::io::Write;
+    print!("{}", prompt);
+    std::io::stdout().flush()?;
+    let mut buf = String::new();
+    std::io::stdin().read_line(&mut buf)?;
+    Ok(buf.trim().to_string())
 }
 
 /// Parse a setup token: `CODE@CLUSTER_ID@FINGERPRINT`.
