@@ -92,7 +92,10 @@ pub async fn build_server_config(
         .with_client_cert_verifier(Arc::new(AcceptAnyCert))
         .with_single_cert(cert_chain, private_key)?;
 
-    tls_config.alpn_protocols = vec![super::alpn::ALPN_SIGNAL.to_vec()];
+    tls_config.alpn_protocols = vec![
+        super::alpn::ALPN_SIGNAL.to_vec(),
+        super::alpn::ALPN_CONTROL.to_vec(),
+    ];
 
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(
         quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)?,

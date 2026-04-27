@@ -4,6 +4,7 @@
 //! - `mlsh-signal` — persistent signaling sessions (pub/sub + per-node auth)
 
 pub mod alpn;
+pub mod control_relay;
 pub mod listener;
 pub mod relay;
 pub mod session;

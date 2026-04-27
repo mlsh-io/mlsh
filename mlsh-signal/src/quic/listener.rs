@@ -3,8 +3,11 @@
 //! Dispatches incoming connections to the appropriate handler based on ALPN:
 //! - `mlsh-signal` → session handler (NodeAuth, Adopt, Revoke)
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use super::alpn;
 use crate::sessions::SessionStore;
@@ -16,6 +19,10 @@ pub struct QuicState {
     pub config: Arc<crate::config::Config>,
     pub overlay_subnet: crate::db::OverlaySubnet,
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// Active mlsh-control ALPN connections, keyed by the caller's mTLS
+    /// fingerprint. Used by `control_relay` to find the cluster's control node
+    /// and open a bi-stream toward it (ADR-033 §6).
+    pub control_conns: Arc<Mutex<HashMap<String, quinn::Connection>>>,
 }
 
 /// QUIC accept loop. Runs until the endpoint is closed or the shutdown receiver fires.
@@ -53,6 +60,10 @@ pub async fn run(
                         Some(alpn::ALPN_SIGNAL) => {
                             tracing::info!("Signal connection from {}", remote);
                             super::session::handle_signal_connection(conn, state).await;
+                        }
+                        Some(alpn::ALPN_CONTROL) => {
+                            tracing::info!("Control relay connection from {}", remote);
+                            super::control_relay::handle_control_connection(conn, state).await;
                         }
                         Some(other) => {
                             tracing::warn!(

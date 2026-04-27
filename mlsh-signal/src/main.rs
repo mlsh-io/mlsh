@@ -140,6 +140,7 @@ async fn run_server() -> anyhow::Result<()> {
         config: cfg.clone(),
         overlay_subnet,
         metrics,
+        control_conns: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     // Start the public-ingress TCP listener.
