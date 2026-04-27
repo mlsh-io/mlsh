@@ -58,7 +58,6 @@ async fn handle_stream(
         StreamMessage::NodeAuth {
             cluster_id,
             public_key,
-            admission_cert: _,
         } => {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             run_node_session(id, &cluster_id, &public_key, send, recv, conn, state).await?;
