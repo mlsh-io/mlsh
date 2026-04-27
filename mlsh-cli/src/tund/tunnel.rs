@@ -19,6 +19,7 @@ use super::peer_table::{self, PeerTable};
 use super::protocol::{TunnelState, TunnelStatus};
 use mlsh_protocol::types::{Candidate, PeerInfo};
 
+use super::control_session::ControlSession;
 use super::signal_session::{self, SignalCredentials};
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -100,6 +101,9 @@ pub struct ManagedTunnel {
     /// Forked `mlsh-control` child process, when this node holds the
     /// `control` role (ADR-030 §1).
     control_child: Option<tokio::process::Child>,
+    /// Persistent ALPN `mlsh-control` QUIC session toward signal (ADR-033 §6).
+    /// Built at start, connection established lazily on first use.
+    control_session: ControlSession,
 }
 
 impl ManagedTunnel {
@@ -132,6 +136,21 @@ impl ManagedTunnel {
             None
         };
 
+        // Build the ALPN `mlsh-control` session (ADR-033 §6). The connection
+        // is established eagerly in a background task so the node can fire its
+        // best-effort `AdoptConfirm` shortly after startup. Failure to connect
+        // is logged at debug level — control may not yet be reachable, the
+        // session retries lazily on demand.
+        let creds = config.signal_credentials()?;
+        let control_socket = crate::control::stream::default_socket_path();
+        let control_session = ControlSession::new(creds, control_socket)?;
+        let warmup = control_session.clone();
+        tokio::spawn(async move {
+            if let Err(e) = warmup.ensure_connected().await {
+                tracing::debug!(error = %e, "mlsh-control warmup failed (will retry on demand)");
+            }
+        });
+
         let tx_counter = bytes_tx.clone();
         let rx_counter = bytes_rx.clone();
         let task = tokio::spawn(async move {
@@ -160,6 +179,7 @@ impl ManagedTunnel {
             info,
             signal_conn_rx: Some(signal_conn_rx),
             control_child,
+            control_session,
         })
     }
 
@@ -173,6 +193,11 @@ impl ManagedTunnel {
     /// Whether the control-plane child process is currently running.
     pub fn has_control_child(&self) -> bool {
         self.control_child.is_some()
+    }
+
+    /// Clone of the persistent mlsh-control session handle.
+    pub fn control_session(&self) -> ControlSession {
+        self.control_session.clone()
     }
 
     /// Start the `mlsh-control` child process for this tunnel. No-op if

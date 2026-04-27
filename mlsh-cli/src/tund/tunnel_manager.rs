@@ -81,6 +81,11 @@ impl TunnelManager {
             .and_then(|t| t.signal_connection())
     }
 
+    /// Return the persistent mlsh-control session handle for a cluster.
+    pub fn control_session(&self, cluster: &str) -> Option<super::control_session::ControlSession> {
+        self.tunnels.get(cluster).map(|t| t.control_session())
+    }
+
     /// Look up the cluster UUID for a named cluster.
     fn cluster_id_for(&self, cluster: &str) -> Result<String> {
         self.tunnels
