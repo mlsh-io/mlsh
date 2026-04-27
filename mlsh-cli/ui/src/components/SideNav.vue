@@ -1,14 +1,45 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, defineComponent, h } from 'vue'
 import { RouterLink } from 'vue-router'
 import BrandMark from './BrandMark.vue'
 import { useSession } from '@/composables/useSession'
 import { useNodes } from '@/composables/useNodes'
+import { api } from '@/api/client'
+
+async function logout() {
+  try {
+    await api.logout()
+  } finally {
+    window.location.assign('/login')
+  }
+}
+
+const paths: Record<string, string[]> = {
+  nodes: [
+    'M12 9 a3 3 0 1 0 0.001 0',
+    'M5 4 a2 2 0 1 0 0.001 0', 'M19 4 a2 2 0 1 0 0.001 0',
+    'M5 16 a2 2 0 1 0 0.001 0', 'M19 16 a2 2 0 1 0 0.001 0',
+    'M7 7 l3 4 M17 7 l-3 4 M7 17 l3-4 M17 17 l-3-4',
+  ],
+  prefs: ['M12 9 a3 3 0 1 0 0.001 0', 'M12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1'],
+  users: ['M9 11 a3 3 0 1 0 0.001 0', 'M3 21 a6 6 0 0 1 12 0', 'M16 11 a3 3 0 1 0 0.001 0', 'M14 21 a6 6 0 0 1 7 0'],
+  account: ['M12 12 a4 4 0 1 0 0.001 0', 'M4 21 a8 8 0 0 1 16 0'],
+}
+
+const NavIcon = defineComponent({
+  props: { name: { type: String, required: true } },
+  setup(props) {
+    return () => h('svg', {
+      viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none',
+      stroke: 'currentColor', 'stroke-width': 1.5,
+    }, paths[props.name].map(d => h('path', { d })))
+  },
+})
 
 interface NavItem {
   to: string
   label: string
-  icon: 'nodes' | 'prefs'
+  icon: 'nodes' | 'prefs' | 'users' | 'account'
   count?: number
 }
 
@@ -18,6 +49,11 @@ const { nodes } = useNodes()
 const network = computed<NavItem[]>(() => [
   { to: '/nodes', label: 'Nodes', icon: 'nodes', count: nodes.value.length || undefined },
 ])
+
+const identity: NavItem[] = [
+  { to: '/users', label: 'Users', icon: 'users' },
+  { to: '/account', label: 'Account', icon: 'account' },
+]
 
 const settings: NavItem[] = [
   { to: '/preferences', label: 'Preferences', icon: 'prefs' },
@@ -46,6 +82,12 @@ const settings: NavItem[] = [
       <span v-if="item.count !== undefined" class="count">{{ item.count }}</span>
     </RouterLink>
 
+    <div class="nav-section">Identity</div>
+    <RouterLink v-for="item in identity" :key="item.to" :to="item.to" class="nav-item">
+      <span class="icon"><NavIcon :name="item.icon" /></span>
+      <span>{{ item.label }}</span>
+    </RouterLink>
+
     <div class="nav-section">Settings</div>
     <RouterLink v-for="item in settings" :key="item.to" :to="item.to" class="nav-item">
       <span class="icon"><NavIcon :name="item.icon" /></span>
@@ -54,35 +96,10 @@ const settings: NavItem[] = [
 
     <div v-if="session" class="sidebar-footer">
       <div class="role-list">{{ session.roles.join(' · ') }}</div>
+      <button type="button" class="logout-btn" @click="logout">Sign out</button>
     </div>
   </aside>
 </template>
-
-<script lang="ts">
-import { defineComponent, h } from 'vue'
-
-const paths: Record<string, string[]> = {
-  nodes: [
-    'M12 9 a3 3 0 1 0 0.001 0',
-    'M5 4 a2 2 0 1 0 0.001 0', 'M19 4 a2 2 0 1 0 0.001 0',
-    'M5 16 a2 2 0 1 0 0.001 0', 'M19 16 a2 2 0 1 0 0.001 0',
-    'M7 7 l3 4 M17 7 l-3 4 M7 17 l3-4 M17 17 l-3-4',
-  ],
-  prefs: ['M12 9 a3 3 0 1 0 0.001 0', 'M12 1v3M12 20v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M1 12h3M20 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1'],
-}
-
-const NavIcon = defineComponent({
-  props: { name: { type: String, required: true } },
-  setup(props) {
-    return () => h('svg', {
-      viewBox: '0 0 24 24', width: 16, height: 16, fill: 'none',
-      stroke: 'currentColor', 'stroke-width': 1.5,
-    }, paths[props.name].map(d => h('path', { d })))
-  },
-})
-
-export default { components: { NavIcon } }
-</script>
 
 <style scoped>
 .sidebar {
@@ -169,5 +186,21 @@ export default { components: { NavIcon } }
   color: var(--muted-2);
   letter-spacing: 0.04em;
   text-align: center;
+}
+.logout-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.logout-btn:hover {
+  color: var(--text);
+  background: var(--surface);
+  border-color: var(--gold);
 }
 </style>
