@@ -40,19 +40,57 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn apply_v1(pool: &SqlitePool) -> Result<()> {
-    // Admin users (human operators who log into the UI)
+    // Cluster-wide configuration (mode, etc.). See ADR-032 §2.
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS users (
-            id          TEXT PRIMARY KEY,
-            username    TEXT NOT NULL UNIQUE,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            active      INTEGER NOT NULL DEFAULT 1
+        "CREATE TABLE IF NOT EXISTS config (
+            key    TEXT PRIMARY KEY,
+            value  TEXT NOT NULL
         )",
     )
     .execute(pool)
     .await?;
 
-    // WebAuthn credentials per user
+    // Human users (ADR-032 §6). password_hash for self-hosted, cloud_user_id for managed.
+    // The XOR CHECK enforces exactly one identity source per user in v1.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS users (
+            id                    TEXT PRIMARY KEY,
+            email                 TEXT NOT NULL UNIQUE,
+            password_hash         TEXT,
+            cloud_user_id         TEXT UNIQUE,
+            must_change_password  INTEGER NOT NULL DEFAULT 0,
+            active                INTEGER NOT NULL DEFAULT 1,
+            created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+            CHECK ((password_hash IS NOT NULL) <> (cloud_user_id IS NOT NULL))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS sessions (
+            id          TEXT PRIMARY KEY,
+            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at  TEXT NOT NULL,
+            revoked     INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // TOTP secret stored AES-GCM-encrypted as a blob (ADR-032 §6).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS totp_credentials (
+            user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            secret_enc  BLOB NOT NULL,
+            verified    INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS webauthn_credentials (
             id              TEXT PRIMARY KEY,
@@ -67,88 +105,7 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // TOTP credentials per user
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS totp_credentials (
-            user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-            secret      TEXT NOT NULL,
-            verified    INTEGER NOT NULL DEFAULT 0,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    // Sessions
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS sessions (
-            id          TEXT PRIMARY KEY,
-            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-            expires_at  TEXT NOT NULL,
-            revoked     INTEGER NOT NULL DEFAULT 0
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    // Node groups (for ACLs)
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS groups (
-            name        TEXT PRIMARY KEY,
-            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    // Node → group assignments
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS node_groups (
-            node_id     TEXT NOT NULL,
-            group_name  TEXT NOT NULL REFERENCES groups(name) ON DELETE CASCADE,
-            PRIMARY KEY (node_id, group_name)
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    // ACL rules between groups
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS acl_rules (
-            source_group  TEXT NOT NULL REFERENCES groups(name) ON DELETE CASCADE,
-            target_group  TEXT NOT NULL REFERENCES groups(name) ON DELETE CASCADE,
-            action        TEXT NOT NULL DEFAULT 'allow',
-            PRIMARY KEY (source_group, target_group)
-        )",
-    )
-    .execute(pool)
-    .await?;
-
-    // Activity / audit log
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS activity_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp   TEXT NOT NULL DEFAULT (datetime('now')),
-            event_type  TEXT NOT NULL,
-            node_id     TEXT NOT NULL DEFAULT '',
-            peer_id     TEXT NOT NULL DEFAULT '',
-            ip_address  TEXT NOT NULL DEFAULT '',
-            details     TEXT NOT NULL DEFAULT '{}'
-        )",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "CREATE INDEX IF NOT EXISTS idx_activity_log_event_type ON activity_log (event_type)",
-    )
-    .execute(pool)
-    .await?;
-    sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_log_node_id ON activity_log (node_id)")
-        .execute(pool)
-        .await?;
-
-    // License JWT cache
+    // License JWT cache (ADR-030 §10).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS license (
             id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -160,10 +117,30 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // Node registry (ADR-033). mlsh-control becomes authoritative once the
+    // bootstrap node has joined the mesh and registered itself via
+    // ControlRequest::AdoptConfirm.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS nodes (
+            cluster_id    TEXT NOT NULL,
+            node_uuid     TEXT NOT NULL,
+            fingerprint   TEXT NOT NULL,
+            public_key    TEXT NOT NULL,
+            display_name  TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'node' CHECK (role IN ('node', 'admin')),
+            status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+            last_seen     TEXT,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (cluster_id, node_uuid)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 
-fn data_dir() -> std::path::PathBuf {
+pub fn data_dir() -> std::path::PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("mlsh")
