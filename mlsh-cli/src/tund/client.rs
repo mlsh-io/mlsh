@@ -70,6 +70,34 @@ impl DaemonClient {
         .await
     }
 
+    /// Send a CBOR `ControlRequest` through the daemon's mlsh-control session
+    /// (ADR-033 phase 2). Returns the decoded `ControlResponse`.
+    pub async fn control_call(
+        &mut self,
+        cluster: &str,
+        request: &mlsh_protocol::control::ControlRequest,
+    ) -> Result<mlsh_protocol::control::ControlResponse> {
+        let mut buf = Vec::new();
+        ciborium::into_writer(request, &mut buf)
+            .map_err(|e| anyhow::anyhow!("Failed to encode ControlRequest: {e}"))?;
+        let resp = self
+            .request(&DaemonRequest::ControlCall {
+                cluster: cluster.to_string(),
+                request_cbor: buf,
+            })
+            .await?;
+        match resp {
+            DaemonResponse::ControlReply { response_cbor } => {
+                ciborium::from_reader(&response_cbor[..])
+                    .map_err(|e| anyhow::anyhow!("Failed to decode ControlResponse: {e}"))
+            }
+            DaemonResponse::Error { code, message } => {
+                anyhow::bail!("daemon error: {code} — {message}")
+            }
+            other => anyhow::bail!("unexpected daemon response: {other:?}"),
+        }
+    }
+
     pub async fn control_start(&mut self, cluster: &str) -> Result<DaemonResponse> {
         self.request(&DaemonRequest::ControlStart {
             cluster: cluster.to_string(),

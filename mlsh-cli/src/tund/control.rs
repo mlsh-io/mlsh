@@ -250,6 +250,28 @@ where
                 },
             }
         }
+        DaemonRequest::ControlCall {
+            cluster,
+            request_cbor,
+        } => {
+            let session = {
+                let mgr = manager.lock().await;
+                mgr.control_session(&cluster)
+            };
+            match session {
+                Some(s) => match s.call(request_cbor).await {
+                    Ok(response_cbor) => DaemonResponse::ControlReply { response_cbor },
+                    Err(e) => DaemonResponse::Error {
+                        code: "control_call_failed".into(),
+                        message: format!("{:#}", e),
+                    },
+                },
+                None => DaemonResponse::Error {
+                    code: "no_control_session".into(),
+                    message: format!("No mlsh-control session for cluster '{cluster}'"),
+                },
+            }
+        }
     };
 
     write_message(&mut writer, &response).await?;
