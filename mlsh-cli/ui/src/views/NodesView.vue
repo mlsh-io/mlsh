@@ -87,7 +87,7 @@ function doRevoke() {
   const cluster = session.value?.cluster
   confirmRevoke.value = null
   if (!node || !cluster) return
-  runAction(node, () => api.revokeNode(cluster, node.display_name || node.node_id))
+  runAction(node, () => api.revokeNode(cluster, node.node_id))
 }
 
 function startRename(node: NodeInfo) {
@@ -111,13 +111,67 @@ function commitRename(node: NodeInfo) {
   const current = node.display_name || ''
   renamingNodeId.value = null
   if (!cluster || !trimmed || trimmed === current) return
-  runAction(node, () => api.renameNode(cluster, current || node.node_id, trimmed))
+  runAction(node, () => api.renameNode(cluster, node.node_id, trimmed))
 }
 
 function onPromote(node: NodeInfo, role: 'admin' | 'node') {
   const cluster = session.value?.cluster
   if (!cluster) return
   runAction(node, () => api.promoteNode(cluster, node.node_id, role))
+}
+
+// Invite flow
+const showInvite = ref(false)
+const inviteRole = ref<'admin' | 'node'>('node')
+const inviteTtl = ref(3600)
+const inviteResult = ref<{ token: string; cluster: string; role: string; expires_in: number } | null>(null)
+const inviteBusy = ref(false)
+const inviteError = ref<string | null>(null)
+const copied = ref(false)
+
+function openInvite() {
+  showInvite.value = true
+  inviteResult.value = null
+  inviteError.value = null
+  inviteRole.value = 'node'
+  inviteTtl.value = 3600
+  copied.value = false
+}
+
+function closeInvite() {
+  showInvite.value = false
+  inviteResult.value = null
+  inviteError.value = null
+  inviteBusy.value = false
+}
+
+async function generateInvite() {
+  const cluster = session.value?.cluster
+  if (!cluster) return
+  inviteBusy.value = true
+  inviteError.value = null
+  try {
+    inviteResult.value = await api.inviteNode(cluster, inviteRole.value, inviteTtl.value)
+  } catch (e) {
+    inviteError.value = (e as Error).message
+  } finally {
+    inviteBusy.value = false
+  }
+}
+
+function copyJoinCmd() {
+  if (!inviteResult.value) return
+  const cmd = `mlsh join ${inviteResult.value.cluster} ${inviteResult.value.token}`
+  navigator.clipboard.writeText(cmd).then(() => {
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 2000)
+  })
+}
+
+function formatTtl(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`
+  return `${Math.round(seconds / 3600)}h`
 }
 </script>
 
@@ -130,7 +184,7 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
     </div>
     <div class="topbar-actions">
       <Btn @click="reload">Refresh</Btn>
-      <Btn variant="primary">+ Invite node</Btn>
+      <Btn variant="primary" @click="openInvite">+ Invite node</Btn>
     </div>
   </div>
 
@@ -178,7 +232,6 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
       <div>Name</div>
       <div>Overlay IP</div>
       <div>Role</div>
-      <div>Admission</div>
       <div>Node ID</div>
       <div></div>
     </div>
@@ -206,9 +259,6 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
       </div>
       <div class="ip">{{ node.overlay_ip }}</div>
       <div class="role">{{ node.role }}</div>
-      <div class="cert" :class="{ ok: node.has_admission_cert }">
-        {{ node.has_admission_cert ? 'signed' : 'pending' }}
-      </div>
       <div class="ip">{{ node.node_id.slice(0, 12) }}…</div>
       <div class="row-action">
         <button
@@ -248,6 +298,72 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
     cluster {{ session?.cluster ?? '—' }} · {{ nodes.length }} nodes ·
     <span v-if="loading">refreshing…</span>
     <span v-else>up to date</span>
+  </div>
+
+  <!-- Invite node modal -->
+  <div
+    v-if="showInvite"
+    class="modal-backdrop"
+    @click.self="closeInvite"
+    @keydown.esc="closeInvite"
+  >
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3 class="modal-title">Invite a node</h3>
+
+      <template v-if="!inviteResult">
+        <div class="invite-form">
+          <label class="invite-label">Role</label>
+          <div class="invite-role-group">
+            <button
+              class="role-chip"
+              :class="{ active: inviteRole === 'node' }"
+              @click="inviteRole = 'node'"
+            >node</button>
+            <button
+              class="role-chip"
+              :class="{ active: inviteRole === 'admin' }"
+              @click="inviteRole = 'admin'"
+            >admin</button>
+          </div>
+
+          <label class="invite-label">Expires in</label>
+          <div class="invite-role-group">
+            <button
+              v-for="opt in [{ v: 900, l: '15m' }, { v: 3600, l: '1h' }, { v: 86400, l: '24h' }]"
+              :key="opt.v"
+              class="role-chip"
+              :class="{ active: inviteTtl === opt.v }"
+              @click="inviteTtl = opt.v"
+            >{{ opt.l }}</button>
+          </div>
+        </div>
+
+        <div v-if="inviteError" class="action-error" style="margin-top: var(--space-3)">{{ inviteError }}</div>
+
+        <div class="modal-actions" style="margin-top: var(--space-5)">
+          <Btn @click="closeInvite">Cancel</Btn>
+          <Btn variant="primary" :disabled="inviteBusy" @click="generateInvite">
+            {{ inviteBusy ? 'Generating…' : 'Generate token' }}
+          </Btn>
+        </div>
+      </template>
+
+      <template v-else>
+        <p class="modal-body">
+          Token valid for <strong>{{ formatTtl(inviteResult.expires_in) }}</strong>,
+          role <span class="modal-highlight">{{ inviteResult.role }}</span>.
+          Run on the new machine:
+        </p>
+        <div class="join-cmd">
+          <code>mlsh join {{ inviteResult.cluster }} {{ inviteResult.token }}</code>
+          <button class="copy-btn" @click="copyJoinCmd">{{ copied ? '✓' : 'Copy' }}</button>
+        </div>
+        <div class="modal-actions" style="margin-top: var(--space-5)">
+          <Btn @click="closeInvite">Done</Btn>
+          <Btn variant="primary" @click="() => { inviteResult = null; inviteError = null }">New invite</Btn>
+        </div>
+      </template>
+    </div>
   </div>
 
   <div
@@ -330,7 +446,7 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 140px 100px 110px 160px 60px;
+  grid-template-columns: 1fr 140px 100px 160px 60px;
   gap: var(--space-4);
   padding: 14px var(--space-5);
   align-items: center;
@@ -486,4 +602,51 @@ function onPromote(node: NodeInfo, role: 'admin' | 'node') {
   justify-content: flex-end;
   gap: var(--space-2);
 }
+
+.invite-form { display: flex; flex-direction: column; gap: var(--space-3); }
+.invite-label { font-size: var(--text-sm); color: var(--muted); }
+.invite-role-group { display: flex; gap: var(--space-2); }
+.role-chip {
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-sm);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  background: transparent;
+  cursor: pointer;
+}
+.role-chip.active {
+  color: var(--gold);
+  border-color: rgba(201, 169, 97, 0.4);
+  background: rgba(201, 169, 97, 0.08);
+}
+
+.join-cmd {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-3);
+}
+.join-cmd code {
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--green);
+  word-break: break-all;
+}
+.copy-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+.copy-btn:hover { color: var(--text); border-color: var(--gold); }
 </style>
