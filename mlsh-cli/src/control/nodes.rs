@@ -70,15 +70,13 @@ pub async fn set_display_name(
     node_uuid: &str,
     new_name: &str,
 ) -> Result<bool> {
-    let r = sqlx::query(
-        "UPDATE nodes SET display_name = ? WHERE cluster_id = ? AND node_uuid = ?",
-    )
-    .bind(new_name)
-    .bind(cluster_id)
-    .bind(node_uuid)
-    .execute(pool)
-    .await
-    .context("nodes set_display_name")?;
+    let r = sqlx::query("UPDATE nodes SET display_name = ? WHERE cluster_id = ? AND node_uuid = ?")
+        .bind(new_name)
+        .bind(cluster_id)
+        .bind(node_uuid)
+        .execute(pool)
+        .await
+        .context("nodes set_display_name")?;
     Ok(r.rows_affected() > 0)
 }
 
@@ -135,11 +133,7 @@ pub async fn resolve_target(
     Ok(row.map(|(u,)| u))
 }
 
-pub async fn touch_last_seen(
-    pool: &SqlitePool,
-    cluster_id: &str,
-    node_uuid: &str,
-) -> Result<()> {
+pub async fn touch_last_seen(pool: &SqlitePool, cluster_id: &str, node_uuid: &str) -> Result<()> {
     sqlx::query(
         "UPDATE nodes SET last_seen = datetime('now') WHERE cluster_id = ? AND node_uuid = ?",
     )

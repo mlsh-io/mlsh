@@ -21,8 +21,8 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
     let key_pem = std::fs::read_to_string(config.identity_dir.join("key.pem"))
         .context("Missing identity key.pem (re-run mlsh setup)")?;
 
-    let token = mlsh_crypto::invite::generate_signed_invite_full(
-        &mlsh_crypto::invite::InviteParams {
+    let token =
+        mlsh_crypto::invite::generate_signed_invite_full(&mlsh_crypto::invite::InviteParams {
             key_pem: &key_pem,
             cluster_id: &config.cluster_id,
             cluster_name: &config.name,
@@ -35,9 +35,8 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
             } else {
                 Some(&config.root_fingerprint)
             },
-        },
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to sign invite: {e}"))?;
+        })
+        .map_err(|e| anyhow::anyhow!("Failed to sign invite: {e}"))?;
 
     let url = format!("mlsh://{}/adopt/{}", config.signal_endpoint, token);
 

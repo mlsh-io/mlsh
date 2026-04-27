@@ -191,27 +191,25 @@ async fn revoke_node(
     _user: crate::control::auth::session::CurrentUser,
     AxumPath((cluster, target)): AxumPath<(String, String)>,
 ) -> Response {
-    let uuid = match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target)
-        .await
-    {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "node not found" })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{e:#}") })),
-            )
-                .into_response();
-        }
-    };
-    match crate::control::nodes::set_status(state.store.pool(), &cluster, &uuid, "revoked").await
-    {
+    let uuid =
+        match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "node not found" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response();
+            }
+        };
+    match crate::control::nodes::set_status(state.store.pool(), &cluster, &uuid, "revoked").await {
         Ok(true) => Json(serde_json::json!({ "ok": true })).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
@@ -237,25 +235,24 @@ async fn rename_node(
     AxumPath((cluster, target)): AxumPath<(String, String)>,
     Json(body): Json<RenameBody>,
 ) -> Response {
-    let uuid = match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target)
-        .await
-    {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "node not found" })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{e:#}") })),
-            )
-                .into_response();
-        }
-    };
+    let uuid =
+        match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "node not found" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response();
+            }
+        };
     match crate::control::nodes::set_display_name(
         state.store.pool(),
         &cluster,
@@ -296,25 +293,24 @@ async fn promote_node(
         )
             .into_response();
     }
-    let uuid = match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target)
-        .await
-    {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "node not found" })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": format!("{e:#}") })),
-            )
-                .into_response();
-        }
-    };
+    let uuid =
+        match crate::control::nodes::resolve_target(state.store.pool(), &cluster, &target).await {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({ "error": "node not found" })),
+                )
+                    .into_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": format!("{e:#}") })),
+                )
+                    .into_response();
+            }
+        };
     match crate::control::nodes::set_role(state.store.pool(), &cluster, &uuid, &body.role).await {
         Ok(true) => Json(serde_json::json!({ "ok": true })).into_response(),
         Ok(false) => (
@@ -329,4 +325,3 @@ async fn promote_node(
             .into_response(),
     }
 }
-

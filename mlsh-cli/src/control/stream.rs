@@ -17,9 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use mlsh_protocol::control::{
-    ControlAuthHeader, ControlNodeInfo, ControlRequest, ControlResponse,
-};
+use mlsh_protocol::control::{ControlAuthHeader, ControlNodeInfo, ControlRequest, ControlResponse};
 use mlsh_protocol::framing;
 use sqlx::SqlitePool;
 use tokio::net::{UnixListener, UnixStream};
