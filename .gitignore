@@ -4,3 +4,9 @@
 *.swp
 *.swo
 .claude/
+
+# Local dev artifacts
+*.core
+signal.db
+signal.db-*
+signal.toml
