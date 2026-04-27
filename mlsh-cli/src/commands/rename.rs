@@ -1,11 +1,14 @@
-//! `mlsh rename <cluster> <node> <name>` — change a node's display name (admin only).
+//! `mlsh rename <cluster> <node-uuid> <name>` — change a node's display name.
 //!
-//! Routed through mlshtund's Unix socket (ADR-030).
+//! Routed through mlshtund's control session over CBOR (ADR-033 phase 2).
+//! V1 only updates mlsh-control's authoritative DB. Runtime peer-rename
+//! broadcast via signal is a follow-up ticket.
 
 use anyhow::Result;
 use colored::Colorize;
+use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
+use crate::tund::client::DaemonClient;
 
 pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str) -> Result<()> {
     println!(
@@ -16,10 +19,18 @@ pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str
     );
 
     let mut client = DaemonClient::connect_default().await?;
-    let resp = client.rename(cluster_name, target_node, new_name).await?;
+    let resp = client
+        .control_call(
+            cluster_name,
+            &ControlRequest::Rename {
+                target_node_uuid: target_node.to_string(),
+                new_display_name: new_name.to_string(),
+            },
+        )
+        .await?;
 
     match resp {
-        DaemonResponse::Ok { .. } => {
+        ControlResponse::Ok => {
             println!(
                 "{}",
                 format!("Node '{}' renamed to '{}'.", target_node, new_name)
@@ -28,9 +39,7 @@ pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str
             );
             Ok(())
         }
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code);
-        }
-        _ => anyhow::bail!("Unexpected daemon response"),
+        ControlResponse::Error { code, message } => anyhow::bail!("{message} ({code})"),
+        other => anyhow::bail!("unexpected control response: {other:?}"),
     }
 }

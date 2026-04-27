@@ -1,129 +1,54 @@
-//! `mlsh invite <cluster> --ttl <seconds> --role <admin|node>` — generate a signed invite URL.
+//! `mlsh invite <cluster> --ttl <seconds> --role <admin|node>` — generate an
+//! Ed25519-signed invite payload for a new node (ADR-033).
 //!
-//! The inviting node signs the invite with its Ed25519 private key.
-//! Signal verifies the signature using the sponsor's public key from the registry.
-//! No shared secret needed — the trust comes from the sponsor's identity.
+//! The token is signed locally with this admin's identity key. mlsh-signal
+//! validates the signature against the sponsor's public key (which it learned
+//! when the sponsor joined the mesh). No DB write is needed at issue time.
 
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-/// Handle `mlsh invite <cluster> --ttl <seconds> --role <role>`.
+use crate::tund::tunnel::load_cluster_config;
+
 pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<()> {
-    // Validate role
     if role != "admin" && role != "node" {
         anyhow::bail!("Invalid role '{}'. Must be 'admin' or 'node'.", role);
     }
 
-    let config_dir = crate::config::config_dir()?;
-    let cluster_file = config_dir
-        .join("clusters")
-        .join(format!("{}.toml", cluster_name));
+    let base_dir = crate::config::config_dir()?;
+    let config = load_cluster_config(cluster_name, &base_dir)?;
 
-    if !cluster_file.exists() {
-        anyhow::bail!(
-            "Cluster '{}' not found. Run 'mlsh setup' first.",
-            cluster_name
-        );
-    }
+    let key_pem = std::fs::read_to_string(config.identity_dir.join("key.pem"))
+        .context("Missing identity key.pem (re-run mlsh setup)")?;
 
-    let contents = std::fs::read_to_string(&cluster_file)?;
-    let table: toml::Value = toml::from_str(&contents)?;
-
-    let cluster = table.get("cluster").context("Missing [cluster] section")?;
-
-    let signal_endpoint = cluster
-        .get("signal_endpoint")
-        .and_then(|v| v.as_str())
-        .context("Missing cluster.signal_endpoint")?;
-
-    let cluster_id = cluster
-        .get("id")
-        .and_then(|v| v.as_str())
-        .context("Missing cluster.id")?;
-
-    let node_auth = table
-        .get("node_auth")
-        .context("Missing [node_auth] section")?;
-
-    let node_id = node_auth
-        .get("node_uuid")
-        .and_then(|v| v.as_str())
-        .or_else(|| node_auth.get("node_id").and_then(|v| v.as_str()))
-        .context("Missing node_auth.node_uuid")?;
-    let display_name = node_auth
-        .get("display_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or(node_id);
-
-    let signal_fingerprint = cluster
-        .get("signal_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    // Load the node's private key for signing
-    let identity_dir = config_dir.join("identity");
-    let key_path = identity_dir.join("key.pem");
-    let key_pem = std::fs::read_to_string(&key_path).context(
-        "Missing identity key (~/.config/mlsh/identity/key.pem). Run 'mlsh setup' first.",
-    )?;
-
-    let root_fingerprint = cluster
-        .get("root_fingerprint")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    // Generate the signed invite (includes signal + root fingerprints)
-    let fp = if signal_fingerprint.is_empty() {
-        None
-    } else {
-        Some(signal_fingerprint)
-    };
-    let rfp = if root_fingerprint.is_empty() {
-        None
-    } else {
-        Some(root_fingerprint)
-    };
-    let invite_token =
-        mlsh_crypto::invite::generate_signed_invite_full(&mlsh_crypto::invite::InviteParams {
+    let token = mlsh_crypto::invite::generate_signed_invite_full(
+        &mlsh_crypto::invite::InviteParams {
             key_pem: &key_pem,
-            cluster_id,
-            cluster_name,
-            sponsor_node_uuid: node_id,
+            cluster_id: &config.cluster_id,
+            cluster_name: &config.name,
+            sponsor_node_uuid: &config.node_uuid,
             target_role: role,
             ttl_seconds: ttl,
-            signal_fingerprint: fp,
-            root_fingerprint: rfp,
-        })
-        .map_err(|e| anyhow::anyhow!("Failed to generate invite: {}", e))?;
+            signal_fingerprint: Some(&config.signal_fingerprint),
+            root_fingerprint: if config.root_fingerprint.is_empty() {
+                None
+            } else {
+                Some(&config.root_fingerprint)
+            },
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to sign invite: {e}"))?;
 
-    let url = format!("mlsh://{}/adopt/{}", signal_endpoint, invite_token);
-
-    let expires_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + ttl;
-    let expires_dt = time::OffsetDateTime::from_unix_timestamp(expires_at as i64)
-        .map(|dt| {
-            dt.format(
-                &time::format_description::parse(
-                    "[year]-[month]-[day] [hour]:[minute]:[second] UTC",
-                )
-                .unwrap(),
-            )
-            .unwrap_or_else(|_| format!("{}s from now", ttl))
-        })
-        .unwrap_or_else(|_| format!("{}s from now", ttl));
+    let url = format!("mlsh://{}/adopt/{}", config.signal_endpoint, token);
 
     println!("{}", "Invite created!".green().bold());
     println!();
-    println!("  URL:     {}", url);
+    println!("  Cluster: {}", config.name);
     println!("  Role:    {}", role);
-    println!("  Sponsor: {}", display_name);
-    println!("  Expires: {}", expires_dt);
+    println!("  Expires: {}s from now", ttl);
     println!();
     println!("On the new machine, run:");
-    println!("  {} \"{}\"", "mlsh adopt".bold(), url);
+    println!("  {} {}", "mlsh adopt".bold(), url);
 
     Ok(())
 }

@@ -1,23 +1,28 @@
 //! `mlsh nodes <cluster>` — list all nodes in a cluster.
 //!
-//! Routed through mlshtund's Unix socket so the CLI doesn't open its own
-//! QUIC connection (ADR-030: single QUIC peer per node).
+//! Routed through mlshtund's control session: CBOR `ControlRequest::ListNodes`
+//! over the persistent ALPN `mlsh-control` QUIC connection (ADR-033 phase 2).
+//! Signal relays the stream to the cluster's control node, which queries its
+//! authoritative `nodes` table and returns the result.
 
 use anyhow::Result;
 use colored::Colorize;
+use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
+use crate::tund::client::DaemonClient;
 
 pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     let mut client = DaemonClient::connect_default().await?;
-    let resp = client.list_nodes(cluster_name).await?;
+    let resp = client
+        .control_call(cluster_name, &ControlRequest::ListNodes)
+        .await?;
 
     let nodes = match resp {
-        DaemonResponse::NodeList { nodes } => nodes,
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code);
+        ControlResponse::Nodes { nodes } => nodes,
+        ControlResponse::Error { code, message } => {
+            anyhow::bail!("control error: {message} ({code})");
         }
-        _ => anyhow::bail!("Unexpected daemon response"),
+        other => anyhow::bail!("unexpected control response: {other:?}"),
     };
 
     if nodes.is_empty() {
@@ -25,30 +30,36 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:<24} {:<18} {:<8} STATUS", "NODE", "OVERLAY IP", "ROLE");
+    println!(
+        "{:<36} {:<8} {:<8} {}",
+        "NODE UUID", "ROLE", "STATUS", "DISPLAY NAME"
+    );
 
     for node in &nodes {
-        let status = if node.online {
-            "online".green().to_string()
+        let status_str = if node.status == "active" {
+            node.status.green().to_string()
         } else {
-            "offline".red().to_string()
+            node.status.red().to_string()
         };
         let label = if node.display_name.is_empty() {
-            node.node_id.as_str()
+            &node.node_uuid[..node.node_uuid.len().min(36)]
         } else {
-            node.display_name.as_str()
+            &node.display_name
         };
         println!(
-            "{:<24} {:<18} {:<8} {}",
-            label, node.overlay_ip, node.role, status
+            "{:<36} {:<8} {:<8} {}",
+            &node.node_uuid[..node.node_uuid.len().min(36)],
+            node.role,
+            status_str,
+            label,
         );
     }
 
-    let online = nodes.iter().filter(|n| n.online).count();
+    let active = nodes.iter().filter(|n| n.status == "active").count();
     println!(
-        "\n{} node(s), {} online",
+        "\n{} node(s), {} active",
         nodes.len(),
-        online.to_string().bold()
+        active.to_string().bold()
     );
 
     Ok(())
