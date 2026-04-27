@@ -209,7 +209,6 @@ function formatTtl(seconds: number): string {
     />
     <StatBlock label="Offline" :value="offlineCount" />
     <StatBlock label="Cluster" :value="session?.cluster ?? '—'" />
-    <StatBlock label="Roles" :value="session?.roles?.join(' · ') ?? '—'" />
   </div>
 
   <div class="section-header">

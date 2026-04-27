@@ -95,7 +95,6 @@ const settings: NavItem[] = [
     </RouterLink>
 
     <div v-if="session" class="sidebar-footer">
-      <div class="role-list">{{ session.roles.join(' · ') }}</div>
       <button type="button" class="logout-btn" @click="logout">Sign out</button>
     </div>
   </aside>
@@ -179,13 +178,6 @@ const settings: NavItem[] = [
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-}
-.role-list {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--muted-2);
-  letter-spacing: 0.04em;
-  text-align: center;
 }
 .logout-btn {
   background: transparent;
