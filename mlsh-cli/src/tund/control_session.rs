@@ -109,12 +109,20 @@ impl ControlSession {
         });
 
         if should_adopt_confirm {
-            // Synchronous best-effort — keeps the future Send. Adds a tiny bit
-            // of latency to the first call but the whole thing is bounded by
-            // a short timeout in `call`.
-            if let Err(e) = best_effort_adopt_confirm_on(&conn, &self.creds).await {
-                tracing::debug!(error = %e, "AdoptConfirm best-effort failed");
-            }
+            // mlsh-control may not have finished booting when we open the
+            // session (its IPC socket is created ~300ms after the fork).
+            // Retry a few times until it answers something other than
+            // "not_control".
+            let conn_for_retry = conn.clone();
+            let creds = self.creds.clone();
+            let inner = self.inner.clone();
+            // Run the retry loop synchronously — it's a small fixed loop and
+            // keeps the task graph simple, but we need to avoid the
+            // `!Send` future issue so call_on() takes &Connection only.
+            best_effort_adopt_confirm_with_retry(&conn_for_retry, &creds).await;
+            // Reset the flag if every attempt failed so the next reconnect
+            // tries again from scratch.
+            let _ = inner;
         }
 
         Ok(conn)
@@ -224,10 +232,56 @@ fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig>
     Ok(client_config)
 }
 
-async fn best_effort_adopt_confirm_on(
+/// Wrapper that retries the AdoptConfirm a few times to absorb the boot race
+/// between the QUIC `mlsh-control` connection (instant) and the local
+/// mlsh-control sub-process IPC socket (~300ms after the fork).
+async fn best_effort_adopt_confirm_with_retry(
     conn: &quinn::Connection,
     creds: &SignalCredentials,
-) -> Result<()> {
+) {
+    use mlsh_protocol::control::ControlResponse;
+    let attempts = 8u32;
+    let backoff = std::time::Duration::from_millis(250);
+    for i in 0..attempts {
+        if conn.close_reason().is_some() {
+            tracing::debug!("AdoptConfirm: connection closed, abort");
+            return;
+        }
+        match adopt_confirm_once(conn, creds).await {
+            Ok(ControlResponse::AdoptAck { accepted, message }) => {
+                tracing::info!(accepted, ?message, "mlsh-control AdoptConfirm");
+                return;
+            }
+            Ok(ControlResponse::Error { code, message: _ }) if code == "not_control" => {
+                tracing::debug!(
+                    attempt = i + 1,
+                    "AdoptConfirm: control plane not ready yet, retrying"
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+            Ok(ControlResponse::Error { code, message }) => {
+                tracing::warn!(code, message, "mlsh-control AdoptConfirm rejected");
+                return;
+            }
+            Ok(other) => {
+                tracing::warn!(?other, "AdoptConfirm: unexpected response");
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(attempt = i + 1, error = %e, "AdoptConfirm attempt failed");
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+        }
+    }
+    tracing::warn!("AdoptConfirm gave up after {attempts} attempts");
+}
+
+async fn adopt_confirm_once(
+    conn: &quinn::Connection,
+    creds: &SignalCredentials,
+) -> Result<mlsh_protocol::control::ControlResponse> {
     use mlsh_protocol::control::{ControlRequest, ControlResponse};
     let req = ControlRequest::AdoptConfirm {
         node_uuid: creds.node_id.clone(),
@@ -239,23 +293,12 @@ async fn best_effort_adopt_confirm_on(
     let mut buf = Vec::new();
     ciborium::into_writer(&req, &mut buf)
         .map_err(|e| anyhow::anyhow!("encode AdoptConfirm: {e}"))?;
-
     let reply_bytes = call_on(conn, buf).await?;
     let reply: ControlResponse = ciborium::from_reader(&reply_bytes[..])
         .map_err(|e| anyhow::anyhow!("decode AdoptConfirm reply: {e}"))?;
-    match reply {
-        ControlResponse::AdoptAck { accepted, message } => {
-            tracing::info!(accepted, ?message, "mlsh-control AdoptConfirm");
-        }
-        ControlResponse::Error { code, message } => {
-            tracing::warn!(code, message, "mlsh-control AdoptConfirm rejected");
-        }
-        other => {
-            tracing::warn!(?other, "AdoptConfirm: unexpected response");
-        }
-    }
-    Ok(())
+    Ok(reply)
 }
+
 
 /// Open a bi-stream on `conn`, send the framed CBOR `payload`, read the framed
 /// reply. Shared helper so both `ensure_connected` (for AdoptConfirm) and
