@@ -631,6 +631,34 @@ pub async fn update_node_role(
     Ok(result.rows_affected() > 0)
 }
 
+/// Find the cluster's `control` node — the oldest admin (heuristic for V1).
+/// Returns `None` if the cluster has no admin yet.
+pub async fn find_control_node(
+    pool: &SqlitePool,
+    cluster_id: &str,
+) -> Result<Option<NodeRecord>> {
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
+         FROM nodes
+         WHERE cluster_id = ?1 AND role = 'admin'
+         ORDER BY rowid ASC
+         LIMIT 1",
+    )
+    .bind(cluster_id)
+    .fetch_optional(pool)
+    .await
+    .context("Failed to find control node")?;
+
+    Ok(row.map(|(cid, nid, fp, ip, role, dn)| NodeRecord {
+        cluster_id: cid,
+        node_id: nid,
+        fingerprint: fp,
+        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+        role,
+        display_name: dn,
+    }))
+}
+
 /// Count the number of admin nodes in a cluster.
 pub async fn count_admins(pool: &SqlitePool, cluster_id: &str) -> Result<i64> {
     let row: (i64,) =
