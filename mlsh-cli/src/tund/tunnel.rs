@@ -482,6 +482,11 @@ async fn tunnel_task(
     let sync_table = peer_table.clone();
     tokio::spawn(async move {
         let mut rx = sync_peers_rx;
+        // Seed with the current value: borrow_and_update marks it as seen so
+        // the next changed() awaits the *next* update — without this, an
+        // initial peer list pushed before this task is scheduled is dropped.
+        let initial = Arc::clone(&rx.borrow_and_update());
+        sync_table.update_peers(initial).await;
         loop {
             if rx.changed().await.is_err() {
                 break;
