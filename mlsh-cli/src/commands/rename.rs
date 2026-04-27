@@ -1,8 +1,4 @@
-//! `mlsh rename <cluster> <node-uuid> <name>` — change a node's display name.
-//!
-//! Routed through mlshtund's control session over CBOR (ADR-033 phase 2).
-//! V1 only updates mlsh-control's authoritative DB. Runtime peer-rename
-//! broadcast via signal is a follow-up ticket.
+//! `mlsh rename <cluster> <node> <name>`.
 
 use anyhow::Result;
 use colored::Colorize;

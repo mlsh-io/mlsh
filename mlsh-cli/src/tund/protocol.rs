@@ -70,12 +70,7 @@ pub enum DaemonRequest {
     Unexpose { cluster: String, domain: String },
     /// List all public ingress routes registered for this cluster.
     ListExposed { cluster: String },
-    /// Forward a CBOR `ControlRequest` over the daemon's mlsh-control QUIC
-    /// connection (ADR-033 phase 2). The daemon opens a bi-stream on its
-    /// existing `mlsh-control` connection toward signal, sends `request_cbor`,
-    /// and returns the reply in `DaemonResponse::ControlReply`.
-    ///
-    /// `request_cbor` is the already-encoded `mlsh_protocol::control::ControlRequest`.
+    /// Forward a CBOR `ControlRequest` over the daemon's mlsh-control session.
     ControlCall {
         cluster: String,
         request_cbor: Vec<u8>,
@@ -111,9 +106,7 @@ pub enum DaemonResponse {
     ExposedList {
         routes: Vec<mlsh_protocol::types::IngressRoute>,
     },
-    /// Reply for `ControlCall` — raw CBOR-encoded
-    /// `mlsh_protocol::control::ControlResponse` straight from the control
-    /// node. The CLI decodes it.
+    /// Raw CBOR-encoded `ControlResponse`.
     ControlReply { response_cbor: Vec<u8> },
 }
 

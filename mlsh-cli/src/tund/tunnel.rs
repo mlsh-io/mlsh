@@ -101,8 +101,6 @@ pub struct ManagedTunnel {
     /// Forked `mlsh-control` child process, when this node holds the
     /// `control` role (ADR-030 §1).
     control_child: Option<tokio::process::Child>,
-    /// Persistent ALPN `mlsh-control` QUIC session toward signal (ADR-033 §6).
-    /// Built at start, connection established lazily on first use.
     control_session: ControlSession,
 }
 
@@ -136,11 +134,7 @@ impl ManagedTunnel {
             None
         };
 
-        // Build the ALPN `mlsh-control` session (ADR-033 §6). The connection
-        // is established eagerly in a background task so the node can fire its
-        // best-effort `AdoptConfirm` shortly after startup. Failure to connect
-        // is logged at debug level — control may not yet be reachable, the
-        // session retries lazily on demand.
+        // Build the mlsh-control session and warm it up so AdoptConfirm fires.
         let creds = config.signal_credentials()?;
         let control_socket = crate::control::stream::default_socket_path();
         let control_session = ControlSession::new(creds, control_socket)?;

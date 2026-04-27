@@ -19,9 +19,7 @@ pub struct QuicState {
     pub config: Arc<crate::config::Config>,
     pub overlay_subnet: crate::db::OverlaySubnet,
     pub metrics: Arc<crate::metrics::Metrics>,
-    /// Active mlsh-control ALPN connections, keyed by the caller's mTLS
-    /// fingerprint. Used by `control_relay` to find the cluster's control node
-    /// and open a bi-stream toward it (ADR-033 §6).
+    /// Active mlsh-control ALPN connections keyed by mTLS fingerprint.
     pub control_conns: Arc<Mutex<HashMap<String, quinn::Connection>>>,
 }
 

@@ -117,9 +117,6 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // Node registry (ADR-033). mlsh-control becomes authoritative once the
-    // bootstrap node has joined the mesh and registered itself via
-    // ControlRequest::AdoptConfirm.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS nodes (
             cluster_id    TEXT NOT NULL,

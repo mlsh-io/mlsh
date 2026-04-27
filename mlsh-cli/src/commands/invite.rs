@@ -1,9 +1,4 @@
-//! `mlsh invite <cluster> --ttl <seconds> --role <admin|node>` — generate an
-//! Ed25519-signed invite payload for a new node (ADR-033).
-//!
-//! The token is signed locally with this admin's identity key. mlsh-signal
-//! validates the signature against the sponsor's public key (which it learned
-//! when the sponsor joined the mesh). No DB write is needed at issue time.
+//! `mlsh invite <cluster> --ttl <seconds> --role <admin|node>`.
 
 use anyhow::{Context, Result};
 use colored::Colorize;

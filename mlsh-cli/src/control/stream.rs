@@ -1,17 +1,4 @@
-//! CBOR-over-UNIX-socket listener for the mlsh-control plane (ADR-033).
-//!
-//! mlshtund relays QUIC streams arriving on its `mlsh-control` ALPN connection
-//! by forwarding them to this UNIX socket. Each connection carries one
-//! request/response pair:
-//!
-//!   1. mlshtund writes a `ControlAuthHeader` (1 length-prefixed CBOR frame)
-//!      describing the authenticated caller — signal vouched for it.
-//!   2. mlshtund writes a `ControlRequest` (1 frame).
-//!   3. mlsh-control writes a `ControlResponse` (1 frame).
-//!   4. Connection is closed.
-//!
-//! Auth is delegated: the control plane trusts mlshtund's auth header, so
-//! checks against the caller's role come from `header.caller_role`.
+//! CBOR-over-UNIX-socket listener for the mlsh-control plane.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -24,7 +11,6 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::control::nodes;
 
-/// Default path of the control plane CBOR IPC socket.
 pub fn default_socket_path() -> PathBuf {
     super::db::data_dir().join("control.sock")
 }
@@ -34,8 +20,6 @@ pub struct StreamState {
     pub pool: SqlitePool,
 }
 
-/// Run the UNIX socket listener. Returns when the listener fails (caller
-/// can decide whether to restart).
 pub async fn serve(socket_path: &Path, state: StreamState) -> Result<()> {
     if socket_path.exists() {
         std::fs::remove_file(socket_path).ok();
@@ -76,9 +60,6 @@ async fn handle_one(mut stream: UnixStream, state: &StreamState) -> Result<()> {
     Ok(())
 }
 
-/// Cluster key used in mlsh-control's `nodes` table — prefer the human name
-/// (so the bundled UI's `whoami.cluster` matches), fall back to the UUID for
-/// older signal builds that didn't populate `cluster_name`.
 fn cluster_key(auth: &ControlAuthHeader) -> &str {
     if !auth.cluster_name.is_empty() {
         &auth.cluster_name
@@ -106,9 +87,6 @@ async fn dispatch(
             fingerprint,
             public_key,
             display_name,
-            // The control plane learns the role from signal's auth header
-            // for V1 — signal already validated the invite and assigned a role.
-            // Bootstrap node arrives here as caller==target with role=admin.
             if node_uuid == &auth.caller_node_uuid {
                 &auth.caller_role
             } else {

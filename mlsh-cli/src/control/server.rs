@@ -88,9 +88,7 @@ pub fn build_app(state: AuthState) -> Router {
         .route("/api/v1/whoami", get(whoami))
         .with_state(state.clone());
 
-    // Local-only HTTP routes that read/write mlsh-control's authoritative
-    // node registry (ADR-033 phase 2). These are consumed by the bundled UI.
-    // Remote nodes use the CBOR-over-QUIC channel via mlshtund instead.
+    // Local HTTP routes consumed by the bundled UI.
     let node_routes = Router::new()
         .route("/api/v1/clusters/{cluster}/nodes", get(list_nodes))
         .route(
@@ -154,9 +152,6 @@ async fn whoami(_user: crate::control::auth::session::CurrentUser) -> impl IntoR
         "roles": ["node", "admin", "control"],
     }))
 }
-
-// --- Local HTTP routes consumed by the bundled UI (ADR-033 phase 2).
-// They read/write mlsh-control's `nodes` table directly via the local pool.
 
 fn node_to_ui(n: crate::control::nodes::NodeRow) -> serde_json::Value {
     serde_json::json!({

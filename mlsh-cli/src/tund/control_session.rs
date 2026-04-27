@@ -1,22 +1,4 @@
-//! Persistent QUIC connection from mlshtund to mlsh-signal on ALPN
-//! `mlsh-control` (ADR-033 phase 2).
-//!
-//! Two roles share this single connection:
-//!
-//! - Outbound: when the local CLI runs `mlsh nodes/promote/revoke/rename` it
-//!   reaches mlshtund over the local UNIX socket. mlshtund opens a bi-stream
-//!   on the existing `mlsh-control` connection toward signal, sends a CBOR
-//!   `ControlRequest`, reads the `ControlResponse`, and returns it to the CLI.
-//!   Signal relays the stream to the cluster's control node.
-//!
-//! - Inbound (control node only): signal opens bi-streams toward mlshtund on
-//!   the same connection. Each carries a CBOR `ControlAuthHeader` + a
-//!   `ControlRequest` (already authenticated by signal). mlshtund forwards it
-//!   over the local UNIX socket of mlsh-control's CBOR listener and pipes the
-//!   reply back.
-//!
-//! Non-control nodes silently close any incoming bi-stream — signal should
-//! never relay to them, but we ignore stragglers safely.
+//! Persistent QUIC connection from mlshtund to mlsh-signal on ALPN `mlsh-control`.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -28,23 +10,16 @@ use tokio::sync::Mutex;
 
 use super::signal_session::SignalCredentials;
 
-/// Handle on the control session shared by the daemon's tunnel task.
-///
-/// Cheap to clone: holds the live `quinn::Connection` behind an `Arc<Mutex>`.
-/// V1 reopens on demand if the connection died — no background reconnect FSM.
 #[derive(Clone)]
 pub struct ControlSession {
     inner: Arc<Mutex<Inner>>,
     creds: Arc<SignalCredentials>,
-    /// Local socket where mlsh-control listens for relayed inbound CBOR
-    /// streams (only used on the control node).
     control_socket: PathBuf,
 }
 
 struct Inner {
     conn: Option<quinn::Connection>,
     endpoint: quinn::Endpoint,
-    /// Set once the very first AdoptConfirm best-effort attempt has fired.
     adopt_confirm_done: bool,
 }
 
@@ -63,9 +38,7 @@ impl ControlSession {
         })
     }
 
-    /// Connect (or reconnect) and spawn the inbound accept loop. Idempotent.
     pub async fn ensure_connected(&self) -> Result<quinn::Connection> {
-        // Fast path: already-live connection. Drop the lock before any await.
         let endpoint = {
             let g = self.inner.lock().await;
             if let Some(c) = &g.conn {
@@ -101,7 +74,6 @@ impl ControlSession {
             }
         }
 
-        // Spawn inbound relay task.
         let socket = self.control_socket.clone();
         let conn_for_inbound = conn.clone();
         tokio::spawn(async move {
@@ -109,37 +81,18 @@ impl ControlSession {
         });
 
         if should_adopt_confirm {
-            // mlsh-control may not have finished booting when we open the
-            // session (its IPC socket is created ~300ms after the fork).
-            // Retry a few times until it answers something other than
-            // "not_control".
-            let conn_for_retry = conn.clone();
-            let creds = self.creds.clone();
-            let inner = self.inner.clone();
-            // Run the retry loop synchronously — it's a small fixed loop and
-            // keeps the task graph simple, but we need to avoid the
-            // `!Send` future issue so call_on() takes &Connection only.
-            best_effort_adopt_confirm_with_retry(&conn_for_retry, &creds).await;
-            // Reset the flag if every attempt failed so the next reconnect
-            // tries again from scratch.
-            let _ = inner;
+            best_effort_adopt_confirm_with_retry(&conn, &self.creds).await;
         }
 
         Ok(conn)
     }
 
-    /// Outbound CBOR request: open a bi-stream, send `request_cbor` (already a
-    /// `ControlRequest` encoded by the caller), read the reply, return it.
-    /// Used by the daemon when handling `DaemonRequest::ControlCall`.
     pub async fn call(&self, request_cbor: Vec<u8>) -> Result<Vec<u8>> {
         let conn = self.ensure_connected().await?;
         call_on(&conn, request_cbor).await
     }
 }
 
-/// Accept incoming bi-streams (control-node role). Each stream carries a
-/// `ControlAuthHeader` + `ControlRequest`, forwarded verbatim to mlsh-control's
-/// local UNIX socket; the reply is piped back.
 async fn inbound_loop(conn: quinn::Connection, control_socket: PathBuf) {
     loop {
         let stream = tokio::select! {
@@ -170,7 +123,6 @@ async fn forward_to_control(
     socket: &std::path::Path,
 ) -> Result<()> {
     if !socket.exists() {
-        // Not the control node — close politely.
         let resp = mlsh_protocol::control::ControlResponse::error(
             "not_control",
             "This node is not running mlsh-control",
@@ -232,9 +184,7 @@ fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig>
     Ok(client_config)
 }
 
-/// Wrapper that retries the AdoptConfirm a few times to absorb the boot race
-/// between the QUIC `mlsh-control` connection (instant) and the local
-/// mlsh-control sub-process IPC socket (~300ms after the fork).
+/// Retries to absorb the boot race with the mlsh-control sub-process socket.
 async fn best_effort_adopt_confirm_with_retry(
     conn: &quinn::Connection,
     creds: &SignalCredentials,
@@ -300,9 +250,6 @@ async fn adopt_confirm_once(
 }
 
 
-/// Open a bi-stream on `conn`, send the framed CBOR `payload`, read the framed
-/// reply. Shared helper so both `ensure_connected` (for AdoptConfirm) and
-/// `call` use the same wire logic.
 async fn call_on(conn: &quinn::Connection, payload: Vec<u8>) -> Result<Vec<u8>> {
     let (mut send, mut recv) = conn
         .open_bi()

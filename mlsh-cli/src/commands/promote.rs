@@ -1,6 +1,4 @@
-//! `mlsh promote <cluster> <node-uuid> --role <admin|node>` — change a node's role.
-//!
-//! Routed through mlshtund's control session over CBOR (ADR-033 phase 2).
+//! `mlsh promote <cluster> <node> --role <admin|node>`.
 
 use anyhow::Result;
 use colored::Colorize;

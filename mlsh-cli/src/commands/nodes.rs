@@ -1,9 +1,4 @@
 //! `mlsh nodes <cluster>` — list all nodes in a cluster.
-//!
-//! Routed through mlshtund's control session: CBOR `ControlRequest::ListNodes`
-//! over the persistent ALPN `mlsh-control` QUIC connection (ADR-033 phase 2).
-//! Signal relays the stream to the cluster's control node, which queries its
-//! authoritative `nodes` table and returns the result.
 
 use anyhow::Result;
 use colored::Colorize;

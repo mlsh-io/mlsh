@@ -1,7 +1,4 @@
-//! mlsh-control authoritative registry of cluster nodes (ADR-033).
-//!
-//! Nodes are inserted/updated by the control plane in response to
-//! `ControlRequest::AdoptConfirm` and mutated by `Rename`/`Promote`/`Revoke`.
+//! mlsh-control authoritative registry of cluster nodes.
 
 use anyhow::{Context, Result};
 use sqlx::SqlitePool;
@@ -22,7 +19,6 @@ pub struct NodeRow {
 const SELECT_COLS: &str =
     "cluster_id, node_uuid, fingerprint, public_key, display_name, role, status, last_seen, created_at";
 
-/// Insert a node, or update non-key fields if it already exists.
 pub async fn upsert(
     pool: &SqlitePool,
     cluster_id: &str,
@@ -112,8 +108,7 @@ pub async fn set_status(
     Ok(r.rows_affected() > 0)
 }
 
-/// Resolve a target to its `node_uuid` — accepts either the UUID itself
-/// (returned as-is if it matches a row) or the `display_name`.
+/// Accepts either the UUID itself or the `display_name`.
 pub async fn resolve_target(
     pool: &SqlitePool,
     cluster_id: &str,

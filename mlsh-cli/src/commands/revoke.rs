@@ -1,8 +1,4 @@
-//! `mlsh revoke <cluster> <node-uuid>` — mark a node as revoked (admin only).
-//!
-//! Routed through mlshtund's control session over CBOR (ADR-033 phase 2).
-//! V1 marks the node as revoked in mlsh-control's DB; signal still has it in
-//! the live mesh until the next reconnect.
+//! `mlsh revoke <cluster> <node>` — admin only.
 
 use anyhow::Result;
 use colored::Colorize;

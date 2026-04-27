@@ -45,8 +45,6 @@ pub async fn run() -> anyhow::Result<()> {
         webauthn,
     };
 
-    // CBOR IPC socket for incoming control-plane requests relayed by mlshtund
-    // (ADR-033). Runs alongside the HTTP/UI server.
     let stream_state = stream::StreamState {
         pool: state.store.pool().clone(),
     };

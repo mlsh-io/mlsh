@@ -70,8 +70,6 @@ impl DaemonClient {
         .await
     }
 
-    /// Send a CBOR `ControlRequest` through the daemon's mlsh-control session
-    /// (ADR-033 phase 2). Returns the decoded `ControlResponse`.
     pub async fn control_call(
         &mut self,
         cluster: &str,
