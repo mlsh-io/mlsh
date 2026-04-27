@@ -58,6 +58,7 @@ async fn handle_stream(
         StreamMessage::NodeAuth {
             cluster_id,
             public_key,
+            admission_cert: _,
         } => {
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
             run_node_session(id, &cluster_id, &public_key, send, recv, conn, state).await?;
@@ -198,6 +199,7 @@ async fn handle_stream(
 /// The node's identity is its Ed25519 certificate fingerprint, extracted from
 /// the QUIC connection. No shared secret (node_token) is needed — the TLS
 /// handshake proves the node holds the private key.
+#[allow(clippy::too_many_arguments)]
 async fn run_node_session(
     id: u64,
     cluster_id: &str,
@@ -221,7 +223,6 @@ async fn run_node_session(
         }
     };
 
-    // Verify the node exists in the registry
     let node = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &fingerprint).await? {
         Some(n) => n,
         None => {
@@ -230,16 +231,16 @@ async fn run_node_session(
             return Ok(());
         }
     };
+    let node_id = node.node_id;
+    let node_role = node.role;
+    let node_display_name = node.display_name;
 
     // Allocate a fresh overlay IP from the current subnet (no persistent leases)
     let overlay_ip =
-        db::allocate_ip(&state.db, cluster_id, &node.node_id, &state.overlay_subnet).await?;
+        db::allocate_ip(&state.db, cluster_id, &node_id, &state.overlay_subnet).await?;
 
     // Build peer list (excluding self)
-    let peers = state
-        .sessions
-        .get_peer_list(cluster_id, &node.node_id)
-        .await;
+    let peers = state.sessions.get_peer_list(cluster_id, &node_id).await;
 
     // Send auth success
     let reply = ServerMessage::NodeAuthOk {
@@ -249,7 +250,7 @@ async fn run_node_session(
         peers,
     };
     protocol::write_message(&mut send, &reply).await?;
-    info!(id, cluster_id, node_id = %node.node_id, %overlay_ip, "Node session authenticated");
+    info!(id, cluster_id, node_id = %node_id, %overlay_ip, "Node session authenticated");
 
     // Register session + push channel
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<ServerMessage>>();
@@ -258,11 +259,11 @@ async fn run_node_session(
         .register(
             cluster_id,
             crate::sessions::NodeSessionInfo {
-                node_id: node.node_id.clone(),
+                node_id: node_id.clone(),
                 fingerprint: fingerprint.clone(),
                 overlay_ip,
-                display_name: node.display_name.clone(),
-                role: node.role.clone(),
+                display_name: node_display_name.clone(),
+                role: node_role.clone(),
                 connection: conn.clone(),
                 push_tx,
             },
@@ -274,7 +275,7 @@ async fn run_node_session(
     if !public_key.is_empty() {
         state
             .sessions
-            .set_public_key(cluster_id, &node.node_id, public_key)
+            .set_public_key(cluster_id, &node_id, public_key)
             .await;
     }
 
@@ -282,11 +283,7 @@ async fn run_node_session(
     // the srflx (derived from the quinn connection's remote address) is
     // included — host_candidates fill in later via ReportCandidates, which
     // triggers a re-broadcast below.
-    if let Some(peer_info) = state
-        .sessions
-        .peer_info_for(cluster_id, &node.node_id)
-        .await
-    {
+    if let Some(peer_info) = state.sessions.peer_info_for(cluster_id, &node_id).await {
         state
             .sessions
             .notify_peer_joined(cluster_id, peer_info)
@@ -308,10 +305,10 @@ async fn run_node_session(
                                 let _ = protocol::write_message(&mut send, &ServerMessage::Pong).await;
                             }
                             StreamMessage::ReportCandidates { candidates } => {
-                                state.sessions.set_candidates(cluster_id, &node.node_id, candidates).await;
+                                state.sessions.set_candidates(cluster_id, &node_id, candidates).await;
                                 if let Some(peer_info) = state
                                     .sessions
-                                    .peer_info_for(cluster_id, &node.node_id)
+                                    .peer_info_for(cluster_id, &node_id)
                                     .await
                                 {
                                     state.sessions.notify_peer_joined(cluster_id, peer_info).await;
@@ -370,19 +367,13 @@ async fn run_node_session(
     // When a node reconnects, the new session replaces the old one.
     // The old session's deregister is a no-op (session_id mismatch), so we must NOT
     // broadcast peer_left or it would cancel the new session's peer_joined.
-    let was_active = state
-        .sessions
-        .deregister(cluster_id, &node.node_id, id)
-        .await;
+    let was_active = state.sessions.deregister(cluster_id, &node_id, id).await;
 
     if was_active {
-        state
-            .sessions
-            .notify_peer_left(cluster_id, &node.node_id)
-            .await;
+        state.sessions.notify_peer_left(cluster_id, &node_id).await;
     }
 
-    info!(id, cluster_id, node_id = %node.node_id, was_active, "Node session closed");
+    info!(id, cluster_id, node_id = %node_id, was_active, "Node session closed");
     Ok(())
 }
 
