@@ -25,8 +25,8 @@ pub use super::cluster_config::{load_cluster_config, parse_cluster_config, Clust
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Shared mutable state between the tunnel task and the manager.
-#[derive(Default)]
+/// Live status published by the tunnel task and observed by the manager.
+#[derive(Clone, Default)]
 struct SharedInfo {
     transport: Option<String>,
     connected_at: Option<Instant>,
@@ -45,7 +45,7 @@ pub struct ManagedTunnel {
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     overlay_ip: Option<Ipv4Addr>,
-    info: Arc<std::sync::Mutex<SharedInfo>>,
+    info_rx: watch::Receiver<SharedInfo>,
     /// Watch exposing the currently-active signal QUIC connection. Used by
     /// the ACME client to publish HTTP-01 challenge responses via signal.
     signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
@@ -63,7 +63,7 @@ impl ManagedTunnel {
         let (signal_conn_tx, signal_conn_rx) = watch::channel(None::<quinn::Connection>);
         let bytes_tx = Arc::new(AtomicU64::new(0));
         let bytes_rx = Arc::new(AtomicU64::new(0));
-        let info = Arc::new(std::sync::Mutex::new(SharedInfo::default()));
+        let (info_tx, info_rx) = watch::channel(SharedInfo::default());
 
         let overlay_ip: Ipv4Addr = config
             .overlay_ip
@@ -75,7 +75,6 @@ impl ManagedTunnel {
         let config = Arc::new(config);
         let cluster_name = config.name.clone();
         let cluster_id = config.cluster_id.clone();
-        let info_task = info.clone();
 
         // Spawn mlsh-control if this node holds the `control` role.
         // The child runs as the current user with no extra privileges.
@@ -105,7 +104,7 @@ impl ManagedTunnel {
                 overlay_ip,
                 state_tx,
                 shutdown_rx,
-                info_task,
+                info_tx,
                 tx_counter,
                 rx_counter,
                 signal_conn_tx,
@@ -122,7 +121,7 @@ impl ManagedTunnel {
             bytes_tx,
             bytes_rx,
             overlay_ip: Some(overlay_ip),
-            info,
+            info_rx,
             signal_conn_rx: Some(signal_conn_rx),
             control_child,
             control_session,
@@ -194,7 +193,7 @@ impl ManagedTunnel {
 
     /// Build a status snapshot.
     pub fn status(&self) -> TunnelStatus {
-        let info = self.info.lock().unwrap_or_else(|e| e.into_inner());
+        let info = self.info_rx.borrow();
         let uptime = info.connected_at.map(|t| t.elapsed().as_secs());
         TunnelStatus {
             cluster: self.cluster_name.clone(),
@@ -250,7 +249,7 @@ async fn tunnel_task(
     overlay_ip: Ipv4Addr,
     state_tx: watch::Sender<TunnelState>,
     mut shutdown_rx: watch::Receiver<bool>,
-    info: Arc<std::sync::Mutex<SharedInfo>>,
+    info: watch::Sender<SharedInfo>,
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     signal_conn_tx: watch::Sender<Option<quinn::Connection>>,
@@ -304,9 +303,7 @@ async fn tunnel_task(
         Err(e) => {
             tracing::error!("Failed to create TUN device: {} (need root?)", e);
             let _ = state_tx.send(TunnelState::Disconnected);
-            if let Ok(mut i) = info.lock() {
-                i.last_error = Some(format!("TUN creation failed: {}", e));
-            }
+            info.send_modify(|i| i.last_error = Some(format!("TUN creation failed: {}", e)));
             return;
         }
     };
@@ -459,10 +456,10 @@ async fn tunnel_task(
 
     loop {
         let _ = state_tx.send(TunnelState::Connecting);
-        if let Ok(mut i) = info.lock() {
+        info.send_modify(|i| {
             i.transport = None;
             i.connected_at = None;
-        }
+        });
 
         let run_ctx = TunnelRunContext {
             config: &config,
@@ -491,11 +488,11 @@ async fn tunnel_task(
                     reason,
                 );
                 let _ = state_tx.send(TunnelState::Reconnecting);
-                if let Ok(mut i) = info.lock() {
+                info.send_modify(|i| {
                     i.last_error = Some(reason);
                     i.transport = None;
                     i.connected_at = None;
-                }
+                });
                 backoff = Duration::from_secs(1);
             }
             Err(e) => {
@@ -507,11 +504,11 @@ async fn tunnel_task(
                     backoff
                 );
                 let _ = state_tx.send(TunnelState::Reconnecting);
-                if let Ok(mut i) = info.lock() {
+                info.send_modify(|i| {
                     i.last_error = Some(err_msg);
                     i.transport = None;
                     i.connected_at = None;
-                }
+                });
             }
         }
 
@@ -558,7 +555,7 @@ struct TunnelRunContext<'a> {
     session: &'a signal_session::SignalSessionHandle,
     peer_table: &'a PeerTable,
     state_tx: &'a watch::Sender<TunnelState>,
-    info: &'a Arc<std::sync::Mutex<SharedInfo>>,
+    info: &'a watch::Sender<SharedInfo>,
     bytes_tx: &'a Arc<AtomicU64>,
     fsm_registry: &'a super::peer_fsm::FsmRegistry,
 }
@@ -610,11 +607,11 @@ async fn establish_and_run(
     );
 
     let _ = state_tx.send(TunnelState::Connected);
-    if let Ok(mut i) = info.lock() {
+    info.send_modify(|i| {
         i.transport = Some("mesh".to_string());
         i.connected_at = Some(Instant::now());
         i.last_error = None;
-    }
+    });
 
     // Single TUN reader — routes packets via PeerTable
     let tun_device = device.clone();
