@@ -6,8 +6,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::tund::client::DaemonClient;
-use crate::tund::protocol::{DaemonResponse, TunnelState};
+use crate::tund::control::client::DaemonClient;
+use crate::tund::control::protocol::{DaemonResponse, TunnelState};
 
 pub async fn handle_connect(name: &str, foreground: bool) -> Result<()> {
     let cluster_name = resolve_cluster_name(name)?;
@@ -198,7 +198,7 @@ async fn handle_connect_foreground(cluster_name: &str) -> Result<()> {
     println!();
     println!("{}", "Shutting down...".yellow());
     tunnel.stop().await;
-    crate::tund::dns::remove_resolver(&cluster_name_for_dns);
+    crate::tund::net::dns::remove_resolver(&cluster_name_for_dns);
     println!("{}", "Disconnected.".yellow());
 
     Ok(())

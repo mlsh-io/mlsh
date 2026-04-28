@@ -7,9 +7,9 @@ use std::time::Duration;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 
-use super::net_filter::{is_interesting_ip, OverlayNet};
-use super::peer_fsm::{Event, FsmRegistry};
-use super::signal_session::SignalSessionHandle;
+use super::filter::{is_interesting_ip, OverlayNet};
+use crate::tund::overlay::fsm::{Event, FsmRegistry};
+use crate::tund::signal_session::SignalSessionHandle;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const MIGRATION_VALIDATION: Duration = Duration::from_secs(5);
@@ -102,7 +102,7 @@ async fn kick(
     fsm_registry: &FsmRegistry,
     endpoint: &quinn::Endpoint,
 ) {
-    match super::quic::try_migrate(endpoint) {
+    match crate::tund::overlay::quic::try_migrate(endpoint) {
         Ok(new_port) => {
             session.report_candidates(new_port);
             spawn_migration_watchdog(session.clone(), fsm_registry.clone());

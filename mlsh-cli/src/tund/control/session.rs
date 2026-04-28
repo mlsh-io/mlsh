@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use mlsh_protocol::framing;
 use tokio::sync::Mutex;
 
-use super::signal_session::SignalCredentials;
+use crate::tund::signal_session::SignalCredentials;
 
 #[derive(Clone)]
 pub struct ControlSession {

@@ -119,7 +119,7 @@ impl PeerTable {
             .routes
             .insert(ip, PeerRoute::Direct(conn));
         if is_new && !self.tun_name.is_empty() {
-            super::routes::add_peer_route(ip, &self.tun_name);
+            crate::tund::net::routes::add_peer_route(ip, &self.tun_name);
         }
     }
 
@@ -132,7 +132,7 @@ impl PeerTable {
             .routes
             .insert(ip, PeerRoute::Relay(tx));
         if is_new && !self.tun_name.is_empty() {
-            super::routes::add_peer_route(ip, &self.tun_name);
+            crate::tund::net::routes::add_peer_route(ip, &self.tun_name);
         }
     }
 
@@ -140,7 +140,7 @@ impl PeerTable {
     pub async fn remove_route(&self, ip: Ipv4Addr) {
         let removed = self.inner.write().await.routes.remove(&ip).is_some();
         if removed && !self.tun_name.is_empty() {
-            super::routes::remove_peer_route(ip);
+            crate::tund::net::routes::remove_peer_route(ip);
         }
     }
 
@@ -152,7 +152,7 @@ impl PeerTable {
             inner.routes.remove(&ip);
             drop(inner);
             if !self.tun_name.is_empty() {
-                super::routes::remove_peer_route(ip);
+                crate::tund::net::routes::remove_peer_route(ip);
             }
             true
         } else {

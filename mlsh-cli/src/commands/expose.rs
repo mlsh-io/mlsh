@@ -7,7 +7,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
+use crate::tund::control::{client::DaemonClient, protocol::DaemonResponse};
 
 pub async fn handle_expose(
     cluster: &str,

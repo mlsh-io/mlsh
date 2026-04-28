@@ -17,7 +17,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
-use crate::tund::{client::DaemonClient, protocol::DaemonResponse};
+use crate::tund::control::{client::DaemonClient, protocol::DaemonResponse};
 
 const CONTROL_ROLE: &str = "control";
 

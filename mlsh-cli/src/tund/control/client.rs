@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 
 use super::protocol::{read_message, write_message, DaemonRequest, DaemonResponse};
-use super::transport::{ActiveTransport, Transport};
+use crate::tund::transport::{ActiveTransport, Transport};
 
 /// Client for communicating with the `mlshtund` daemon.
 pub struct DaemonClient {

@@ -13,12 +13,12 @@ use anyhow::{Context, Result};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use super::dns;
-use super::peer_table::PeerTable;
-use super::protocol::{TunnelState, TunnelStatus};
+use crate::tund::control::protocol::{TunnelState, TunnelStatus};
+use crate::tund::net::dns;
+use crate::tund::overlay::peer_table::PeerTable;
 
-use super::control_session::ControlSession;
 use super::signal_session;
+use crate::tund::control::session::ControlSession;
 
 pub use super::cluster_config::{load_cluster_config, parse_cluster_config, ClusterConfig};
 
@@ -334,7 +334,7 @@ async fn tunnel_task(
     let (endpoint, overlay_port) = match create_shared_endpoint(&config.identity_dir) {
         Ok((ep, port)) => {
             tracing::info!("QUIC endpoint listening on port {}", port);
-            super::quic::start(
+            crate::tund::overlay::quic::start(
                 ep.clone(),
                 device.clone(),
                 peer_table.clone(),
@@ -348,7 +348,7 @@ async fn tunnel_task(
         }
     };
 
-    let fsm_registry = super::peer_fsm::FsmRegistry::new();
+    let fsm_registry = crate::tund::overlay::fsm::FsmRegistry::new();
 
     // Spawn ONE signal session — it handles its own reconnection internally.
     // Pass the PeerTable so incoming relay streams can register routes.
@@ -369,7 +369,7 @@ async fn tunnel_task(
         initial_display_name: config.display_name.clone(),
         fsm_registry: fsm_registry.clone(),
     });
-    let dns_config = super::overlay_dns::DnsConfig {
+    let dns_config = crate::tund::net::overlay_dns::DnsConfig {
         bind_addr: dns_bind,
         zone: config.name.clone(),
         ttl: 60,
@@ -379,7 +379,7 @@ async fn tunnel_task(
     let dns_display_name = session.display_name.clone();
     let (dns_shutdown_tx, dns_shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
-        if let Err(e) = super::overlay_dns::run(
+        if let Err(e) = crate::tund::net::overlay_dns::run(
             dns_config,
             overlay_ip,
             dns_node_id,
@@ -511,9 +511,9 @@ enum ShutdownReason {
     ConnectionLost(String),
 }
 
-use super::control_child::spawn_control_child;
-use super::peer_supervisor::{run_connection_manager, ConnectionManagerContext};
-use super::quic::create_shared_endpoint;
+use crate::tund::control::child::spawn_control_child;
+use crate::tund::overlay::quic::create_shared_endpoint;
+use crate::tund::overlay::supervisor::{run_connection_manager, ConnectionManagerContext};
 
 struct TunnelRunContext<'a> {
     config: &'a Arc<ClusterConfig>,
@@ -527,7 +527,7 @@ struct TunnelRunContext<'a> {
     state_tx: &'a watch::Sender<TunnelState>,
     info: &'a watch::Sender<SharedInfo>,
     bytes_tx: &'a Arc<AtomicU64>,
-    fsm_registry: &'a super::peer_fsm::FsmRegistry,
+    fsm_registry: &'a crate::tund::overlay::fsm::FsmRegistry,
 }
 
 /// Wait for signal session to be ready, then run the multi-peer forwarding loop.
@@ -616,11 +616,11 @@ async fn establish_and_run(
         run_connection_manager(cm_session_peers, cm_session_conn, &cm_ctx).await;
     });
 
-    let _net_watcher = super::net_watcher::spawn(
+    let _net_watcher = crate::tund::net::watcher::spawn(
         session.clone(),
         ctx.fsm_registry.clone(),
         ctx.endpoint.clone(),
-        super::net_filter::OverlayNet::new(overlay_ip, ctx.overlay_prefix_len),
+        crate::tund::net::filter::OverlayNet::new(overlay_ip, ctx.overlay_prefix_len),
         ctx.cancel.clone(),
     );
 

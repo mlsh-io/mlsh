@@ -11,7 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
-use super::peer_table::PeerTable;
+use crate::tund::overlay::peer_table::PeerTable;
 
 const RCODE_OK: u8 = 0;
 const RCODE_NXDOMAIN: u8 = 3;

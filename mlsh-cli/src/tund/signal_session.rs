@@ -100,12 +100,12 @@ struct SessionContext {
     display_name_tx: watch::Sender<String>,
     my_node_id: String,
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
-    peer_table: super::peer_table::PeerTable,
+    peer_table: crate::tund::overlay::peer_table::PeerTable,
     overlay_port: u16,
     overlay_prefix_len: u8,
     /// Built once per session handle so TLS session tickets survive reconnects.
     client_config: quinn::ClientConfig,
-    fsm_registry: super::peer_fsm::FsmRegistry,
+    fsm_registry: crate::tund::overlay::fsm::FsmRegistry,
     kick_rx: watch::Receiver<u64>,
     /// When changed, the session re-gathers host candidates using this port
     /// and sends a fresh `ReportCandidates` on the existing stream. Used
@@ -123,11 +123,11 @@ pub struct SpawnParams {
     /// If provided, incoming relay bi-streams from signal are accepted and
     /// forwarded via the shared `peer_table`.
     pub tun_device: Option<Arc<tun_rs::AsyncDevice>>,
-    pub peer_table: super::peer_table::PeerTable,
+    pub peer_table: crate::tund::overlay::peer_table::PeerTable,
     pub overlay_port: u16,
     pub overlay_prefix_len: u8,
     pub initial_display_name: String,
-    pub fsm_registry: super::peer_fsm::FsmRegistry,
+    pub fsm_registry: crate::tund::overlay::fsm::FsmRegistry,
 }
 
 /// Spawn a persistent signal session as a background task.
@@ -404,8 +404,8 @@ async fn run_session(
                                         return;
                                     };
                                     tokio::select! {
-                                        result = super::relay::handle_incoming_relay(
-                                            super::relay::IncomingRelay {
+                                        result = crate::tund::overlay::relay::handle_incoming_relay(
+                                            crate::tund::overlay::relay::IncomingRelay {
                                                 send: relay_send,
                                                 recv: relay_recv,
                                                 device: dev,
@@ -738,13 +738,13 @@ fn gather_host_candidates(
     overlay_ip: Ipv4Addr,
     overlay_prefix_len: u8,
 ) -> Vec<Candidate> {
-    let overlay = super::net_filter::OverlayNet::new(overlay_ip, overlay_prefix_len);
+    let overlay = crate::tund::net::filter::OverlayNet::new(overlay_ip, overlay_prefix_len);
     let mut candidates = Vec::new();
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
         for (name, ip) in &interfaces {
             if let std::net::IpAddr::V4(v4) = ip {
-                if !super::net_filter::is_interesting_ip(*v4, Some(name), overlay) {
+                if !crate::tund::net::filter::is_interesting_ip(*v4, Some(name), overlay) {
                     continue;
                 }
                 candidates.push(Candidate {

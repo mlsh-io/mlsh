@@ -1,5 +1,12 @@
-//! Async driver for the peer FSM in [`super::peer_fsm`]: executes effects as
-//! spawned tasks and feeds their outcomes back as events.
+//! Overlay mesh: peer FSM, async driver (this file), peer routing table,
+//! direct QUIC connections, candidate probing, and TLS-E2E relay fallback.
+
+pub mod fsm;
+pub mod peer_table;
+pub mod probe;
+pub mod quic;
+pub mod relay;
+pub mod supervisor;
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
@@ -7,9 +14,9 @@ use std::time::Duration;
 
 use mlsh_protocol::types::PeerInfo;
 
-use super::peer_table::PeerTable;
-use super::probe::probe_candidates;
-use super::relay::{run_relay_initiator, RelayInitiator};
+use self::peer_table::PeerTable;
+use self::probe::probe_candidates;
+use self::relay::{run_relay_initiator, RelayInitiator};
 
 const RELAY_GRACE: Duration = Duration::from_millis(200);
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -26,11 +33,11 @@ pub struct PeerConnectionContext {
     pub cluster_id: String,
     pub my_node_id: String,
     pub identity_dir: std::path::PathBuf,
-    pub fsm_registry: super::peer_fsm::FsmRegistry,
+    pub fsm_registry: self::fsm::FsmRegistry,
 }
 
 pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
-    use super::peer_fsm::{initial_effects, transition, Effect, Event, State};
+    use self::fsm::{initial_effects, transition, Effect, Event, State};
 
     let peer_ip = ctx.peer_ip;
     let is_initiator = ctx.overlay_ip < peer_ip;
@@ -167,7 +174,7 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
                         let ev = events_tx.clone();
                         direct_lifecycle = Some(tokio::spawn(async move {
                             tokio::select! {
-                                _ = super::quic::run_inbound(conn, &dev, &pt) => {}
+                                _ = self::quic::run_inbound(conn, &dev, &pt) => {}
                                 _ = cancel.cancelled() => {}
                             }
                             let _ = ev.send(Event::DirectConnectionLost);

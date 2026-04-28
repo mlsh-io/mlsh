@@ -8,8 +8,8 @@ use std::time::Duration;
 use mlsh_protocol::types::PeerInfo;
 use tokio::sync::watch;
 
-use super::peer_fsm_driver::{establish_peer_connection, PeerConnectionContext};
 use super::peer_table::PeerTable;
+use super::{establish_peer_connection, PeerConnectionContext};
 
 pub struct ConnectionManagerContext<'a> {
     pub cancel: &'a tokio_util::sync::CancellationToken,
@@ -20,7 +20,7 @@ pub struct ConnectionManagerContext<'a> {
     pub my_node_id: &'a str,
     pub cluster_id: &'a str,
     pub identity_dir: &'a std::path::Path,
-    pub fsm_registry: &'a super::peer_fsm::FsmRegistry,
+    pub fsm_registry: &'a super::fsm::FsmRegistry,
 }
 
 pub async fn run_connection_manager(

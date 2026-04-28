@@ -4,7 +4,7 @@ use anyhow::Result;
 use colored::Colorize;
 use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::client::DaemonClient;
+use crate::tund::control::client::DaemonClient;
 
 pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     let mut client = DaemonClient::connect_default().await?;

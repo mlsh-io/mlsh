@@ -4,6 +4,11 @@
 //! Unix, named pipe on Windows), reads `DaemonRequest`s, dispatches to the
 //! tunnel manager, and sends `DaemonResponse`s.
 
+pub mod child;
+pub mod client;
+pub mod protocol;
+pub mod session;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -11,10 +16,10 @@ use anyhow::{Context, Result};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{watch, Mutex};
 
-use super::protocol::{read_message, write_message, DaemonRequest, DaemonResponse};
-use super::transport::{ActiveTransport, Transport};
-use super::tunnel::parse_cluster_config;
-use super::tunnel_manager::TunnelManager;
+use self::protocol::{read_message, write_message, DaemonRequest, DaemonResponse};
+use crate::tund::transport::{ActiveTransport, Transport};
+use crate::tund::tunnel::parse_cluster_config;
+use crate::tund::tunnel_manager::TunnelManager;
 
 /// Determine the endpoint path (socket / pipe name).
 pub fn socket_path(custom: Option<&str>) -> PathBuf {

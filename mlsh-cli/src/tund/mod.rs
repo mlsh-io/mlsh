@@ -5,26 +5,12 @@
 //! a Unix socket.
 
 pub mod acme;
-pub mod client;
 pub mod cluster_config;
 pub mod control;
-pub mod control_child;
-pub mod control_session;
 pub mod daemon;
-pub mod dns;
 pub mod ingress;
-pub mod net_filter;
-pub mod net_watcher;
-pub mod overlay_dns;
-pub mod peer_fsm;
-pub mod peer_fsm_driver;
-pub mod peer_supervisor;
-pub mod peer_table;
-pub mod probe;
-pub mod protocol;
-pub mod quic;
-pub mod relay;
-pub mod routes;
+pub mod net;
+pub mod overlay;
 pub mod signal_session;
 pub mod transport;
 pub mod tunnel;

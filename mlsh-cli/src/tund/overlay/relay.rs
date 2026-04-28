@@ -21,7 +21,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use mlsh_protocol::framing;
 use mlsh_protocol::messages::RelayMessage;
 
-use super::peer_fsm::{Event, FsmRegistry};
+use super::fsm::{Event, FsmRegistry};
 use super::peer_table::{self, PeerTable};
 
 // ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ pub struct RelayInitiator {
     pub identity_dir: std::path::PathBuf,
     pub device: Arc<tun_rs::AsyncDevice>,
     pub peer_table: PeerTable,
-    pub events_tx: tokio::sync::mpsc::UnboundedSender<super::peer_fsm::Event>,
+    pub events_tx: tokio::sync::mpsc::UnboundedSender<super::fsm::Event>,
     pub cancel: tokio_util::sync::CancellationToken,
 }
 

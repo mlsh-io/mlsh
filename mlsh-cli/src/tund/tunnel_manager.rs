@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use anyhow::{Context, Result};
 
-use super::protocol::{DaemonResponse, TunnelState};
 use super::tunnel::{ClusterConfig, ManagedTunnel};
+use crate::tund::control::protocol::{DaemonResponse, TunnelState};
 
 /// Tunnel manager: owns all active tunnels.
 #[derive(Default)]
@@ -82,7 +82,10 @@ impl TunnelManager {
     }
 
     /// Return the persistent mlsh-control session handle for a cluster.
-    pub fn control_session(&self, cluster: &str) -> Option<super::control_session::ControlSession> {
+    pub fn control_session(
+        &self,
+        cluster: &str,
+    ) -> Option<crate::tund::control::session::ControlSession> {
         self.tunnels.get(cluster).map(|t| t.control_session())
     }
 
