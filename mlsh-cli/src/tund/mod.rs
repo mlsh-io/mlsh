@@ -19,6 +19,7 @@ pub mod overlay_dns;
 pub mod peer_fsm;
 pub mod peer_table;
 pub mod protocol;
+pub mod quic_client;
 pub mod quic_server;
 pub mod relay_handler;
 pub mod relay_tls;
