@@ -144,14 +144,16 @@ async fn find_node_by_fingerprint(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|(cid, nid, fp, ip, role, dn)| crate::db::NodeRecord {
-        cluster_id: cid,
-        node_id: nid,
-        fingerprint: fp,
-        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-        role,
-        display_name: dn,
-    }))
+    Ok(
+        row.map(|(cid, nid, fp, ip, role, dn)| crate::db::NodeRecord {
+            cluster_id: cid,
+            node_id: nid,
+            fingerprint: fp,
+            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
+            role,
+            display_name: dn,
+        }),
+    )
 }
 
 async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::Result<()> {

@@ -633,10 +633,7 @@ pub async fn update_node_role(
 
 /// Find the cluster's `control` node — the oldest admin (heuristic for V1).
 /// Returns `None` if the cluster has no admin yet.
-pub async fn find_control_node(
-    pool: &SqlitePool,
-    cluster_id: &str,
-) -> Result<Option<NodeRecord>> {
+pub async fn find_control_node(pool: &SqlitePool, cluster_id: &str) -> Result<Option<NodeRecord>> {
     let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
         "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
          FROM nodes

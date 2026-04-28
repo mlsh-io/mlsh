@@ -185,10 +185,7 @@ fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig>
 }
 
 /// Retries to absorb the boot race with the mlsh-control sub-process socket.
-async fn best_effort_adopt_confirm_with_retry(
-    conn: &quinn::Connection,
-    creds: &SignalCredentials,
-) {
+async fn best_effort_adopt_confirm_with_retry(conn: &quinn::Connection, creds: &SignalCredentials) {
     use mlsh_protocol::control::ControlResponse;
     let attempts = 8u32;
     let backoff = std::time::Duration::from_millis(250);
@@ -248,7 +245,6 @@ async fn adopt_confirm_once(
         .map_err(|e| anyhow::anyhow!("decode AdoptConfirm reply: {e}"))?;
     Ok(reply)
 }
-
 
 async fn call_on(conn: &quinn::Connection, payload: Vec<u8>) -> Result<Vec<u8>> {
     let (mut send, mut recv) = conn
