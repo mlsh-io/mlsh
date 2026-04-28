@@ -26,8 +26,8 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     }
 
     println!(
-        "{:<36} {:<8} {:<8} {}",
-        "NODE UUID", "ROLE", "STATUS", "DISPLAY NAME"
+        "{:<36} {:<8} {:<8} DISPLAY NAME",
+        "NODE UUID", "ROLE", "STATUS"
     );
 
     for node in &nodes {

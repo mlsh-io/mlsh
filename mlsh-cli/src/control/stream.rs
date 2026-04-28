@@ -12,7 +12,7 @@ use tokio::net::{UnixListener, UnixStream};
 use crate::control::nodes;
 
 pub fn default_socket_path() -> PathBuf {
-    super::db::data_dir().join("control.sock")
+    crate::tund::tunnel::control_plane_socket_path()
 }
 
 #[derive(Clone)]

@@ -24,6 +24,17 @@ pub use super::cluster_config::{load_cluster_config, parse_cluster_config, Clust
 
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 
+/// Default UNIX socket path for the local mlsh-control plane.
+/// Kept here (not in `crate::control`) so tund compiles without the
+/// `control-plane` feature.
+pub(crate) fn control_plane_socket_path() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("mlsh")
+        .join("control")
+        .join("control.sock")
+}
+
 /// Live status published by the tunnel task and observed by the manager.
 #[derive(Clone, Default)]
 struct SharedInfo {
@@ -86,7 +97,7 @@ impl ManagedTunnel {
 
         // Build the mlsh-control session and warm it up so AdoptConfirm fires.
         let creds = config.signal_credentials()?;
-        let control_socket = crate::control::stream::default_socket_path();
+        let control_socket = control_plane_socket_path();
         let control_session = ControlSession::new(creds, control_socket)?;
         let warmup = control_session.clone();
         tokio::spawn(async move {
