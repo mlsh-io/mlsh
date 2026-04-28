@@ -6,6 +6,7 @@
 
 pub mod acme;
 pub mod client;
+pub mod cluster_config;
 pub mod control;
 pub mod control_session;
 pub mod daemon;
