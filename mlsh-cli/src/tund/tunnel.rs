@@ -72,6 +72,7 @@ impl ManagedTunnel {
             .parse()
             .context("Invalid overlay IP in cluster config")?;
 
+        let config = Arc::new(config);
         let cluster_name = config.name.clone();
         let cluster_id = config.cluster_id.clone();
         let info_task = info.clone();
@@ -245,7 +246,7 @@ fn spawn_control_child(cluster: &str) -> Option<tokio::process::Child> {
 /// Long-running task that manages the tunnel lifecycle with reconnection.
 #[allow(clippy::too_many_arguments)]
 async fn tunnel_task(
-    config: ClusterConfig,
+    config: Arc<ClusterConfig>,
     overlay_ip: Ipv4Addr,
     state_tx: watch::Sender<TunnelState>,
     mut shutdown_rx: watch::Receiver<bool>,
@@ -548,7 +549,7 @@ const RELAY_GRACE: Duration = Duration::from_millis(200);
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
 
 struct TunnelRunContext<'a> {
-    config: &'a ClusterConfig,
+    config: &'a Arc<ClusterConfig>,
     cancel: &'a tokio_util::sync::CancellationToken,
     endpoint: &'a quinn::Endpoint,
     overlay_ip: Ipv4Addr,
@@ -629,9 +630,7 @@ async fn establish_and_run(
     let cm_cancel = ctx.cancel.clone();
     let cm_table = peer_table.clone();
     let cm_device = device.clone();
-    let cm_node_id = config.node_id.clone();
-    let cm_cluster_id = config.cluster_id.clone();
-    let cm_identity_dir = config.identity_dir.clone();
+    let cm_config = config.clone();
     let cm_overlay_ip = overlay_ip;
     let cm_endpoint = ctx.endpoint.clone();
     let cm_fsm_registry = ctx.fsm_registry.clone();
@@ -642,9 +641,9 @@ async fn establish_and_run(
             peer_table: &cm_table,
             device: &cm_device,
             overlay_ip: cm_overlay_ip,
-            my_node_id: &cm_node_id,
-            cluster_id: &cm_cluster_id,
-            identity_dir: &cm_identity_dir,
+            my_node_id: &cm_config.node_id,
+            cluster_id: &cm_config.cluster_id,
+            identity_dir: &cm_config.identity_dir,
             fsm_registry: &cm_fsm_registry,
         };
         run_connection_manager(cm_session_peers, cm_session_conn, &cm_ctx).await;
