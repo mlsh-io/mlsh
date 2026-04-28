@@ -1,18 +1,126 @@
-//! QUIC overlay server for mlshtund.
+//! Overlay QUIC plumbing: shared endpoint, direct peer connections, accept
+//! loop for incoming peers, and active path migration on network changes.
 //!
-//! Accepts direct QUIC connections from other nodes on the `mlsh-overlay` ALPN.
-//! Binds to a random port — the actual port is reported to signal as a host candidate.
-//! Each incoming connection is identified by its TLS fingerprint and inserted
-//! into the shared PeerTable for routing.
+//! All overlay peers use the `mlsh-overlay` ALPN over a single shared UDP
+//! socket. The same socket is the source for outbound `connect()` and the
+//! sink for inbound `accept()` so signal observes a consistent srflx
+//! candidate.
 
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use base64::Engine;
+
+use mlsh_protocol::alpn::ALPN_OVERLAY;
 
 use super::peer_table::{self, PeerTable};
 
-use mlsh_protocol::alpn::ALPN_OVERLAY;
+pub const DIRECT_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const MAX_OVERLAY_CONNECTIONS: usize = 64;
+
+// ---------------------------------------------------------------------------
+// Endpoint creation (ex-quic_client.rs)
+// ---------------------------------------------------------------------------
+
+/// Create a shared QUIC endpoint that serves as both overlay server and client
+/// for signal + direct peer connections. A single UDP socket ensures signal
+/// observes the correct remote_address for srflx candidates.
+pub fn create_shared_endpoint(identity_dir: &std::path::Path) -> Result<(quinn::Endpoint, u16)> {
+    let cert_pem =
+        std::fs::read_to_string(identity_dir.join("cert.pem")).context("Missing identity cert")?;
+    let key_pem =
+        std::fs::read_to_string(identity_dir.join("key.pem")).context("Missing identity key")?;
+    let cert_der = pem_to_der(&cert_pem)?;
+    let server_config = build_server_config(&cert_der, &key_pem)?;
+
+    let bind_addr: std::net::SocketAddr = "0.0.0.0:0".parse().unwrap();
+    let endpoint = quinn::Endpoint::server(server_config, bind_addr)
+        .context("Failed to bind QUIC endpoint")?;
+    let port = endpoint.local_addr()?.port();
+
+    Ok((endpoint, port))
+}
+
+/// Connect directly to a peer via QUIC with fingerprint verification.
+pub async fn connect_overlay_direct(
+    endpoint: &quinn::Endpoint,
+    addr: std::net::SocketAddr,
+    expected_fingerprint: &str,
+    identity_dir: &std::path::Path,
+) -> Result<quinn::Connection> {
+    let cert_pem = std::fs::read_to_string(identity_dir.join("cert.pem"))
+        .context("Missing identity cert for overlay")?;
+    let key_pem = std::fs::read_to_string(identity_dir.join("key.pem"))
+        .context("Missing identity key for overlay")?;
+
+    let cert_der = {
+        let b64: String = cert_pem
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .context("Invalid cert PEM")?
+    };
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls_pemfile::private_key(&mut key_pem.as_bytes())
+        .context("Failed to parse identity key")?
+        .context("No private key in PEM")?;
+
+    let mut tls_config = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(
+            crate::quic::verifier::FingerprintVerifier::new(expected_fingerprint),
+        ))
+        .with_client_auth_cert(vec![cert], key)
+        .context("Failed to set client auth cert")?;
+    tls_config.alpn_protocols = vec![ALPN_OVERLAY.to_vec()];
+
+    let mut client_config = quinn::ClientConfig::new(Arc::new(
+        quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
+            .context("Failed to create QUIC TLS config")?,
+    ));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(Duration::from_secs(30 * 60)).unwrap(),
+    ));
+    transport.keep_alive_interval(Some(Duration::from_secs(15)));
+    client_config.transport_config(Arc::new(transport));
+
+    let sni = addr.ip().to_string();
+    let conn = tokio::time::timeout(
+        DIRECT_CONNECT_TIMEOUT,
+        endpoint.connect_with(client_config, addr, &sni)?,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("Timeout"))??;
+
+    Ok(conn)
+}
+
+// ---------------------------------------------------------------------------
+// Path migration (ex-endpoint_migrate.rs)
+// ---------------------------------------------------------------------------
+
+/// Active QUIC path migration (RFC 9000 §9): rebind the endpoint to a fresh
+/// ephemeral UDP socket so every live connection migrates via PATH_CHALLENGE
+/// to a new 4-tuple without closing/reconnecting.
+pub fn try_migrate(endpoint: &quinn::Endpoint) -> anyhow::Result<u16> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
+    let new_port = socket.local_addr()?.port();
+    let open_conns = endpoint.open_connections();
+    endpoint.rebind(socket)?;
+    tracing::info!(
+        "Path migration: rebound endpoint to 0.0.0.0:{new_port}, {open_conns} conn(s) migrating"
+    );
+    Ok(new_port)
+}
+
+// ---------------------------------------------------------------------------
+// Server / accept loop (ex-quic_server.rs)
+// ---------------------------------------------------------------------------
 
 /// Start the overlay accept loop on a shared QUIC endpoint.
 pub fn start(
@@ -23,8 +131,6 @@ pub fn start(
 ) {
     tokio::spawn(accept_loop(endpoint, device, peer_table, cancel));
 }
-
-const MAX_OVERLAY_CONNECTIONS: usize = 64;
 
 async fn accept_loop(
     endpoint: quinn::Endpoint,
@@ -62,7 +168,6 @@ async fn accept_loop(
             }
         };
 
-        // Verify ALPN
         let alpn = conn
             .handshake_data()
             .and_then(|hd| hd.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
@@ -74,7 +179,6 @@ async fn accept_loop(
             continue;
         }
 
-        // Identify peer by TLS certificate fingerprint
         let peer_fingerprint = extract_peer_fingerprint(&conn);
 
         tracing::info!(
@@ -83,13 +187,10 @@ async fn accept_loop(
             peer_fingerprint.as_deref().unwrap_or("unknown")
         );
 
-        // Spawn per-connection handler — no TUN reader, only inbound (peer → TUN).
-        // Outbound is handled by the single TUN reader via PeerTable.
         let conn_cancel = cancel.clone();
         tokio::spawn(async move {
-            let _permit = permit; // held for the lifetime of this connection
+            let _permit = permit;
 
-            // Look up peer's overlay IP from the known peers list
             let peer_ip = if let Some(fp) = &peer_fingerprint {
                 find_peer_ip_by_fingerprint(&table, fp).await
             } else {
@@ -100,7 +201,6 @@ async fn accept_loop(
                 table.insert_direct(ip, conn.clone()).await;
                 tracing::info!("Inserted direct route to {}", ip);
 
-                // Inbound only: read packets from peer, write to TUN
                 tokio::select! {
                     _ = run_inbound(conn.clone(), &device, &table) => {}
                     _ = conn_cancel.cancelled() => {}
@@ -148,7 +248,6 @@ pub async fn run_inbound(
     }
 }
 
-/// Extract the SHA-256 fingerprint from the peer's TLS certificate.
 fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     let peer_certs = conn.peer_identity()?;
     let certs = peer_certs
@@ -158,7 +257,6 @@ fn extract_peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
     Some(mlsh_crypto::identity::compute_fingerprint(cert.as_ref()))
 }
 
-/// Look up a peer's overlay IP by matching their fingerprint against known peers.
 async fn find_peer_ip_by_fingerprint(table: &PeerTable, fingerprint: &str) -> Option<Ipv4Addr> {
     let peers = table.known_peers().await;
     peers
@@ -167,12 +265,10 @@ async fn find_peer_ip_by_fingerprint(table: &PeerTable, fingerprint: &str) -> Op
         .and_then(|p| p.overlay_ip.parse().ok())
 }
 
-pub(super) fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerConfig> {
+fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerConfig> {
     use rustls::pki_types::CertificateDer;
     use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 
-    /// Accept any client certificate — we verify identity by fingerprint after handshake.
-    /// The purpose is just to make the client SEND its cert so we can extract the fingerprint.
     #[derive(Debug)]
     struct AcceptAnyCert;
 
@@ -204,7 +300,6 @@ pub(super) fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quin
             _cert: &CertificateDer<'_>,
             _dss: &rustls::DigitallySignedStruct,
         ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            // TLS 1.2 is not used with QUIC
             Err(rustls::Error::General(
                 "TLS 1.2 not supported for QUIC overlay".to_string(),
             ))
@@ -216,7 +311,6 @@ pub(super) fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quin
             cert: &CertificateDer<'_>,
             dss: &rustls::DigitallySignedStruct,
         ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-            // Delegate to real rustls verification to prove the client holds the private key
             rustls::crypto::verify_tls13_signature(
                 message,
                 cert,
@@ -261,8 +355,7 @@ pub(super) fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quin
     Ok(server_config)
 }
 
-pub(super) fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
-    use base64::Engine;
+fn pem_to_der(pem: &str) -> Result<Vec<u8>> {
     let pem = pem.trim();
     let b64: String = pem
         .lines()

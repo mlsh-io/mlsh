@@ -9,7 +9,7 @@ use mlsh_protocol::types::PeerInfo;
 
 use super::peer_table::PeerTable;
 use super::probe::probe_candidates;
-use super::relay_initiator::{run_relay_initiator, RelayInitiator};
+use super::relay::{run_relay_initiator, RelayInitiator};
 
 const RELAY_GRACE: Duration = Duration::from_millis(200);
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -167,7 +167,7 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
                         let ev = events_tx.clone();
                         direct_lifecycle = Some(tokio::spawn(async move {
                             tokio::select! {
-                                _ = super::quic_server::run_inbound(conn, &dev, &pt) => {}
+                                _ = super::quic::run_inbound(conn, &dev, &pt) => {}
                                 _ = cancel.cancelled() => {}
                             }
                             let _ = ev.send(Event::DirectConnectionLost);

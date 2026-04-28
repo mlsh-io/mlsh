@@ -334,7 +334,7 @@ async fn tunnel_task(
     let (endpoint, overlay_port) = match create_shared_endpoint(&config.identity_dir) {
         Ok((ep, port)) => {
             tracing::info!("QUIC endpoint listening on port {}", port);
-            super::quic_server::start(
+            super::quic::start(
                 ep.clone(),
                 device.clone(),
                 peer_table.clone(),
@@ -513,7 +513,7 @@ enum ShutdownReason {
 
 use super::control_child::spawn_control_child;
 use super::peer_supervisor::{run_connection_manager, ConnectionManagerContext};
-use super::quic_client::create_shared_endpoint;
+use super::quic::create_shared_endpoint;
 
 struct TunnelRunContext<'a> {
     config: &'a Arc<ClusterConfig>,

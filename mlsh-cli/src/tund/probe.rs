@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::Result;
 use mlsh_protocol::types::Candidate;
 
-use super::quic_client::{connect_overlay_direct, DIRECT_CONNECT_TIMEOUT};
+use super::quic::{connect_overlay_direct, DIRECT_CONNECT_TIMEOUT};
 
 const PROBE_STAGGER: Duration = Duration::from_millis(100);
 

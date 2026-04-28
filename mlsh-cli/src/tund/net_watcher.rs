@@ -102,7 +102,7 @@ async fn kick(
     fsm_registry: &FsmRegistry,
     endpoint: &quinn::Endpoint,
 ) {
-    match super::endpoint_migrate::try_migrate(endpoint) {
+    match super::quic::try_migrate(endpoint) {
         Ok(new_port) => {
             session.report_candidates(new_port);
             spawn_migration_watchdog(session.clone(), fsm_registry.clone());

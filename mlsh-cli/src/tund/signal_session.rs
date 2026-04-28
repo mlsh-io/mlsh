@@ -404,8 +404,8 @@ async fn run_session(
                                         return;
                                     };
                                     tokio::select! {
-                                        result = super::relay_handler::handle_incoming_relay(
-                                            super::relay_handler::IncomingRelay {
+                                        result = super::relay::handle_incoming_relay(
+                                            super::relay::IncomingRelay {
                                                 send: relay_send,
                                                 recv: relay_recv,
                                                 device: dev,

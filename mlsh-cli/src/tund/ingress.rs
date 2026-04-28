@@ -19,7 +19,7 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
-use super::relay_tls::DuplexStream;
+use super::relay::DuplexStream;
 
 // -------------------------------------------------------------------------
 // Target registry (domain → upstream URL)
