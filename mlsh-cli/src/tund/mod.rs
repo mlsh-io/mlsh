@@ -18,6 +18,7 @@ pub mod net_filter;
 pub mod net_watcher;
 pub mod overlay_dns;
 pub mod peer_fsm;
+pub mod peer_fsm_driver;
 pub mod peer_table;
 pub mod probe;
 pub mod protocol;
