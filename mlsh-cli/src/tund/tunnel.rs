@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use super::dns;
 use super::peer_table::{self, PeerTable};
 use super::protocol::{TunnelState, TunnelStatus};
-use mlsh_protocol::types::{Candidate, PeerInfo};
+use mlsh_protocol::types::PeerInfo;
 
 use super::control_session::ControlSession;
 use super::signal_session;
@@ -216,32 +216,6 @@ impl ManagedTunnel {
 ///
 /// Returns `None` and logs a warning if spawning fails — the tunnel itself
 /// continues to work, only the admin UI is unavailable.
-fn spawn_control_child(cluster: &str) -> Option<tokio::process::Child> {
-    let exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "current_exe() failed; mlsh-control not spawned");
-            return None;
-        }
-    };
-
-    let mut cmd = tokio::process::Command::new(&exe);
-    cmd.env("MLSH_RUN_AS", "control")
-        .env("MLSH_CONTROL_CLUSTER", cluster)
-        .kill_on_drop(true);
-
-    match cmd.spawn() {
-        Ok(child) => {
-            tracing::info!(cluster, exe = %exe.display(), "mlsh-control forked");
-            Some(child)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to spawn mlsh-control; admin UI unavailable");
-            None
-        }
-    }
-}
-
 /// Long-running task that manages the tunnel lifecycle with reconnection.
 #[allow(clippy::too_many_arguments)]
 async fn tunnel_task(
@@ -538,9 +512,9 @@ enum ShutdownReason {
     ConnectionLost(String),
 }
 
-use super::quic_client::{connect_overlay_direct, create_shared_endpoint, DIRECT_CONNECT_TIMEOUT};
-
-const PROBE_STAGGER: Duration = Duration::from_millis(100);
+use super::control_child::spawn_control_child;
+use super::probe::probe_candidates;
+use super::quic_client::create_shared_endpoint;
 const RELAY_GRACE: Duration = Duration::from_millis(200);
 /// How often a peer on relay re-attempts a direct probe in the background.
 const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(60);
@@ -681,93 +655,6 @@ async fn establish_and_run(
     let _ = conn_manager.await;
 
     Ok(reason)
-}
-
-/// Result of a successful candidate probe: connection + description of the winning candidate.
-struct ProbeResult {
-    conn: quinn::Connection,
-    /// e.g. "host:192.168.1.73:47710"
-    via: String,
-}
-
-/// Try direct QUIC connection to peer candidates (happy eyeballs).
-async fn probe_candidates(
-    endpoint: &quinn::Endpoint,
-    candidates: &[Candidate],
-    expected_fingerprint: &str,
-    identity_dir: &std::path::Path,
-) -> Result<ProbeResult> {
-    use std::net::SocketAddr;
-    use tokio::sync::oneshot;
-
-    if candidates.is_empty() {
-        anyhow::bail!("No candidates to probe");
-    }
-
-    let mut sorted = candidates.to_vec();
-    sorted.sort_by(|a, b| b.priority.cmp(&a.priority));
-
-    let (winner_tx, winner_rx) = oneshot::channel::<ProbeResult>();
-    let winner_tx = Arc::new(std::sync::Mutex::new(Some(winner_tx)));
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let mut handles = Vec::new();
-
-    for (i, candidate) in sorted.iter().enumerate() {
-        let addr_str = candidate.addr.clone();
-        let kind = candidate.kind.clone();
-        let fp = expected_fingerprint.to_string();
-        let id_dir = identity_dir.to_path_buf();
-        let ep = endpoint.clone();
-        let tx = winner_tx.clone();
-        let token = cancel.clone();
-
-        let handle = tokio::spawn(async move {
-            if i > 0 {
-                tokio::select! {
-                    _ = tokio::time::sleep(PROBE_STAGGER * i as u32) => {}
-                    _ = token.cancelled() => return,
-                }
-            }
-            if token.is_cancelled() {
-                return;
-            }
-
-            let addr: SocketAddr = match addr_str.parse() {
-                Ok(a) => a,
-                Err(_) => return,
-            };
-
-            tracing::debug!("Probing {} candidate {}", kind, addr);
-
-            match connect_overlay_direct(&ep, addr, &fp, &id_dir).await {
-                Ok(conn) => {
-                    let mut guard = tx.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(sender) = guard.take() {
-                        let via = format!("{}:{}", kind, addr);
-                        let _ = sender.send(ProbeResult { conn, via });
-                        token.cancel();
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!("Candidate {} ({}) failed: {}", addr, kind, e);
-                }
-            }
-        });
-        handles.push(handle);
-    }
-
-    let result =
-        tokio::time::timeout(DIRECT_CONNECT_TIMEOUT + Duration::from_secs(1), winner_rx).await;
-
-    cancel.cancel();
-    for h in handles {
-        h.abort();
-    }
-
-    match result {
-        Ok(Ok(probe)) => Ok(probe),
-        _ => anyhow::bail!("All candidates failed"),
-    }
 }
 
 /// Single TUN reader — reads packets from the TUN device and routes them
