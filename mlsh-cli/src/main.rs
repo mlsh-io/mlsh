@@ -33,10 +33,10 @@ enum Commands {
 
     /// Enroll this machine in a cluster using an invite URL
     Adopt {
-        /// Invite URL (e.g. https://signal.example.com/invite?token=XXXX-XXXX)
+        /// Invite URL (e.g. mlsh://signal.example.com:4433/invite?token=XXXX-XXXX)
         url: String,
 
-        /// Node name (defaults to system username)
+        /// Node name (defaults to hostname)
         #[arg(long)]
         name: Option<String>,
     },
