@@ -24,6 +24,7 @@ pub mod protocol;
 pub mod quic_client;
 pub mod quic_server;
 pub mod relay_handler;
+pub mod relay_initiator;
 pub mod relay_tls;
 pub mod routes;
 pub mod signal_session;
