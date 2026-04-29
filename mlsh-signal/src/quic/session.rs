@@ -797,7 +797,7 @@ fn validate_ingress_domain(
 
     let suffix = format!(".{}.{}", cluster, zone);
     if !d.ends_with(&suffix) {
-        return Err("Domain must be under <label>.<cluster>.mlsh.io");
+        return Err("Domain must be under <label>.<cluster>.<zone>");
     }
     let label = &d[..d.len() - suffix.len()];
     if label.is_empty() {

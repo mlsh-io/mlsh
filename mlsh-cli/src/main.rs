@@ -128,8 +128,9 @@ enum Commands {
         /// Upstream service URL (e.g. http://localhost:3000)
         target: String,
 
-        /// Public domain (must be *.<cluster>.mlsh.io in this release,
-        /// e.g. myapp.homelab.mlsh.io for the "homelab" cluster)
+        /// Public domain (must be *.<cluster>.<zone> where <zone> is the
+        /// signal server's configured zone, e.g. myapp.homelab.mlsh.io
+        /// or myapp.homelab.dev.mlsh.io)
         #[arg(long)]
         domain: String,
 
