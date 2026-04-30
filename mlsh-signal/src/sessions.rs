@@ -87,7 +87,10 @@ impl SessionStore {
             role: info.role,
             session_id,
         };
-        self.sessions.write().await.insert(key, session);
+        if let Some(prev) = self.sessions.write().await.insert(key, session) {
+            prev.connection
+                .close(quinn::VarInt::from_u32(0), b"session replaced");
+        }
         tracing::info!(cluster_id, %node_id, %overlay_ip, "Node session registered");
     }
 
