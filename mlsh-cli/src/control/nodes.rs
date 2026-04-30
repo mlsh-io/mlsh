@@ -60,6 +60,22 @@ pub async fn list(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRow>> {
     Ok(rows)
 }
 
+pub async fn get_display_name(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    node_uuid: &str,
+) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT display_name FROM nodes WHERE cluster_id = ? AND node_uuid = ? LIMIT 1",
+    )
+    .bind(cluster_id)
+    .bind(node_uuid)
+    .fetch_optional(pool)
+    .await
+    .context("nodes get_display_name")?;
+    Ok(row.map(|(n,)| n))
+}
+
 pub async fn set_display_name(
     pool: &SqlitePool,
     cluster_id: &str,
