@@ -4,8 +4,10 @@
 //! on each stream determines its type:
 //! - `NodeAuth` → long-lived session (peer updates, candidates)
 //! - `Adopt` → one-shot: register a new node
-//! - `Revoke` → one-shot: remove a node
 //! - `RelayOpen` → relay bi-stream splice to target peer
+//!
+//! Display-name renames, role transitions and node revocations are owned by
+//! mlsh-control (ADR 018) — signal does not handle them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -67,7 +69,6 @@ async fn handle_stream(
             pre_auth_token,
             fingerprint,
             node_uuid,
-            display_name,
             public_key: _,
             expires_at: _,
             admission_cert: _,
@@ -79,44 +80,7 @@ async fn handle_stream(
                     pre_auth_token,
                     fingerprint,
                     node_uuid,
-                    display_name,
                 },
-            )
-            .await;
-            protocol::write_message(&mut send, &resp).await?;
-            send.finish()?;
-        }
-        StreamMessage::Revoke {
-            cluster_id,
-            target_name,
-        } => {
-            let resp = handle_revoke(state, conn, &cluster_id, &target_name).await;
-            protocol::write_message(&mut send, &resp).await?;
-            send.finish()?;
-        }
-        StreamMessage::Rename {
-            cluster_id,
-            target_name,
-            new_display_name,
-        } => {
-            let resp =
-                handle_rename(state, conn, &cluster_id, &target_name, &new_display_name).await;
-            protocol::write_message(&mut send, &resp).await?;
-            send.finish()?;
-        }
-        StreamMessage::Promote {
-            cluster_id,
-            target_node_id,
-            new_role,
-            admission_cert,
-        } => {
-            let resp = handle_promote(
-                state,
-                conn,
-                &cluster_id,
-                &target_node_id,
-                &new_role,
-                &admission_cert,
             )
             .await;
             protocol::write_message(&mut send, &resp).await?;
@@ -181,7 +145,7 @@ async fn handle_stream(
         _ => {
             let resp = ServerMessage::error(
                 "auth_required",
-                "First message must be NodeAuth, Adopt, Revoke, Rename, RelayOpen, ExposeService, UnexposeService, ListExposed, or TlsAlpnChallenge*",
+                "First message must be NodeAuth, Adopt, RelayOpen, ExposeService, UnexposeService, ListExposed, ListNodes, or TlsAlpnChallenge*",
             );
             protocol::write_message(&mut send, &resp).await?;
             send.finish()?;
@@ -231,8 +195,6 @@ async fn run_node_session(
         }
     };
     let node_id = node.node_id;
-    let node_role = node.role;
-    let node_display_name = node.display_name;
 
     // Allocate a fresh overlay IP from the current subnet (no persistent leases)
     let overlay_ip =
@@ -261,8 +223,6 @@ async fn run_node_session(
                 node_id: node_id.clone(),
                 fingerprint: fingerprint.clone(),
                 overlay_ip,
-                display_name: node_display_name.clone(),
-                role: node_role.clone(),
                 connection: conn.clone(),
                 push_tx,
             },
@@ -320,10 +280,8 @@ async fn run_node_session(
                                     protocol::NodeInfo {
                                         node_id: n.node_id.clone(),
                                         overlay_ip: n.overlay_ip.to_string(),
-                                        role: n.role,
                                         online: online.contains(&n.node_id),
                                         has_admission_cert: false,
-                                        display_name: n.display_name,
                                     }
                                 }).collect();
                                 let _ = protocol::write_message(&mut send, &ServerMessage::NodeList { nodes }).await;
@@ -383,7 +341,6 @@ struct AdoptRequest {
     pre_auth_token: String,
     fingerprint: String,
     node_uuid: String,
-    display_name: String,
 }
 
 async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
@@ -391,7 +348,6 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
     let pre_auth_token = &req.pre_auth_token;
     let fingerprint = &req.fingerprint;
     let node_uuid = &req.node_uuid;
-    let display_name = &req.display_name;
     // Two adoption paths:
     // 1. One-time setup code → first node (role: admin), code is burned after use.
     // 2. Sponsor-signed invite → subsequent nodes (role from invite).
@@ -420,7 +376,6 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
             node_id: node_uuid,
             fingerprint,
             role: &role,
-            display_name,
         },
         &state.overlay_subnet,
     )
@@ -440,7 +395,6 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
     ServerMessage::AdoptOk {
         cluster_id: cluster_id.to_string(),
         node_uuid: node_uuid.to_string(),
-        display_name: display_name.to_string(),
         overlay_ip: overlay_ip.to_string(),
         overlay_subnet: state.overlay_subnet.cidr.clone(),
         peers,
@@ -497,260 +451,6 @@ async fn verify_sponsor_invite(
         .map_err(|e| format!("Invite signature verification failed: {}", e))?;
 
     Ok(invite_payload.target_role)
-}
-
-// --- Revoke handler
-
-/// `target_name` is the display name of the node to revoke.
-/// It is resolved to the internal UUID via `lookup_node_by_display_name`.
-async fn handle_revoke(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    cluster_id: &str,
-    target_name: &str,
-) -> ServerMessage {
-    // Authenticate the caller via TLS client certificate
-    let caller_fp = match extract_peer_fingerprint(conn) {
-        Some(fp) => fp,
-        None => return ServerMessage::error("auth_failed", "Client certificate required"),
-    };
-
-    let caller = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
-        Ok(Some(n)) => n,
-        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
-        Err(e) => {
-            warn!(error = %e, "Failed to look up caller for revoke");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
-
-    if caller.role != "admin" {
-        return ServerMessage::error("forbidden", "Only admin nodes can revoke");
-    }
-
-    // Resolve display name → node UUID
-    let target_uuid =
-        match db::lookup_node_by_display_name(&state.db, cluster_id, target_name).await {
-            Ok(Some(n)) => n.node_id,
-            Ok(None) => return ServerMessage::error("not_found", "Node not found"),
-            Err(e) => {
-                warn!(error = %e, "Failed to look up target node for revoke");
-                return ServerMessage::error("internal", "Database error");
-            }
-        };
-
-    match db::remove_node(&state.db, cluster_id, &target_uuid).await {
-        Ok(true) => {
-            // Kick the node's active session (closes QUIC connection)
-            state.sessions.kick_node(cluster_id, &target_uuid).await;
-            state
-                .sessions
-                .notify_peer_left(cluster_id, &target_uuid)
-                .await;
-            info!(cluster_id, target_name, target_uuid, "Node revoked");
-            ServerMessage::RevokeOk
-        }
-        Ok(false) => ServerMessage::error("not_found", "Node not found"),
-        Err(e) => {
-            warn!(error = %e, "Failed to remove node");
-            ServerMessage::error("internal", "Database error")
-        }
-    }
-}
-
-// --- Rename handler
-
-/// Rename a node's display name.
-///
-/// `target_name` is the current display name used to locate the node.
-/// `new_display_name` must be 1–64 characters matching `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`.
-///
-/// Admin nodes may rename peers or peers themselves. On success, the in-memory session and all
-/// connected peers are updated via a `PeerRenamed` broadcast.
-async fn handle_rename(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    cluster_id: &str,
-    target_name: &str,
-    new_display_name: &str,
-) -> ServerMessage {
-    // Authenticate caller via TLS client certificate
-    let caller_fp = match extract_peer_fingerprint(conn) {
-        Some(fp) => fp,
-        None => return ServerMessage::error("auth_failed", "Client certificate required"),
-    };
-
-    let caller = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
-        Ok(Some(n)) => n,
-        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
-        Err(e) => {
-            warn!(error = %e, "Failed to look up caller for rename");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
-
-    // Validate new_display_name: 1–64 chars, starts with alnum, rest alnum/._-
-    if new_display_name.is_empty() || new_display_name.len() > 64 {
-        return ServerMessage::error("invalid_request", "Display name must be 1–64 characters");
-    }
-    let valid = {
-        let mut chars = new_display_name.chars();
-        chars
-            .next()
-            .map(|c| c.is_ascii_alphanumeric())
-            .unwrap_or(false)
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-    };
-    if !valid {
-        return ServerMessage::error(
-            "invalid_request",
-            "Display name must match ^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
-        );
-    }
-
-    // Resolve target_name → node UUID
-    let target_uuid =
-        match db::lookup_node_by_display_name(&state.db, cluster_id, target_name).await {
-            Ok(Some(n)) => n.node_id,
-            Ok(None) => return ServerMessage::error("not_found", "Target node not found"),
-            Err(e) => {
-                warn!(error = %e, "Failed to look up target node for rename");
-                return ServerMessage::error("internal", "Database error");
-            }
-        };
-
-    // Only admins or the node itself can rename
-    if caller.role != "admin" && caller.node_id != target_uuid {
-        return ServerMessage::error(
-            "forbidden",
-            "Only admin nodes can rename others; non-admin nodes can only rename themselves",
-        );
-    }
-
-    // Persist the rename (unique constraint enforced by DB)
-    match db::rename_node(&state.db, cluster_id, &target_uuid, new_display_name).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return ServerMessage::error(
-                "conflict",
-                "Display name already in use or node not found",
-            );
-        }
-        Err(e) => {
-            warn!(error = %e, "Failed to rename node");
-            return ServerMessage::error("internal", "Database error");
-        }
-    }
-
-    // Update in-memory session
-    state
-        .sessions
-        .update_node_display_name(cluster_id, &target_uuid, new_display_name)
-        .await;
-
-    // Broadcast to all connected peers
-    state
-        .sessions
-        .notify_peer_renamed(cluster_id, &target_uuid, new_display_name)
-        .await;
-
-    info!(
-        cluster_id,
-        target_name,
-        target_uuid,
-        new_display_name,
-        caller = %caller.node_id,
-        "Node renamed"
-    );
-
-    ServerMessage::RenameOk {
-        display_name: new_display_name.to_string(),
-    }
-}
-
-// --- Promote handler
-
-async fn handle_promote(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    cluster_id: &str,
-    target_node_id: &str,
-    new_role: &str,
-    _admission_cert: &str,
-) -> ServerMessage {
-    // Validate role
-    if new_role != "admin" && new_role != "node" {
-        return ServerMessage::error("invalid_request", "Role must be 'admin' or 'node'");
-    }
-
-    // Authenticate the caller via TLS client certificate
-    let caller_fp = match extract_peer_fingerprint(conn) {
-        Some(fp) => fp,
-        None => return ServerMessage::error("auth_failed", "Client certificate required"),
-    };
-
-    let caller = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &caller_fp).await {
-        Ok(Some(n)) => n,
-        Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
-        Err(e) => {
-            warn!(error = %e, "Failed to look up caller for promote");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
-
-    if caller.role != "admin" {
-        return ServerMessage::error("forbidden", "Only admin nodes can change roles");
-    }
-
-    // Resolve display_name → UUID (parity with revoke/rename). If the
-    // caller passed a UUID directly, the lookup misses and we fall through
-    // to using it as-is.
-    let resolved_target =
-        match db::lookup_node_by_display_name(&state.db, cluster_id, target_node_id).await {
-            Ok(Some(n)) => n.node_id,
-            _ => target_node_id.to_string(),
-        };
-    let target_node_id = resolved_target.as_str();
-
-    // Prevent demoting the last admin
-    if new_role == "node" {
-        match db::count_admins(&state.db, cluster_id).await {
-            Ok(count) if count <= 1 => {
-                return ServerMessage::error(
-                    "forbidden",
-                    "Cannot demote the last admin — cluster would be locked",
-                );
-            }
-            Err(e) => {
-                warn!(error = %e, "Failed to count admins");
-                return ServerMessage::error("internal", "Database error");
-            }
-            _ => {}
-        }
-    }
-
-    // Update the node's role
-    match db::update_node_role(&state.db, cluster_id, target_node_id, new_role).await {
-        Ok(true) => {
-            info!(cluster_id, target_node_id, new_role, caller = %caller.node_id, "Node role updated");
-
-            // Broadcast PeerUpdated to all connected peers
-            let msg = ServerMessage::PeerUpdated {
-                node_id: target_node_id.to_string(),
-                cluster_id: cluster_id.to_string(),
-                new_role: new_role.to_string(),
-                admission_cert: String::new(),
-            };
-            state.sessions.broadcast(cluster_id, msg).await;
-
-            ServerMessage::PromoteOk
-        }
-        Ok(false) => ServerMessage::error("not_found", "Node not found"),
-        Err(e) => {
-            warn!(error = %e, "Failed to update node role");
-            ServerMessage::error("internal", "Database error")
-        }
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -941,8 +641,10 @@ async fn handle_unexpose(
     if route.cluster_id != cluster_id {
         return ServerMessage::error("not_found", "Domain not found");
     }
-    if route.node_id != caller.node_id && caller.role != "admin" {
-        return ServerMessage::error("forbidden", "Only the owning node or an admin may unexpose");
+    if route.node_id != caller.node_id {
+        // Admin override is owned by mlsh-control; signal only authorises the
+        // owning node here.
+        return ServerMessage::error("forbidden", "Only the owning node may unexpose");
     }
 
     let removed = match db::delete_ingress_route(&state.db, cluster_id, &d).await {
@@ -993,10 +695,8 @@ async fn handle_list_nodes(state: &QuicState, conn: &quinn::Connection) -> Serve
         .map(|n| protocol::NodeInfo {
             node_id: n.node_id.clone(),
             overlay_ip: n.overlay_ip.to_string(),
-            role: n.role,
             online: online.contains(&n.node_id),
             has_admission_cert: false,
-            display_name: n.display_name,
         })
         .collect();
 

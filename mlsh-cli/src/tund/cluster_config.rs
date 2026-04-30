@@ -45,7 +45,6 @@ impl ClusterConfig {
             signal_fingerprint: self.signal_fingerprint.clone(),
             cluster_id: self.cluster_id.clone(),
             node_id: self.node_id.clone(),
-            display_name: self.display_name.clone(),
             fingerprint: self.fingerprint.clone(),
             public_key: self.public_key.clone(),
             cert_pem,

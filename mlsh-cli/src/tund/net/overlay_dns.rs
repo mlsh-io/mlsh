@@ -162,10 +162,9 @@ async fn resolve(
         return p.overlay_ip.parse().ok();
     }
 
-    peers
-        .iter()
-        .find(|p| !p.display_name.is_empty() && sanitize_dns_label(&p.display_name) == label)
-        .and_then(|p| p.overlay_ip.parse().ok())
+    // Display-name → IP lookup for peers will return once mlsh-control feeds
+    // the resolver (Phase B/C). Until then, fall through to NXDOMAIN.
+    None
 }
 
 /// Sanitize a user-entered display name into a valid DNS label per RFC 1035.
@@ -367,8 +366,6 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
-                display_name: String::new(),
-                role: String::new(),
             }]))
             .await;
 
@@ -401,7 +398,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_by_display_name() {
+    async fn display_name_lookup_returns_nxdomain_in_phase_a() {
+        // Phase A: signal no longer carries display_name and the resolver has
+        // no display-name source yet. Until mlsh-control feeds names back
+        // (Phase B/C), display-name → IP lookups must miss.
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -416,8 +416,6 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
-                display_name: "Rack Toulouse NUC".into(),
-                role: String::new(),
             }]))
             .await;
 
@@ -430,11 +428,11 @@ mod tests {
             &table,
         )
         .await;
-        assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 5)));
+        assert_eq!(ip, None);
     }
 
     #[tokio::test]
-    async fn node_id_takes_priority_over_display_name() {
+    async fn node_id_lookup_still_works() {
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -450,8 +448,6 @@ mod tests {
                     candidates: vec![],
                     public_key: String::new(),
                     admission_cert: String::new(),
-                    display_name: "Other".into(),
-                    role: String::new(),
                 },
                 PeerInfo {
                     node_id: "xyz".into(),
@@ -460,8 +456,6 @@ mod tests {
                     candidates: vec![],
                     public_key: String::new(),
                     admission_cert: String::new(),
-                    display_name: "pi".into(),
-                    role: String::new(),
                 },
             ]))
             .await;

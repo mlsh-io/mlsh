@@ -98,7 +98,8 @@ impl ManagedTunnel {
         // Build the mlsh-control session and warm it up so AdoptConfirm fires.
         let creds = config.signal_credentials()?;
         let control_socket = control_plane_socket_path();
-        let control_session = ControlSession::new(creds, control_socket)?;
+        let control_session =
+            ControlSession::new(creds, config.display_name.clone(), control_socket)?;
         let warmup = control_session.clone();
         tokio::spawn(async move {
             if let Err(e) = warmup.ensure_connected().await {
@@ -377,7 +378,6 @@ async fn tunnel_task(
         peer_table: peer_table.clone(),
         overlay_port,
         overlay_prefix_len,
-        initial_display_name: config.display_name.clone(),
         fsm_registry: fsm_registry.clone(),
     });
     let dns_config = crate::tund::net::overlay_dns::DnsConfig {
@@ -387,7 +387,10 @@ async fn tunnel_task(
     };
     let dns_node_id = config.node_id.clone();
     let dns_table = peer_table.clone();
-    let dns_display_name = session.display_name.clone();
+    // Phase A: signal no longer carries display_name. Until the mlsh-control
+    // event stream populates a `DisplayNameMap` (Phase B/C), display-name
+    // lookups in the overlay DNS resolver fall through to NXDOMAIN.
+    let (_dns_dn_tx, dns_display_name) = watch::channel(String::new());
     let (dns_shutdown_tx, dns_shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         if let Err(e) = crate::tund::net::overlay_dns::run(

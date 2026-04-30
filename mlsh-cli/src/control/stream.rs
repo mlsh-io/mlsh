@@ -138,15 +138,9 @@ async fn dispatch(
                     return ControlResponse::error("internal", &format!("rename failed: {e:#}"))
                 }
             }
-            if let Err(e) = broadcast_rename(&auth.cluster_name, &old_name, new_display_name).await
-            {
-                tracing::warn!(
-                    cluster = %auth.cluster_name,
-                    node = %uuid,
-                    error = %e,
-                    "rename: DB updated but broadcast to signal failed; peers may see stale name until reconnect"
-                );
-            }
+            // Push to peers will land via the mlsh-control event stream
+            // (Phase B/C). Until then, peers pick up the new name on reconnect.
+            let _ = old_name;
             ControlResponse::Ok
         }
 
@@ -193,24 +187,6 @@ async fn dispatch(
                 Err(e) => ControlResponse::error("internal", &format!("revoke failed: {e:#}")),
             }
         }
-    }
-}
-
-/// Notify the local mlshtund daemon to broadcast a rename via signal so all
-/// connected peers (and overlay DNS) pick up the new name.
-async fn broadcast_rename(cluster_name: &str, old_name: &str, new_name: &str) -> Result<()> {
-    use crate::tund::control::client::DaemonClient;
-    use crate::tund::control::protocol::DaemonResponse;
-    if cluster_name.is_empty() {
-        anyhow::bail!("cluster_name missing from auth header");
-    }
-    let mut client = DaemonClient::connect_default().await?;
-    match client.rename(cluster_name, old_name, new_name).await? {
-        DaemonResponse::Ok { .. } => Ok(()),
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("daemon error ({code}): {message}")
-        }
-        other => anyhow::bail!("unexpected daemon response: {other:?}"),
     }
 }
 

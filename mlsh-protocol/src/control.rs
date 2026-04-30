@@ -91,6 +91,7 @@ mod tests {
     fn auth_header_roundtrip() {
         let h = ControlAuthHeader {
             cluster_id: "c1".into(),
+            cluster_name: String::new(),
             caller_node_uuid: "n1".into(),
             caller_fingerprint: "fp".into(),
             caller_role: "admin".into(),

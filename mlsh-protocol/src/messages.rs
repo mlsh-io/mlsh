@@ -53,31 +53,6 @@ pub enum StreamMessage {
         /// Self-signed admission cert (JSON, for root admin setup).
         #[serde(default)]
         admission_cert: String,
-        #[serde(default)]
-        display_name: String,
-    },
-
-    /// Admin revocation: remove a node from the cluster.
-    /// Caller is authenticated via TLS client certificate.
-    Revoke {
-        cluster_id: String,
-        target_name: String,
-    },
-
-    /// Rename a node's display label (admin only).
-    Rename {
-        cluster_id: String,
-        target_name: String,
-        new_display_name: String,
-    },
-
-    /// Change a node's role (admin only). The caller signs a new admission cert.
-    Promote {
-        cluster_id: String,
-        target_node_id: String,
-        new_role: String,
-        /// New admission cert signed by the caller (JSON-serialized).
-        admission_cert: String,
     },
 
     /// List all nodes in the cluster (sent within an authenticated session).
@@ -151,7 +126,6 @@ pub enum ServerMessage {
         overlay_ip: String,
         overlay_subnet: String,
         peers: Vec<PeerInfo>,
-        display_name: String,
     },
 
     /// Pushed to all connected peers when a new node joins.
@@ -162,27 +136,6 @@ pub enum ServerMessage {
     PeerLeft {
         node_id: String,
         cluster_id: String,
-    },
-    RevokeOk,
-    PromoteOk,
-
-    /// Pushed to all connected peers when a node's role changes.
-    PeerUpdated {
-        node_id: String,
-        cluster_id: String,
-        new_role: String,
-        admission_cert: String,
-    },
-
-    /// Pushed to all connected peers when a node's display name changes.
-    PeerRenamed {
-        node_id: String,
-        new_display_name: String,
-    },
-
-    /// Confirmation that a rename was applied.
-    RenameOk {
-        display_name: String,
     },
 
     /// Response to ListNodes: all registered nodes with online/offline status.
@@ -381,7 +334,6 @@ mod tests {
             public_key: "pk-xyz".into(),
             expires_at: 1700000000,
             admission_cert: r#"{"node_id":"n1"}"#.into(),
-            display_name: String::new(),
         };
         match cbor_roundtrip(&msg) {
             StreamMessage::Adopt {
@@ -392,7 +344,6 @@ mod tests {
                 public_key,
                 expires_at,
                 admission_cert,
-                display_name,
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(pre_auth_token, "tok-123");
@@ -401,51 +352,8 @@ mod tests {
                 assert_eq!(public_key, "pk-xyz");
                 assert_eq!(expires_at, 1700000000);
                 assert!(admission_cert.contains("node_id"));
-                assert!(display_name.is_empty());
             }
             other => panic!("expected Adopt, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn revoke_roundtrip() {
-        let msg = StreamMessage::Revoke {
-            cluster_id: "c1".into(),
-            target_name: "n2".into(),
-        };
-        match cbor_roundtrip(&msg) {
-            StreamMessage::Revoke {
-                cluster_id,
-                target_name,
-            } => {
-                assert_eq!(cluster_id, "c1");
-                assert_eq!(target_name, "n2");
-            }
-            other => panic!("expected Revoke, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn promote_roundtrip() {
-        let msg = StreamMessage::Promote {
-            cluster_id: "c1".into(),
-            target_node_id: "n2".into(),
-            new_role: "admin".into(),
-            admission_cert: r#"{"role":"admin"}"#.into(),
-        };
-        match cbor_roundtrip(&msg) {
-            StreamMessage::Promote {
-                cluster_id,
-                target_node_id,
-                new_role,
-                admission_cert,
-            } => {
-                assert_eq!(cluster_id, "c1");
-                assert_eq!(target_node_id, "n2");
-                assert_eq!(new_role, "admin");
-                assert!(admission_cert.contains("admin"));
-            }
-            other => panic!("expected Promote, got {:?}", other),
         }
     }
 
@@ -504,7 +412,6 @@ mod tests {
                 }],
                 public_key: "pk".into(),
                 admission_cert: "cert".into(),
-                display_name: String::new(),
             }],
         };
         match cbor_roundtrip(&msg) {
@@ -533,7 +440,6 @@ mod tests {
             overlay_ip: "100.64.0.5".into(),
             overlay_subnet: "100.64.0.0/10".into(),
             peers: vec![],
-            display_name: "my-node".into(),
         };
         match cbor_roundtrip(&msg) {
             ServerMessage::AdoptOk {
@@ -542,14 +448,12 @@ mod tests {
                 overlay_ip,
                 overlay_subnet,
                 peers,
-                display_name,
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(node_uuid, "n1");
                 assert_eq!(overlay_ip, "100.64.0.5");
                 assert_eq!(overlay_subnet, "100.64.0.0/10");
                 assert!(peers.is_empty());
-                assert_eq!(display_name, "my-node");
             }
             other => panic!("expected AdoptOk, got {:?}", other),
         }
@@ -565,7 +469,6 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
-                display_name: String::new(),
             },
         };
         match cbor_roundtrip(&msg) {
@@ -597,64 +500,20 @@ mod tests {
     }
 
     #[test]
-    fn revoke_ok_roundtrip() {
-        match cbor_roundtrip(&ServerMessage::RevokeOk) {
-            ServerMessage::RevokeOk => {}
-            other => panic!("expected RevokeOk, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn promote_ok_roundtrip() {
-        match cbor_roundtrip(&ServerMessage::PromoteOk) {
-            ServerMessage::PromoteOk => {}
-            other => panic!("expected PromoteOk, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn peer_updated_roundtrip() {
-        let msg = ServerMessage::PeerUpdated {
-            node_id: "n2".into(),
-            cluster_id: "c1".into(),
-            new_role: "admin".into(),
-            admission_cert: "cert-data".into(),
-        };
-        match cbor_roundtrip(&msg) {
-            ServerMessage::PeerUpdated {
-                node_id,
-                cluster_id,
-                new_role,
-                admission_cert,
-            } => {
-                assert_eq!(node_id, "n2");
-                assert_eq!(cluster_id, "c1");
-                assert_eq!(new_role, "admin");
-                assert_eq!(admission_cert, "cert-data");
-            }
-            other => panic!("expected PeerUpdated, got {:?}", other),
-        }
-    }
-
-    #[test]
     fn node_list_roundtrip() {
         let msg = ServerMessage::NodeList {
             nodes: vec![
                 NodeInfo {
                     node_id: "n1".into(),
                     overlay_ip: "100.64.0.1".into(),
-                    role: "admin".into(),
                     online: true,
                     has_admission_cert: true,
-                    display_name: String::new(),
                 },
                 NodeInfo {
                     node_id: "n2".into(),
                     overlay_ip: "100.64.0.2".into(),
-                    role: "member".into(),
                     online: false,
                     has_admission_cert: false,
-                    display_name: String::new(),
                 },
             ],
         };
@@ -664,7 +523,7 @@ mod tests {
                 assert_eq!(nodes[0].node_id, "n1");
                 assert!(nodes[0].online);
                 assert!(nodes[0].has_admission_cert);
-                assert_eq!(nodes[1].role, "member");
+                assert_eq!(nodes[1].node_id, "n2");
                 assert!(!nodes[1].online);
                 assert!(!nodes[1].has_admission_cert);
             }
@@ -875,10 +734,7 @@ mod tests {
             // If it happens to decode, it must not be a meaningful ServerMessage variant
             // that could be confused with a real server response.
             match msg {
-                ServerMessage::Pong
-                | ServerMessage::RelayReady
-                | ServerMessage::RevokeOk
-                | ServerMessage::PromoteOk => {
+                ServerMessage::Pong | ServerMessage::RelayReady => {
                     // Unit variants might alias — acceptable as long as the tag differs.
                     // The serde tag for StreamMessage::Ping is "ping", ServerMessage has no "ping".
                     panic!("StreamMessage::Ping decoded as a valid ServerMessage variant");
@@ -901,7 +757,6 @@ mod tests {
             public_key: "pk".into(),
             expires_at: 999,
             admission_cert: "cert".into(),
-            display_name: String::new(),
         };
         let a = cbor_bytes(&msg);
         let b = cbor_bytes(&msg);
@@ -919,7 +774,6 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
-            display_name: String::new(),
         };
         let bytes = cbor_bytes(&peer);
         let decoded: PeerInfo = ciborium::from_reader(&bytes[..]).unwrap();
@@ -1133,15 +987,15 @@ mod tests {
     #[test]
     fn extra_fields_in_known_variant() {
         let outer = ciborium::Value::Map(vec![(
-            ciborium::Value::Text("revoke".into()),
+            ciborium::Value::Text("node_auth".into()),
             ciborium::Value::Map(vec![
                 (
                     ciborium::Value::Text("cluster_id".into()),
                     ciborium::Value::Text("c1".into()),
                 ),
                 (
-                    ciborium::Value::Text("target_name".into()),
-                    ciborium::Value::Text("n2".into()),
+                    ciborium::Value::Text("public_key".into()),
+                    ciborium::Value::Text("pk".into()),
                 ),
                 (
                     ciborium::Value::Text("injected_field".into()),
@@ -1153,13 +1007,13 @@ mod tests {
         ciborium::into_writer(&outer, &mut buf).unwrap();
         // serde typically ignores unknown fields by default — should decode fine.
         let result: Result<StreamMessage, _> = ciborium::from_reader(&buf[..]);
-        if let Ok(StreamMessage::Revoke {
+        if let Ok(StreamMessage::NodeAuth {
             cluster_id,
-            target_name,
+            public_key,
         }) = result
         {
             assert_eq!(cluster_id, "c1");
-            assert_eq!(target_name, "n2");
+            assert_eq!(public_key, "pk");
         }
         // Error is also acceptable (strict mode).
     }
@@ -1185,20 +1039,11 @@ mod tests {
 
     #[test]
     fn node_info_has_admission_cert_defaults_false() {
-        // Simulate a payload missing has_admission_cert (e.g. from older signal)
-        use std::collections::BTreeMap;
-        let mut map = BTreeMap::new();
-        map.insert("node_id", "n1");
-        map.insert("overlay_ip", "100.64.0.1");
-        map.insert("role", "member");
-
-        // Build CBOR with the bool field manually
+        // Simulate a payload missing has_admission_cert (e.g. from older signal).
         let mut cbor_map = Vec::new();
-        // Encode as a full NodeInfo with online=true but missing has_admission_cert
         let full = serde_json::json!({
             "node_id": "n1",
             "overlay_ip": "100.64.0.1",
-            "role": "member",
             "online": true
         });
         ciborium::into_writer(&full, &mut cbor_map).unwrap();

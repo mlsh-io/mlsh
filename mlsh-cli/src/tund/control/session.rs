@@ -14,6 +14,10 @@ use crate::tund::signal_session::SignalCredentials;
 pub struct ControlSession {
     inner: Arc<Mutex<Inner>>,
     creds: Arc<SignalCredentials>,
+    /// Local human-facing label written to mlsh-control on first AdoptConfirm.
+    /// Held here rather than in `SignalCredentials` because signal no longer
+    /// stores display names (ADR 018).
+    display_name: Arc<String>,
     control_socket: PathBuf,
 }
 
@@ -24,7 +28,11 @@ struct Inner {
 }
 
 impl ControlSession {
-    pub fn new(creds: SignalCredentials, control_socket: PathBuf) -> Result<Self> {
+    pub fn new(
+        creds: SignalCredentials,
+        display_name: String,
+        control_socket: PathBuf,
+    ) -> Result<Self> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
             .context("Failed to create QUIC client endpoint for control session")?;
         Ok(Self {
@@ -34,6 +42,7 @@ impl ControlSession {
                 adopt_confirm_done: false,
             })),
             creds: Arc::new(creds),
+            display_name: Arc::new(display_name),
             control_socket,
         })
     }
@@ -81,7 +90,7 @@ impl ControlSession {
         });
 
         if should_adopt_confirm {
-            best_effort_adopt_confirm_with_retry(&conn, &self.creds).await;
+            best_effort_adopt_confirm_with_retry(&conn, &self.creds, &self.display_name).await;
         }
 
         Ok(conn)
@@ -185,7 +194,11 @@ fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig>
 }
 
 /// Retries to absorb the boot race with the mlsh-control sub-process socket.
-async fn best_effort_adopt_confirm_with_retry(conn: &quinn::Connection, creds: &SignalCredentials) {
+async fn best_effort_adopt_confirm_with_retry(
+    conn: &quinn::Connection,
+    creds: &SignalCredentials,
+    display_name: &str,
+) {
     use mlsh_protocol::control::ControlResponse;
     let attempts = 8u32;
     let backoff = std::time::Duration::from_millis(250);
@@ -194,7 +207,7 @@ async fn best_effort_adopt_confirm_with_retry(conn: &quinn::Connection, creds: &
             tracing::debug!("AdoptConfirm: connection closed, abort");
             return;
         }
-        match adopt_confirm_once(conn, creds).await {
+        match adopt_confirm_once(conn, creds, display_name).await {
             Ok(ControlResponse::AdoptAck { accepted, message }) => {
                 tracing::info!(accepted, ?message, "mlsh-control AdoptConfirm");
                 return;
@@ -228,13 +241,14 @@ async fn best_effort_adopt_confirm_with_retry(conn: &quinn::Connection, creds: &
 async fn adopt_confirm_once(
     conn: &quinn::Connection,
     creds: &SignalCredentials,
+    display_name: &str,
 ) -> Result<mlsh_protocol::control::ControlResponse> {
     use mlsh_protocol::control::{ControlRequest, ControlResponse};
     let req = ControlRequest::AdoptConfirm {
         node_uuid: creds.node_id.clone(),
         fingerprint: creds.fingerprint.clone(),
         public_key: creds.public_key.clone(),
-        display_name: creds.display_name.clone(),
+        display_name: display_name.to_string(),
         invite_token: String::new(),
     };
     let mut buf = Vec::new();

@@ -67,11 +67,8 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
         pre_auth_token: input.pre_auth_token.to_string(),
         fingerprint: identity.fingerprint.clone(),
         node_uuid: input.node_id.to_string(),
-        display_name: input.display_name.to_string(),
         public_key,
         expires_at: 0,
-        // Signal stripped admission_cert in ADR-030 (still in the wire
-        // format for now, but ignored on the server).
         admission_cert: String::new(),
     };
     framing::write_msg(&mut send, &adopt_msg).await?;

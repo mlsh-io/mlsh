@@ -143,24 +143,7 @@ async fn find_node_by_fingerprint(
     pool: &sqlx::SqlitePool,
     fingerprint: &str,
 ) -> anyhow::Result<Option<crate::db::NodeRecord>> {
-    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role, display_name
-         FROM nodes WHERE fingerprint = ?1 LIMIT 1",
-    )
-    .bind(fingerprint)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(
-        row.map(|(cid, nid, fp, ip, role, dn)| crate::db::NodeRecord {
-            cluster_id: cid,
-            node_id: nid,
-            fingerprint: fp,
-            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-            role,
-            display_name: dn,
-        }),
-    )
+    crate::db::lookup_node_by_fingerprint_any_cluster(pool, fingerprint).await
 }
 
 async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::Result<()> {

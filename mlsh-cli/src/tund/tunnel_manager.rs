@@ -124,8 +124,6 @@ impl TunnelManager {
             match resp {
                 ServerMessage::PeerJoined { .. }
                 | ServerMessage::PeerLeft { .. }
-                | ServerMessage::PeerRenamed { .. }
-                | ServerMessage::PeerUpdated { .. }
                 | ServerMessage::Pong => continue,
                 other => return Ok(other),
             }
@@ -142,67 +140,6 @@ impl TunnelManager {
             .await?
         {
             ServerMessage::NodeList { nodes } => Ok(nodes),
-            ServerMessage::Error { code, message } => {
-                anyhow::bail!("signal error ({}): {}", code, message);
-            }
-            other => anyhow::bail!("Unexpected signal response: {:?}", other),
-        }
-    }
-
-    /// Forward a `Revoke` request to signal.
-    pub async fn revoke(&self, cluster: &str, target: &str) -> Result<()> {
-        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
-        let cluster_id = self.cluster_id_for(cluster)?;
-        let msg = StreamMessage::Revoke {
-            cluster_id,
-            target_name: target.to_string(),
-        };
-        match self.forward_one_shot(cluster, msg).await? {
-            ServerMessage::RevokeOk => Ok(()),
-            ServerMessage::Error { code, message } => {
-                anyhow::bail!("signal error ({}): {}", code, message);
-            }
-            other => anyhow::bail!("Unexpected signal response: {:?}", other),
-        }
-    }
-
-    /// Forward a `Rename` request to signal.
-    pub async fn rename(
-        &self,
-        cluster: &str,
-        target: &str,
-        new_display_name: &str,
-    ) -> Result<String> {
-        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
-        let cluster_id = self.cluster_id_for(cluster)?;
-        let msg = StreamMessage::Rename {
-            cluster_id,
-            target_name: target.to_string(),
-            new_display_name: new_display_name.to_string(),
-        };
-        match self.forward_one_shot(cluster, msg).await? {
-            ServerMessage::RenameOk { display_name } => Ok(display_name),
-            ServerMessage::Error { code, message } => {
-                anyhow::bail!("signal error ({}): {}", code, message);
-            }
-            other => anyhow::bail!("Unexpected signal response: {:?}", other),
-        }
-    }
-
-    /// Forward a `Promote` request to signal.
-    pub async fn promote(&self, cluster: &str, target_node_id: &str, new_role: &str) -> Result<()> {
-        use mlsh_protocol::messages::{ServerMessage, StreamMessage};
-        let cluster_id = self.cluster_id_for(cluster)?;
-        let msg = StreamMessage::Promote {
-            cluster_id,
-            target_node_id: target_node_id.to_string(),
-            new_role: new_role.to_string(),
-            // admission_cert is no longer stored signal-side (ADR-030 strip);
-            // empty here, signal accepts and broadcasts an empty cert.
-            admission_cert: String::new(),
-        };
-        match self.forward_one_shot(cluster, msg).await? {
-            ServerMessage::PromoteOk => Ok(()),
             ServerMessage::Error { code, message } => {
                 anyhow::bail!("signal error ({}): {}", code, message);
             }

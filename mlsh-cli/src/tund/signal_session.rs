@@ -30,7 +30,6 @@ pub struct SignalCredentials {
     pub signal_fingerprint: String,
     pub cluster_id: String,
     pub node_id: String,
-    pub display_name: String,
     pub fingerprint: String,
     pub public_key: String,
     /// PEM-encoded client certificate (for mTLS auth to signal).
@@ -48,7 +47,6 @@ pub struct SignalSessionHandle {
     pub overlay_ip: watch::Receiver<Option<Ipv4Addr>>,
     pub peers: watch::Receiver<Arc<Vec<PeerInfo>>>,
     pub connection: watch::Receiver<Option<quinn::Connection>>,
-    pub display_name: watch::Receiver<String>,
     shutdown_tx: watch::Sender<bool>,
     kick_tx: watch::Sender<u64>,
     candidates_port_tx: watch::Sender<u16>,
@@ -97,8 +95,6 @@ struct SessionContext {
     ip_tx: watch::Sender<Option<Ipv4Addr>>,
     peers_tx: watch::Sender<Arc<Vec<PeerInfo>>>,
     conn_tx: watch::Sender<Option<quinn::Connection>>,
-    display_name_tx: watch::Sender<String>,
-    my_node_id: String,
     tun_device: Option<Arc<tun_rs::AsyncDevice>>,
     peer_table: crate::tund::overlay::peer_table::PeerTable,
     overlay_port: u16,
@@ -126,7 +122,6 @@ pub struct SpawnParams {
     pub peer_table: crate::tund::overlay::peer_table::PeerTable,
     pub overlay_port: u16,
     pub overlay_prefix_len: u8,
-    pub initial_display_name: String,
     pub fsm_registry: crate::tund::overlay::fsm::FsmRegistry,
 }
 
@@ -135,12 +130,10 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
     let (ip_tx, ip_rx) = watch::channel(None);
     let (peers_tx, peers_rx) = watch::channel(Arc::new(Vec::new()));
     let (conn_tx, conn_rx) = watch::channel(None);
-    let (display_name_tx, display_name_rx) = watch::channel(params.initial_display_name);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (kick_tx, kick_rx) = watch::channel::<u64>(0);
     let (candidates_port_tx, candidates_port_rx) = watch::channel::<u16>(params.overlay_port);
 
-    let my_node_id = params.creds.node_id.clone();
     let client_config = match build_client_config(&params.creds) {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -149,7 +142,6 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
                 overlay_ip: ip_rx,
                 peers: peers_rx,
                 connection: conn_rx,
-                display_name: display_name_rx,
                 shutdown_tx,
                 kick_tx,
                 candidates_port_tx,
@@ -163,8 +155,6 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         ip_tx,
         peers_tx,
         conn_tx,
-        display_name_tx,
-        my_node_id,
         tun_device: params.tun_device,
         peer_table: params.peer_table,
         overlay_port: params.overlay_port,
@@ -182,7 +172,6 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         overlay_ip: ip_rx,
         peers: peers_rx,
         connection: conn_rx,
-        display_name: display_name_rx,
         shutdown_tx,
         kick_tx,
         candidates_port_tx,
@@ -469,7 +458,7 @@ async fn run_session(
             msg = framing::read_msg_opt::<ServerMessage>(&mut recv) => {
                 match msg {
                     Ok(Some(msg)) => {
-                        handle_push_message(&msg, peers_tx, &ctx.display_name_tx, &ctx.my_node_id, &creds.root_fingerprint);
+                        handle_push_message(&msg, peers_tx, &creds.root_fingerprint);
                     }
                     Ok(None) => {
                         tracing::info!("Signal stream closed");
@@ -615,8 +604,6 @@ fn verify_admission(
 fn handle_push_message(
     msg: &ServerMessage,
     peers_tx: &watch::Sender<Arc<Vec<PeerInfo>>>,
-    display_name_tx: &watch::Sender<String>,
-    my_node_id: &str,
     root_fingerprint: &str,
 ) {
     match msg {
@@ -649,29 +636,6 @@ fn handle_push_message(
                 .iter()
                 .filter(|p| p.node_id != *node_id)
                 .cloned()
-                .collect();
-            let _ = peers_tx.send(Arc::new(new_peers));
-        }
-        ServerMessage::PeerRenamed {
-            node_id,
-            new_display_name,
-        } => {
-            tracing::info!("Peer renamed: {} → {}", node_id, new_display_name);
-            if node_id == my_node_id {
-                let _ = display_name_tx.send(new_display_name.clone());
-            }
-            let new_peers: Vec<PeerInfo> = peers_tx
-                .borrow()
-                .iter()
-                .map(|p| {
-                    if p.node_id == *node_id {
-                        let mut updated = p.clone();
-                        updated.display_name = new_display_name.clone();
-                        updated
-                    } else {
-                        p.clone()
-                    }
-                })
                 .collect();
             let _ = peers_tx.send(Arc::new(new_peers));
         }
@@ -809,12 +773,9 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
-                display_name: String::new(),
-                role: String::new(),
             },
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new());
-        handle_push_message(&msg, &tx, &dn_tx, "", "");
+        handle_push_message(&msg, &tx, "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].node_id, "nas");
     }
@@ -828,15 +789,12 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
-            display_name: String::new(),
-            role: String::new(),
         }]));
         let msg = ServerMessage::PeerLeft {
             node_id: "nas".into(),
             cluster_id: "c1".into(),
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new());
-        handle_push_message(&msg, &tx, &dn_tx, "", "");
+        handle_push_message(&msg, &tx, "");
         assert!(tx.borrow().is_empty());
     }
 
@@ -849,8 +807,6 @@ mod tests {
             candidates: vec![],
             public_key: String::new(),
             admission_cert: String::new(),
-            display_name: String::new(),
-            role: String::new(),
         }]));
         let msg = ServerMessage::PeerJoined {
             peer: PeerInfo {
@@ -860,12 +816,9 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
-                display_name: String::new(),
-                role: String::new(),
             },
         };
-        let (dn_tx, _dn_rx) = watch::channel(String::new());
-        handle_push_message(&msg, &tx, &dn_tx, "", "");
+        handle_push_message(&msg, &tx, "");
         assert_eq!(tx.borrow().len(), 1);
         assert_eq!(tx.borrow()[0].fingerprint, "new-fp");
     }

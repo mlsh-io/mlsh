@@ -14,6 +14,10 @@ pub struct Candidate {
 }
 
 /// Information about a peer in the overlay network.
+///
+/// Network-level metadata only (identity, addressing, admission). Human-facing
+/// labels (display_name) and cluster role are owned by mlsh-control and pushed
+/// to nodes over the mlsh-control event stream — not by signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub node_id: String,
@@ -28,27 +32,20 @@ pub struct PeerInfo {
     /// Peers verify this locally before accepting the peer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub admission_cert: String,
-    #[serde(default)]
-    pub display_name: String,
-    /// Cluster role: "node" (default), "admin", or "control" (implies admin).
-    /// Used by peers to gate sensitive overlay operations like the admin
-    /// tunnel without round-tripping to signal.
-    #[serde(default)]
-    pub role: String,
 }
 
-/// Information about a registered node (returned by ListNodes).
+/// Information about a registered node (returned by ListNodes from signal).
+///
+/// Same scope as `PeerInfo`: network-level only. Display name + role come
+/// from mlsh-control.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
     pub node_id: String,
     pub overlay_ip: String,
-    pub role: String,
     pub online: bool,
     /// Whether this node has a valid admission certificate stored.
     #[serde(default)]
     pub has_admission_cert: bool,
-    #[serde(default)]
-    pub display_name: String,
 }
 
 /// Ingress service mode.
