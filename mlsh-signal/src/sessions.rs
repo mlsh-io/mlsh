@@ -165,10 +165,15 @@ impl SessionStore {
 
     /// Broadcast a message to all connected nodes in a cluster.
     pub async fn broadcast(&self, cluster_id: &str, msg: ServerMessage) {
+        self.broadcast_except(cluster_id, "", msg).await;
+    }
+
+    /// Broadcast a message to all connected nodes in a cluster except `exclude_node`.
+    pub async fn broadcast_except(&self, cluster_id: &str, exclude_node: &str, msg: ServerMessage) {
         let msg = Arc::new(msg);
         let sessions = self.sessions.read().await;
-        for ((cid, _), session) in sessions.iter() {
-            if cid == cluster_id {
+        for ((cid, nid), session) in sessions.iter() {
+            if cid == cluster_id && nid != exclude_node {
                 if let Some(ref tx) = session.push_tx {
                     let _ = tx.send(Arc::clone(&msg));
                 }
@@ -176,9 +181,11 @@ impl SessionStore {
         }
     }
 
-    /// Notify all connected peers in a cluster that a new peer has joined.
+    /// Notify other connected peers in a cluster that a peer has joined.
+    /// The joining peer itself does not receive the notification.
     pub async fn notify_peer_joined(&self, cluster_id: &str, peer: PeerInfo) {
-        self.broadcast(cluster_id, ServerMessage::PeerJoined { peer })
+        let exclude = peer.node_id.clone();
+        self.broadcast_except(cluster_id, &exclude, ServerMessage::PeerJoined { peer })
             .await;
     }
 
