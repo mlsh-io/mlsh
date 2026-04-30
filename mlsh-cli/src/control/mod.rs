@@ -1,5 +1,6 @@
 pub mod auth;
 mod db;
+pub mod events;
 pub mod first_admin;
 pub mod mode;
 pub mod nodes;
@@ -47,6 +48,7 @@ pub async fn run() -> anyhow::Result<()> {
 
     let stream_state = stream::StreamState {
         pool: state.store.pool().clone(),
+        events: events::EventHub::new(),
     };
     let socket_path = stream::default_socket_path();
     tokio::spawn(async move {

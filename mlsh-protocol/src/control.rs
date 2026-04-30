@@ -34,6 +34,12 @@ pub enum ControlRequest {
     Revoke {
         target_node_uuid: String,
     },
+    /// Open a long-lived event stream. The control server keeps the bi-stream
+    /// alive and writes a sequence of `ControlEvent` records on it. The client
+    /// reads them as they arrive — no per-event response is sent. Subscribers
+    /// that fall behind (write blocks) are dropped server-side; the client
+    /// reconnects and reseeds via `ListNodes`.
+    Subscribe,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +78,42 @@ pub struct ControlNodeInfo {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+}
+
+/// Server-pushed event on a `Subscribe` stream.
+///
+/// Only mutations that happen on the control node (the source of truth) are
+/// surfaced here. Network-level facts (peer joined / left the overlay) keep
+/// flowing over signal's existing push channel — they're not control events.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ControlEvent {
+    NodeJoined {
+        node_uuid: String,
+        display_name: String,
+        role: String,
+    },
+    NodeLeft {
+        node_uuid: String,
+    },
+    NodeRenamed {
+        node_uuid: String,
+        new_display_name: String,
+    },
+    NodePromoted {
+        node_uuid: String,
+        new_role: String,
+    },
+    NodeRevoked {
+        node_uuid: String,
+    },
+    ExposedAdded {
+        domain: String,
+        node_uuid: String,
+    },
+    ExposedRemoved {
+        domain: String,
+    },
 }
 
 #[cfg(test)]
@@ -130,6 +172,48 @@ mod tests {
             ControlResponse::Error { code, message } => {
                 assert_eq!(code, "forbidden");
                 assert_eq!(message, "not admin");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn subscribe_request_roundtrip() {
+        let req = ControlRequest::Subscribe;
+        let back: ControlRequest = roundtrip(&req);
+        assert!(matches!(back, ControlRequest::Subscribe));
+    }
+
+    #[test]
+    fn control_event_renamed_roundtrip() {
+        let ev = ControlEvent::NodeRenamed {
+            node_uuid: "u1".into(),
+            new_display_name: "macbook".into(),
+        };
+        let back: ControlEvent = roundtrip(&ev);
+        match back {
+            ControlEvent::NodeRenamed {
+                node_uuid,
+                new_display_name,
+            } => {
+                assert_eq!(node_uuid, "u1");
+                assert_eq!(new_display_name, "macbook");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn control_event_exposed_added_roundtrip() {
+        let ev = ControlEvent::ExposedAdded {
+            domain: "app.auriol.mlsh.io".into(),
+            node_uuid: "u1".into(),
+        };
+        let back: ControlEvent = roundtrip(&ev);
+        match back {
+            ControlEvent::ExposedAdded { domain, node_uuid } => {
+                assert_eq!(domain, "app.auriol.mlsh.io");
+                assert_eq!(node_uuid, "u1");
             }
             _ => panic!("wrong variant"),
         }

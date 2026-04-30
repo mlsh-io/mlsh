@@ -5,10 +5,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use mlsh_protocol::control::ControlEvent;
 use mlsh_protocol::framing;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 
 use crate::tund::signal_session::SignalCredentials;
+
+/// Capacity of the per-session ControlEvent broadcast channel. Keep this
+/// small: subscribers that fall behind are signalled via `RecvError::Lagged`
+/// and expected to reseed via `ListNodes`.
+const EVENT_BROADCAST_CAPACITY: usize = 256;
 
 #[derive(Clone)]
 pub struct ControlSession {
@@ -19,12 +25,14 @@ pub struct ControlSession {
     /// stores display names (ADR 018).
     display_name: Arc<String>,
     control_socket: PathBuf,
+    events_tx: broadcast::Sender<Arc<ControlEvent>>,
 }
 
 struct Inner {
     conn: Option<quinn::Connection>,
     endpoint: quinn::Endpoint,
     adopt_confirm_done: bool,
+    subscribe_running: bool,
 }
 
 impl ControlSession {
@@ -35,16 +43,27 @@ impl ControlSession {
     ) -> Result<Self> {
         let endpoint = quinn::Endpoint::client("0.0.0.0:0".parse().unwrap())
             .context("Failed to create QUIC client endpoint for control session")?;
+        let (events_tx, _) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 conn: None,
                 endpoint,
                 adopt_confirm_done: false,
+                subscribe_running: false,
             })),
             creds: Arc::new(creds),
             display_name: Arc::new(display_name),
             control_socket,
+            events_tx,
         })
+    }
+
+    /// Subscribe to server-pushed `ControlEvent`s for this session. New
+    /// receivers see only events arriving after subscription. If the inner
+    /// subscriber falls behind, `RecvError::Lagged` is surfaced and the caller
+    /// is expected to reseed (e.g. via `ListNodes`).
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<ControlEvent>> {
+        self.events_tx.subscribe()
     }
 
     pub async fn ensure_connected(&self) -> Result<quinn::Connection> {
@@ -74,12 +93,17 @@ impl ControlSession {
         tracing::info!(endpoint = %self.creds.signal_endpoint, "mlsh-control session connected");
 
         let should_adopt_confirm;
+        let should_start_subscribe;
         {
             let mut g = self.inner.lock().await;
             g.conn = Some(conn.clone());
             should_adopt_confirm = !g.adopt_confirm_done;
             if should_adopt_confirm {
                 g.adopt_confirm_done = true;
+            }
+            should_start_subscribe = !g.subscribe_running;
+            if should_start_subscribe {
+                g.subscribe_running = true;
             }
         }
 
@@ -93,12 +117,66 @@ impl ControlSession {
             best_effort_adopt_confirm_with_retry(&conn, &self.creds, &self.display_name).await;
         }
 
+        if should_start_subscribe {
+            let conn_for_subscribe = conn.clone();
+            let events_tx = self.events_tx.clone();
+            let inner = self.inner.clone();
+            tokio::spawn(async move {
+                subscribe_loop(conn_for_subscribe, events_tx).await;
+                inner.lock().await.subscribe_running = false;
+            });
+        }
+
         Ok(conn)
     }
 
     pub async fn call(&self, request_cbor: Vec<u8>) -> Result<Vec<u8>> {
         let conn = self.ensure_connected().await?;
         call_on(&conn, request_cbor).await
+    }
+}
+
+/// Open a `Subscribe` stream on this control connection and forward every
+/// inbound `ControlEvent` to the broadcast channel. Returns when the stream
+/// closes (connection lost, server-side eviction, or local error). The caller
+/// is responsible for resetting the `subscribe_running` flag on return.
+async fn subscribe_loop(conn: quinn::Connection, events_tx: broadcast::Sender<Arc<ControlEvent>>) {
+    use mlsh_protocol::control::ControlRequest;
+
+    let (mut send, mut recv) = match conn.open_bi().await {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!(error = %e, "control: failed to open Subscribe stream");
+            return;
+        }
+    };
+
+    if let Err(e) = framing::write_msg(&mut send, &ControlRequest::Subscribe).await {
+        tracing::debug!(error = %e, "control: failed to send Subscribe");
+        return;
+    }
+    // We only read from this stream from now on; let the server know we're
+    // done writing.
+    let _ = send.finish();
+
+    tracing::info!("control: subscribed to event stream");
+
+    loop {
+        match framing::read_msg_opt::<ControlEvent>(&mut recv).await {
+            Ok(Some(event)) => {
+                tracing::debug!(?event, "control: event received");
+                // Best-effort fanout — if no one is listening, drop silently.
+                let _ = events_tx.send(Arc::new(event));
+            }
+            Ok(None) => {
+                tracing::info!("control: subscribe stream closed by server");
+                return;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "control: subscribe read error; closing");
+                return;
+            }
+        }
     }
 }
 

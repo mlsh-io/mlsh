@@ -9,6 +9,7 @@ use mlsh_protocol::framing;
 use sqlx::SqlitePool;
 use tokio::net::{UnixListener, UnixStream};
 
+use crate::control::events::EventHub;
 use crate::control::nodes;
 
 pub fn default_socket_path() -> PathBuf {
@@ -18,6 +19,7 @@ pub fn default_socket_path() -> PathBuf {
 #[derive(Clone)]
 pub struct StreamState {
     pub pool: SqlitePool,
+    pub events: EventHub,
 }
 
 pub async fn serve(socket_path: &Path, state: StreamState) -> Result<()> {
@@ -55,8 +57,31 @@ async fn handle_one(mut stream: UnixStream, state: &StreamState) -> Result<()> {
     let header: ControlAuthHeader = framing::read_msg(&mut rd).await?;
     let request: ControlRequest = framing::read_msg(&mut rd).await?;
 
-    let response = dispatch(&state.pool, &header, &request).await;
+    if matches!(request, ControlRequest::Subscribe) {
+        return run_subscribe(&mut wr, &state.events, cluster_key(&header)).await;
+    }
+
+    let response = dispatch(state, &header, &request).await;
     framing::write_msg(&mut wr, &response).await?;
+    Ok(())
+}
+
+/// Stream `ControlEvent` records to a subscriber until the connection drops or
+/// the hub evicts us (slow consumer).
+async fn run_subscribe(
+    wr: &mut (impl tokio::io::AsyncWrite + Unpin),
+    hub: &EventHub,
+    cluster_key: &str,
+) -> Result<()> {
+    let (_handle, mut rx) = hub.register(cluster_key).await;
+    tracing::debug!(cluster = %cluster_key, "control: subscribe stream opened");
+    while let Some(event) = rx.recv().await {
+        if let Err(e) = framing::write_msg(wr, &*event).await {
+            tracing::debug!(cluster = %cluster_key, error = %e, "control: subscribe write failed; closing");
+            break;
+        }
+    }
+    tracing::debug!(cluster = %cluster_key, "control: subscribe stream closed");
     Ok(())
 }
 
@@ -69,10 +94,14 @@ fn cluster_key(auth: &ControlAuthHeader) -> &str {
 }
 
 async fn dispatch(
-    pool: &SqlitePool,
+    state: &StreamState,
     auth: &ControlAuthHeader,
     req: &ControlRequest,
 ) -> ControlResponse {
+    let pool = &state.pool;
+    // The events hub is held here so future producers (Phase D) can publish
+    // without re-plumbing the dispatch signature.
+    let _events = &state.events;
     match req {
         ControlRequest::AdoptConfirm {
             node_uuid,
@@ -186,6 +215,11 @@ async fn dispatch(
                 Ok(false) => ControlResponse::error("not_found", "Node not found"),
                 Err(e) => ControlResponse::error("internal", &format!("revoke failed: {e:#}")),
             }
+        }
+
+        ControlRequest::Subscribe => {
+            // Handled in handle_one before dispatch is called.
+            ControlResponse::error("internal", "Subscribe must not reach dispatch")
         }
     }
 }
