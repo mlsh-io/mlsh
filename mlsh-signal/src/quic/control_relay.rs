@@ -17,9 +17,12 @@ pub async fn handle_control_connection(conn: quinn::Connection, state: Arc<QuicS
         }
     };
 
+    let stable_id = conn.stable_id();
     {
         let mut g = state.control_conns.lock().await;
-        g.insert(caller_fp.clone(), conn.clone());
+        if let Some(prev) = g.insert(caller_fp.clone(), conn.clone()) {
+            prev.close(quinn::VarInt::from_u32(0), b"control replaced");
+        }
     }
     info!(fp = %caller_fp, "control: connection registered");
 
@@ -27,7 +30,11 @@ pub async fn handle_control_connection(conn: quinn::Connection, state: Arc<QuicS
 
     {
         let mut g = state.control_conns.lock().await;
-        g.remove(&caller_fp);
+        if let Some(current) = g.get(&caller_fp) {
+            if current.stable_id() == stable_id {
+                g.remove(&caller_fp);
+            }
+        }
     }
     debug!(fp = %caller_fp, "control: connection deregistered");
 }
