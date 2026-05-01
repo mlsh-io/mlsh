@@ -183,6 +183,7 @@ mod tests {
             oauth: crate::control::auth::oauth::OAuthConfig::disabled(),
             mfa_key: std::sync::Arc::new([5u8; 32]),
             webauthn: None,
+            events: crate::control::events::EventHub::new(),
         };
         (state, user.id)
     }

@@ -10,6 +10,7 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 
 use crate::control::auth::{handlers as auth_handlers, AuthState};
+use mlsh_protocol::control::ControlEvent;
 
 #[derive(RustEmbed)]
 #[folder = "ui/dist/"]
@@ -205,7 +206,13 @@ async fn revoke_node(
             }
         };
     match crate::control::nodes::set_status(state.store.pool(), &cluster, &uuid, "revoked").await {
-        Ok(true) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(true) => {
+            state
+                .events
+                .publish(&cluster, ControlEvent::NodeRevoked { node_uuid: uuid })
+                .await;
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "node not found" })),
@@ -256,7 +263,19 @@ async fn rename_node(
     )
     .await
     {
-        Ok(true) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(true) => {
+            state
+                .events
+                .publish(
+                    &cluster,
+                    ControlEvent::NodeRenamed {
+                        node_uuid: uuid,
+                        new_display_name: body.display_name.clone(),
+                    },
+                )
+                .await;
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "node not found" })),
@@ -307,7 +326,19 @@ async fn promote_node(
             }
         };
     match crate::control::nodes::set_role(state.store.pool(), &cluster, &uuid, &body.role).await {
-        Ok(true) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(true) => {
+            state
+                .events
+                .publish(
+                    &cluster,
+                    ControlEvent::NodePromoted {
+                        node_uuid: uuid,
+                        new_role: body.role.clone(),
+                    },
+                )
+                .await;
+            Json(serde_json::json!({ "ok": true })).into_response()
+        }
         Ok(false) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "error": "node not found" })),

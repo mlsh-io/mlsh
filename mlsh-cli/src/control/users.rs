@@ -269,6 +269,7 @@ mod tests {
             oauth: OAuthConfig::disabled(),
             mfa_key: Arc::new([1u8; 32]),
             webauthn: None,
+            events: crate::control::events::EventHub::new(),
         }
     }
 

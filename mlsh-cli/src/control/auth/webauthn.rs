@@ -325,6 +325,7 @@ mod tests {
             oauth: OAuthConfig::disabled(),
             mfa_key: Arc::new([0u8; 32]),
             webauthn: Some(build_config()),
+            events: crate::control::events::EventHub::new(),
         }
     }
 

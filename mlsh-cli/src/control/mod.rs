@@ -38,17 +38,20 @@ pub async fn run() -> anyhow::Result<()> {
             "MLSH_CONTROL_RP_ORIGIN"
         );
     }
+    let event_hub = events::EventHub::new();
+
     let state = auth::AuthState {
         store,
         key: auth::SessionKey::new(key),
         oauth,
         mfa_key: std::sync::Arc::new(mfa_key),
         webauthn,
+        events: event_hub.clone(),
     };
 
     let stream_state = stream::StreamState {
         pool: state.store.pool().clone(),
-        events: events::EventHub::new(),
+        events: event_hub,
     };
     let socket_path = stream::default_socket_path();
     tokio::spawn(async move {

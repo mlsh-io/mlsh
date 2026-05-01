@@ -38,6 +38,9 @@ pub struct AuthState {
     pub mfa_key: std::sync::Arc<[u8; 32]>,
     /// WebAuthn relying-party config; `None` when env is not set.
     pub webauthn: Option<super::webauthn::WebauthnConfig>,
+    /// Shared with the CBOR socket so HTTP mutations fan out to peer
+    /// `Subscribe` streams the same way RPC mutations do.
+    pub events: crate::control::events::EventHub,
 }
 
 /// Issue a new session row + signed cookie value.
@@ -318,6 +321,7 @@ mod tests {
             oauth: crate::control::auth::oauth::OAuthConfig::disabled(),
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
+            events: crate::control::events::EventHub::new(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {
@@ -348,6 +352,7 @@ mod tests {
             oauth: crate::control::auth::oauth::OAuthConfig::disabled(),
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
+            events: crate::control::events::EventHub::new(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {
@@ -379,6 +384,7 @@ mod tests {
             oauth: crate::control::auth::oauth::OAuthConfig::disabled(),
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
+            events: crate::control::events::EventHub::new(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {
