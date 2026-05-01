@@ -611,6 +611,7 @@ mod tests {
             Json(LoginRequest {
                 email: "admin@example.com".into(),
                 password: "hunter2".into(),
+                totp_code: None,
             }),
         )
         .await;
@@ -636,6 +637,7 @@ mod tests {
             Json(LoginRequest {
                 email: "admin@example.com".into(),
                 password: "wrong".into(),
+                totp_code: None,
             }),
         )
         .await;
