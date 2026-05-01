@@ -109,6 +109,7 @@ impl ManagedTunnel {
 
         let tx_counter = bytes_tx.clone();
         let rx_counter = bytes_rx.clone();
+        let display_names = control_session.display_names();
         let task = tokio::spawn(async move {
             tunnel_task(
                 config,
@@ -119,6 +120,7 @@ impl ManagedTunnel {
                 tx_counter,
                 rx_counter,
                 signal_conn_tx,
+                display_names,
             )
             .await;
         });
@@ -238,6 +240,7 @@ async fn tunnel_task(
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     signal_conn_tx: watch::Sender<Option<quinn::Connection>>,
+    display_names: crate::tund::control::display_names::DisplayNameMap,
 ) {
     let mut backoff = Duration::from_secs(1);
 
@@ -387,17 +390,14 @@ async fn tunnel_task(
     };
     let dns_node_id = config.node_id.clone();
     let dns_table = peer_table.clone();
-    // Phase A: signal no longer carries display_name. Until the mlsh-control
-    // event stream populates a `DisplayNameMap` (Phase B/C), display-name
-    // lookups in the overlay DNS resolver fall through to NXDOMAIN.
-    let (_dns_dn_tx, dns_display_name) = watch::channel(String::new());
+    let dns_display_names = display_names.clone();
     let (dns_shutdown_tx, dns_shutdown_rx) = watch::channel(false);
     tokio::spawn(async move {
         if let Err(e) = crate::tund::net::overlay_dns::run(
             dns_config,
             overlay_ip,
             dns_node_id,
-            dns_display_name,
+            dns_display_names,
             dns_table,
             dns_shutdown_rx,
         )

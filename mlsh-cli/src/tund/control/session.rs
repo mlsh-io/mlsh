@@ -9,6 +9,7 @@ use mlsh_protocol::control::ControlEvent;
 use mlsh_protocol::framing;
 use tokio::sync::{broadcast, Mutex};
 
+use crate::tund::control::display_names::DisplayNameMap;
 use crate::tund::signal_session::SignalCredentials;
 
 /// Capacity of the per-session ControlEvent broadcast channel. Keep this
@@ -26,6 +27,7 @@ pub struct ControlSession {
     display_name: Arc<String>,
     control_socket: PathBuf,
     events_tx: broadcast::Sender<Arc<ControlEvent>>,
+    display_names: DisplayNameMap,
 }
 
 struct Inner {
@@ -33,6 +35,7 @@ struct Inner {
     endpoint: quinn::Endpoint,
     adopt_confirm_done: bool,
     subscribe_running: bool,
+    seed_running: bool,
 }
 
 impl ControlSession {
@@ -50,12 +53,20 @@ impl ControlSession {
                 endpoint,
                 adopt_confirm_done: false,
                 subscribe_running: false,
+                seed_running: false,
             })),
             creds: Arc::new(creds),
             display_name: Arc::new(display_name),
             control_socket,
             events_tx,
+            display_names: DisplayNameMap::new(),
         })
+    }
+
+    /// Shared display-name map kept in sync with mlsh-control. Consumers (the
+    /// overlay DNS resolver in particular) clone this handle and read from it.
+    pub fn display_names(&self) -> DisplayNameMap {
+        self.display_names.clone()
     }
 
     /// Subscribe to server-pushed `ControlEvent`s for this session. New
@@ -94,6 +105,7 @@ impl ControlSession {
 
         let should_adopt_confirm;
         let should_start_subscribe;
+        let should_start_seed;
         {
             let mut g = self.inner.lock().await;
             g.conn = Some(conn.clone());
@@ -104,6 +116,12 @@ impl ControlSession {
             should_start_subscribe = !g.subscribe_running;
             if should_start_subscribe {
                 g.subscribe_running = true;
+            }
+            // The seed task always reseeds on reconnect — start it whenever
+            // there isn't already one in flight.
+            should_start_seed = !g.seed_running;
+            if should_start_seed {
+                g.seed_running = true;
             }
         }
 
@@ -124,6 +142,19 @@ impl ControlSession {
             tokio::spawn(async move {
                 subscribe_loop(conn_for_subscribe, events_tx).await;
                 inner.lock().await.subscribe_running = false;
+            });
+        }
+
+        if should_start_seed {
+            // Subscribe to the broadcast *before* issuing ListNodes so any
+            // event landing during the seed is buffered, not lost.
+            let rx = self.events_tx.subscribe();
+            let conn_for_seed = conn.clone();
+            let map = self.display_names.clone();
+            let inner = self.inner.clone();
+            tokio::spawn(async move {
+                display_names_loop(conn_for_seed, map, rx).await;
+                inner.lock().await.seed_running = false;
             });
         }
 
@@ -174,6 +205,68 @@ async fn subscribe_loop(conn: quinn::Connection, events_tx: broadcast::Sender<Ar
             }
             Err(e) => {
                 tracing::debug!(error = %e, "control: subscribe read error; closing");
+                return;
+            }
+        }
+    }
+}
+
+/// Seed the `DisplayNameMap` from `ListNodes`, then keep it in sync by
+/// applying every `ControlEvent` arriving on the broadcast. Returns when the
+/// broadcast is closed (session torn down) — the caller resets the
+/// `seed_running` flag so the next reconnect spawns a fresh task that reseeds.
+async fn display_names_loop(
+    conn: quinn::Connection,
+    map: DisplayNameMap,
+    mut rx: broadcast::Receiver<Arc<ControlEvent>>,
+) {
+    use mlsh_protocol::control::{ControlRequest, ControlResponse};
+
+    // --- Initial seed via ListNodes on the live connection ---
+    let req = ControlRequest::ListNodes;
+    let mut buf = Vec::new();
+    if let Err(e) = ciborium::into_writer(&req, &mut buf) {
+        tracing::warn!(error = %e, "display_names: failed to encode ListNodes; skipping seed");
+    } else {
+        match call_on(&conn, buf).await {
+            Ok(reply_bytes) => {
+                match ciborium::from_reader::<ControlResponse, _>(&reply_bytes[..]) {
+                    Ok(ControlResponse::Nodes { nodes }) => {
+                        let count = nodes.len();
+                        map.seed(&nodes).await;
+                        tracing::info!(count, "display_names: seeded from ListNodes");
+                    }
+                    Ok(ControlResponse::Error { code, message }) => {
+                        tracing::warn!(code, message, "display_names: ListNodes returned error");
+                    }
+                    Ok(other) => {
+                        tracing::warn!(?other, "display_names: unexpected ListNodes response");
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "display_names: failed to decode ListNodes reply");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "display_names: ListNodes call failed");
+            }
+        }
+    }
+
+    // --- Apply incremental updates ---
+    loop {
+        match rx.recv().await {
+            Ok(event) => map.apply(&event).await,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!(
+                    skipped = n,
+                    "display_names: broadcast lagged; map may drift until next reconnect"
+                );
+                // Best-effort: keep going. A reconnect will reseed; live drift
+                // is bounded by the next mutation we observe.
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                tracing::debug!("display_names: broadcast closed, exiting loop");
                 return;
             }
         }

@@ -6,6 +6,7 @@
 
 pub mod child;
 pub mod client;
+pub mod display_names;
 pub mod protocol;
 pub mod session;
 

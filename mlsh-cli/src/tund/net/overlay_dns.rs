@@ -11,6 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use tokio::net::UdpSocket;
 use tokio::sync::watch;
 
+use crate::tund::control::display_names::DisplayNameMap;
 use crate::tund::overlay::peer_table::PeerTable;
 
 const RCODE_OK: u8 = 0;
@@ -31,7 +32,7 @@ pub async fn run(
     config: DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: String,
-    my_display_name: watch::Receiver<String>,
+    display_names: DisplayNameMap,
     peer_table: PeerTable,
     mut shutdown: watch::Receiver<bool>,
 ) -> std::io::Result<()> {
@@ -53,8 +54,7 @@ pub async fn run(
                 match result {
                     Ok((len, src)) => {
                         let query = &buf[..len];
-                        let display_name = my_display_name.borrow().clone();
-                        let response = handle_query(query, &config, my_ip, &my_node_id, &display_name, &peer_table).await;
+                        let response = handle_query(query, &config, my_ip, &my_node_id, &display_names, &peer_table).await;
                         if let Ok(resp) = response {
                             let _ = socket.send_to(&resp, src).await;
                         }
@@ -79,7 +79,7 @@ async fn handle_query(
     config: &DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: &str,
-    my_display_name: &str,
+    display_names: &DisplayNameMap,
     peer_table: &PeerTable,
 ) -> Result<Vec<u8>, DnsError> {
     if query.len() < 12 {
@@ -101,15 +101,7 @@ async fn handle_query(
         return Ok(build_response(id, RCODE_NXDOMAIN, query, None, config.ttl));
     }
 
-    let ip = resolve(
-        &qname,
-        config,
-        my_ip,
-        my_node_id,
-        my_display_name,
-        peer_table,
-    )
-    .await;
+    let ip = resolve(&qname, config, my_ip, my_node_id, display_names, peer_table).await;
 
     match (ip, qtype) {
         (Some(addr), TYPE_A) => Ok(build_response(id, RCODE_OK, query, Some(addr), config.ttl)),
@@ -121,13 +113,18 @@ async fn handle_query(
     }
 }
 
-/// Resolve a DNS name against the peer table.
+/// Resolve a DNS name against the peer table + display-name map.
+///
+/// Lookup precedence: bare zone → self; UUID match (self or peer); display
+/// name match (via `DisplayNameMap`, then crossed with `peer_table` for the
+/// IP). The map is owned by the mlsh-control session, so it stays in sync
+/// across renames without re-plumbing here.
 async fn resolve(
     name: &str,
     config: &DnsConfig,
     my_ip: Ipv4Addr,
     my_node_id: &str,
-    my_display_name: &str,
+    display_names: &DisplayNameMap,
     peer_table: &PeerTable,
 ) -> Option<Ipv4Addr> {
     let name = name.strip_suffix('.').unwrap_or(name).to_lowercase();
@@ -152,18 +149,23 @@ async fn resolve(
         return Some(my_ip);
     }
 
-    if !my_display_name.is_empty() && sanitize_dns_label(my_display_name) == label {
-        return Some(my_ip);
-    }
-
     let peers = peer_table.known_peers().await;
 
     if let Some(p) = peers.iter().find(|p| p.node_id.to_lowercase() == label) {
         return p.overlay_ip.parse().ok();
     }
 
-    // Display-name → IP lookup for peers will return once mlsh-control feeds
-    // the resolver (Phase B/C). Until then, fall through to NXDOMAIN.
+    // Display-name lookup: control owns the name → uuid mapping; the
+    // peer_table (or our own identity) owns uuid → IP.
+    if let Some(uuid) = display_names.lookup_uuid(label).await {
+        if uuid == my_node_id {
+            return Some(my_ip);
+        }
+        if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
+            return p.overlay_ip.parse().ok();
+        }
+    }
+
     None
 }
 
@@ -332,7 +334,15 @@ mod tests {
         let table = PeerTable::new();
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
-        let ip = resolve("homelab", &config, my_ip, "nas", "", &table).await;
+        let ip = resolve(
+            "homelab",
+            &config,
+            my_ip,
+            "nas",
+            &DisplayNameMap::new(),
+            &table,
+        )
+        .await;
         assert_eq!(ip, Some(my_ip));
     }
 
@@ -346,7 +356,15 @@ mod tests {
         let table = PeerTable::new();
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
-        let ip = resolve("nas.homelab", &config, my_ip, "nas", "", &table).await;
+        let ip = resolve(
+            "nas.homelab",
+            &config,
+            my_ip,
+            "nas",
+            &DisplayNameMap::new(),
+            &table,
+        )
+        .await;
         assert_eq!(ip, Some(my_ip));
     }
 
@@ -374,7 +392,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
-            "",
+            &DisplayNameMap::new(),
             &table,
         )
         .await;
@@ -398,10 +416,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn display_name_lookup_returns_nxdomain_in_phase_a() {
-        // Phase A: signal no longer carries display_name and the resolver has
-        // no display-name source yet. Until mlsh-control feeds names back
-        // (Phase B/C), display-name → IP lookups must miss.
+    async fn display_name_lookup_via_map() {
+        use mlsh_protocol::control::ControlNodeInfo;
+
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -419,16 +436,67 @@ mod tests {
             }]))
             .await;
 
+        // No name in the map → label miss → NXDOMAIN.
+        let map = DisplayNameMap::new();
         let ip = resolve(
             "rack-toulouse-nuc.homelab",
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
-            "",
+            &map,
             &table,
         )
         .await;
         assert_eq!(ip, None);
+
+        // Once the map carries the binding, lookup resolves to the peer's IP.
+        map.seed(&[ControlNodeInfo {
+            node_uuid: "a3f8b2c1-uuid".into(),
+            fingerprint: "fp".into(),
+            display_name: "Rack Toulouse NUC".into(),
+            role: "node".into(),
+            status: "active".into(),
+            last_seen: None,
+        }])
+        .await;
+        let ip = resolve(
+            "rack-toulouse-nuc.homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &map,
+            &table,
+        )
+        .await;
+        assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 5)));
+    }
+
+    #[tokio::test]
+    async fn display_name_lookup_resolves_self() {
+        use mlsh_protocol::control::ControlNodeInfo;
+
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        let map = DisplayNameMap::new();
+        let my_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let my_uuid = "self-uuid";
+
+        map.seed(&[ControlNodeInfo {
+            node_uuid: my_uuid.into(),
+            fingerprint: "fp".into(),
+            display_name: "Macbook Pro".into(),
+            role: "admin".into(),
+            status: "active".into(),
+            last_seen: None,
+        }])
+        .await;
+
+        let ip = resolve("macbook-pro.homelab", &config, my_ip, my_uuid, &map, &table).await;
+        assert_eq!(ip, Some(my_ip));
     }
 
     #[tokio::test]
@@ -465,7 +533,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
-            "",
+            &DisplayNameMap::new(),
             &table,
         )
         .await;
@@ -486,7 +554,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
-            "",
+            &DisplayNameMap::new(),
             &table,
         )
         .await;
@@ -507,7 +575,7 @@ mod tests {
             &config,
             Ipv4Addr::new(100, 64, 0, 1),
             "nas",
-            "",
+            &DisplayNameMap::new(),
             &table,
         )
         .await;
@@ -525,9 +593,16 @@ mod tests {
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
         let query = make_a_query("homelab");
-        let resp = handle_query(&query, &config, my_ip, "nas", "", &table)
-            .await
-            .unwrap();
+        let resp = handle_query(
+            &query,
+            &config,
+            my_ip,
+            "nas",
+            &DisplayNameMap::new(),
+            &table,
+        )
+        .await
+        .unwrap();
 
         // Check response: QR=1, ANCOUNT=1
         assert_eq!(resp[2] & 0x80, 0x80); // QR bit
