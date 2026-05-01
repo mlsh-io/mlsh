@@ -28,13 +28,15 @@ pub async fn upsert(
     display_name: &str,
     role: &str,
 ) -> Result<()> {
+    // `display_name` is only used on initial INSERT — never overwritten on
+    // conflict. Otherwise every reconnect would clobber renames written via
+    // the UI/CLI with whatever the node's local TOML still carries.
     sqlx::query(
         "INSERT INTO nodes (cluster_id, node_uuid, fingerprint, public_key, display_name, role, status)
          VALUES (?, ?, ?, ?, ?, ?, 'active')
          ON CONFLICT(cluster_id, node_uuid) DO UPDATE SET
              fingerprint = excluded.fingerprint,
              public_key = excluded.public_key,
-             display_name = excluded.display_name,
              role = excluded.role,
              status = 'active'",
     )
