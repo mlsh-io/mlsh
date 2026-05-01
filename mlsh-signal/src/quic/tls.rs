@@ -5,11 +5,15 @@
 //! via HTTPS).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::pki_types::CertificateDer;
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 
 use crate::config::QuicConfig;
+
+const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Accept any client certificate — we verify identity by fingerprint after
 /// handshake, not during TLS negotiation. The purpose is to make the client
@@ -103,9 +107,9 @@ pub async fn build_server_config(
 
     let mut transport = quinn::TransportConfig::default();
     transport.max_idle_timeout(Some(
-        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30 * 60)).unwrap(),
+        quinn::IdleTimeout::try_from(MAX_IDLE_TIMEOUT).unwrap(),
     ));
-    transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
+    transport.keep_alive_interval(Some(KEEP_ALIVE_INTERVAL));
     server_config.transport_config(Arc::new(transport));
 
     Ok((server_config, fingerprint))
