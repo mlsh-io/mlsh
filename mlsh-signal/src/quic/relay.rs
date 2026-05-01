@@ -173,21 +173,25 @@ pub async fn handle_relay(
     let mut counting_cli_send =
         crate::metrics::CountingWriter::new(&mut cli_send, target_tx_counter);
 
+    // Splice both directions. As soon as one direction ends (EOF or error),
+    // tear down the other so both peers learn the relay is gone — otherwise a
+    // half-closed stream leaves the survivor stuck on a dead path until the
+    // QUIC idle timeout, blocking re-establishment after a peer reconnect.
     let cli_to_target = tokio::io::copy(&mut cli_recv, &mut counting_target_send);
     let target_to_cli = tokio::io::copy(&mut target_recv, &mut counting_cli_send);
 
-    let (r1, r2) = tokio::join!(cli_to_target, target_to_cli);
-    debug!(
-        cluster_id,
-        cli_to_target = ?r1.ok(),
-        target_to_cli = ?r2.ok(),
-        "Relay splice finished"
-    );
+    tokio::select! {
+        r = cli_to_target => debug!(cluster_id, cli_to_target = ?r.ok(), "Relay splice: caller→target ended"),
+        r = target_to_cli => debug!(cluster_id, target_to_cli = ?r.ok(), "Relay splice: target→caller ended"),
+    }
 
     drop(counting_target_send);
     drop(counting_cli_send);
-    let _ = cli_send.finish();
-    let _ = target_send.finish();
+    let abort_code = quinn::VarInt::from_u32(0);
+    let _ = cli_send.reset(abort_code);
+    let _ = target_send.reset(abort_code);
+    let _ = cli_recv.stop(abort_code);
+    let _ = target_recv.stop(abort_code);
 
     info!(cluster_id, "Relay session ended");
     Ok(())
