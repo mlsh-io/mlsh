@@ -5,6 +5,5 @@ pub mod db;
 pub mod http;
 pub mod ingress;
 pub mod metrics;
-pub mod protocol;
 pub mod quic;
 pub mod sessions;

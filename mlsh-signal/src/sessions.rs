@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::protocol::{Candidate, PeerInfo, ServerMessage};
+use mlsh_protocol::messages::ServerMessage;
+use mlsh_protocol::types::{Candidate, PeerInfo};
 
 /// A connected node session.
 struct NodeSession {

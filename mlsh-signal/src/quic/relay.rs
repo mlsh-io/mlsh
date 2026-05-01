@@ -7,12 +7,14 @@
 use anyhow::Context;
 use tracing::{debug, info};
 
+use mlsh_protocol::framing;
+use mlsh_protocol::messages::{RelayMessage, ServerMessage};
+
 use super::listener::QuicState;
-use crate::protocol::RelayMessage;
 
 async fn reject(send: &mut quinn::SendStream, code: &str, msg: &str) -> anyhow::Result<()> {
-    let resp = crate::protocol::ServerMessage::error(code, msg);
-    crate::protocol::write_message(send, &resp).await?;
+    let resp = ServerMessage::error(code, msg);
+    framing::write_msg(send, &resp).await?;
     send.finish()?;
     Ok(())
 }
@@ -147,8 +149,7 @@ pub async fn handle_relay(
     info!(cluster_id, "Relay accepted, splicing streams");
 
     // Send RelayReady to the initiator
-    crate::protocol::write_message(&mut cli_send, &crate::protocol::ServerMessage::RelayReady)
-        .await?;
+    framing::write_msg(&mut cli_send, &ServerMessage::RelayReady).await?;
 
     // Set up real-time byte counters
     // caller → target direction: caller TX, target RX

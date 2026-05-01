@@ -16,8 +16,10 @@ use std::time::Duration;
 use base64::Engine;
 use tracing::{debug, info, warn};
 
+use mlsh_protocol::framing;
+use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+
 use crate::db;
-use crate::protocol::{self, ServerMessage, StreamMessage};
 
 use super::listener::QuicState;
 
@@ -51,7 +53,7 @@ async fn handle_stream(
     conn: &quinn::Connection,
     state: &QuicState,
 ) -> anyhow::Result<()> {
-    let msg: StreamMessage = match protocol::read_message(&mut recv).await? {
+    let msg: StreamMessage = match framing::read_msg_opt(&mut recv).await? {
         Some(m) => m,
         None => return Ok(()),
     };
@@ -83,7 +85,7 @@ async fn handle_stream(
                 },
             )
             .await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::RelayOpen {
@@ -110,17 +112,17 @@ async fn handle_stream(
             mode,
         } => {
             let resp = handle_expose(state, conn, &cluster_id, &domain, &target, mode).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::UnexposeService { cluster_id, domain } => {
             let resp = handle_unexpose(state, conn, &cluster_id, &domain).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::ListExposed { cluster_id } => {
             let resp = handle_list_exposed(state, conn, &cluster_id).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::TlsAlpnChallengeSet {
@@ -129,17 +131,17 @@ async fn handle_stream(
             key_der,
         } => {
             let resp = handle_tls_alpn_set(state, conn, &domain, cert_der, key_der).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::TlsAlpnChallengeClear { domain } => {
             let resp = handle_tls_alpn_clear(state, conn, &domain).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::ListNodes => {
             let resp = handle_list_nodes(state, conn).await;
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         _ => {
@@ -147,7 +149,7 @@ async fn handle_stream(
                 "auth_required",
                 "First message must be NodeAuth, Adopt, RelayOpen, ExposeService, UnexposeService, ListExposed, ListNodes, or TlsAlpnChallenge*",
             );
-            protocol::write_message(&mut send, &resp).await?;
+            framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
     }
@@ -181,7 +183,7 @@ async fn run_node_session(
                 cluster_id, "No client certificate presented for NodeAuth"
             );
             let resp = ServerMessage::error("auth_failed", "Client certificate required");
-            protocol::write_message(&mut send, &resp).await.ok();
+            framing::write_msg(&mut send, &resp).await.ok();
             return Ok(());
         }
     };
@@ -190,7 +192,7 @@ async fn run_node_session(
         Some(n) => n,
         None => {
             let resp = ServerMessage::error("auth_failed", "Unknown fingerprint");
-            protocol::write_message(&mut send, &resp).await.ok();
+            framing::write_msg(&mut send, &resp).await.ok();
             return Ok(());
         }
     };
@@ -210,7 +212,7 @@ async fn run_node_session(
         overlay_subnet: state.overlay_subnet.cidr.clone(),
         peers,
     };
-    protocol::write_message(&mut send, &reply).await?;
+    framing::write_msg(&mut send, &reply).await?;
     info!(id, cluster_id, node_id = %node_id, %overlay_ip, "Node session authenticated");
 
     // Register session + push channel
@@ -255,13 +257,13 @@ async fn run_node_session(
 
     loop {
         tokio::select! {
-            msg = protocol::read_message::<StreamMessage>(&mut recv) => {
+            msg = framing::read_msg_opt::<StreamMessage>(&mut recv) => {
                 match msg {
                     Ok(Some(client_msg)) => {
                         last_activity = std::time::Instant::now();
                         match client_msg {
                             StreamMessage::Ping => {
-                                let _ = protocol::write_message(&mut send, &ServerMessage::Pong).await;
+                                let _ = framing::write_msg(&mut send, &ServerMessage::Pong).await;
                             }
                             StreamMessage::ReportCandidates { candidates } => {
                                 state.sessions.set_candidates(cluster_id, &node_id, candidates).await;
@@ -276,15 +278,15 @@ async fn run_node_session(
                             StreamMessage::ListNodes => {
                                 let online = state.sessions.online_node_ids(cluster_id).await;
                                 let all_nodes = db::list_nodes(&state.db, cluster_id).await.unwrap_or_default();
-                                let nodes: Vec<protocol::NodeInfo> = all_nodes.into_iter().map(|n| {
-                                    protocol::NodeInfo {
+                                let nodes: Vec<mlsh_protocol::types::NodeInfo> = all_nodes.into_iter().map(|n| {
+                                    mlsh_protocol::types::NodeInfo {
                                         node_id: n.node_id.clone(),
                                         overlay_ip: n.overlay_ip.to_string(),
                                         online: online.contains(&n.node_id),
                                         has_admission_cert: false,
                                     }
                                 }).collect();
-                                let _ = protocol::write_message(&mut send, &ServerMessage::NodeList { nodes }).await;
+                                let _ = framing::write_msg(&mut send, &ServerMessage::NodeList { nodes }).await;
                             }
                             _ => {
                                 debug!(id, "Ignoring message in node session");
@@ -301,7 +303,7 @@ async fn run_node_session(
             push_msg = push_rx.recv() => {
                 match push_msg {
                     Some(msg) => {
-                        if protocol::write_message(&mut send, &msg).await.is_err() {
+                        if framing::write_msg(&mut send, &msg).await.is_err() {
                             break;
                         }
                     }
@@ -313,7 +315,7 @@ async fn run_node_session(
                     warn!(id, cluster_id, "Node timed out");
                     break;
                 }
-                if protocol::write_message(&mut send, &ServerMessage::Pong).await.is_err() {
+                if framing::write_msg(&mut send, &ServerMessage::Pong).await.is_err() {
                     break;
                 }
             }
@@ -690,9 +692,9 @@ async fn handle_list_nodes(state: &QuicState, conn: &quinn::Connection) -> Serve
         }
     };
 
-    let nodes: Vec<protocol::NodeInfo> = all_nodes
+    let nodes: Vec<mlsh_protocol::types::NodeInfo> = all_nodes
         .into_iter()
-        .map(|n| protocol::NodeInfo {
+        .map(|n| mlsh_protocol::types::NodeInfo {
             node_id: n.node_id.clone(),
             overlay_ip: n.overlay_ip.to_string(),
             online: online.contains(&n.node_id),

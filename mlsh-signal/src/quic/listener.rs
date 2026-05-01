@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use super::alpn;
+use mlsh_protocol::alpn;
+
 use crate::sessions::SessionStore;
 
 /// Shared state for the QUIC server.
