@@ -100,12 +100,11 @@ async fn run_subscribe(
     Ok(())
 }
 
+/// Storage key used in the `nodes.cluster_id` column. Always the UUID —
+/// REST routes look rows up by `state.cluster.cluster_id` so the CBOR
+/// insert path must agree.
 fn cluster_key(auth: &ControlAuthHeader) -> &str {
-    if !auth.cluster_name.is_empty() {
-        &auth.cluster_name
-    } else {
-        &auth.cluster_id
-    }
+    &auth.cluster_id
 }
 
 async fn dispatch(
