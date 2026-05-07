@@ -119,6 +119,11 @@ pub enum ServerMessage {
         overlay_ip: String,
         overlay_subnet: String,
         peers: Vec<PeerInfo>,
+        /// Public DNS zone served by this signal (e.g. `"mlsh.io"`,
+        /// `"dev.mlsh.io"`). Clients build `<cluster>.<zone>` URLs from
+        /// this. `default` for rolling upgrades against an older signal.
+        #[serde(default)]
+        zone: String,
     },
     AdoptOk {
         cluster_id: String,
@@ -126,6 +131,8 @@ pub enum ServerMessage {
         overlay_ip: String,
         overlay_subnet: String,
         peers: Vec<PeerInfo>,
+        #[serde(default)]
+        zone: String,
     },
 
     /// Pushed to all connected peers when a new node joins.

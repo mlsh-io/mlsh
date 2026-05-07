@@ -211,6 +211,7 @@ async fn run_node_session(
         overlay_ip: overlay_ip.to_string(),
         overlay_subnet: state.overlay_subnet.cidr.clone(),
         peers,
+        zone: state.config.zone.clone(),
     };
     framing::write_msg(&mut send, &reply).await?;
     info!(id, cluster_id, node_id = %node_id, %overlay_ip, "Node session authenticated");
@@ -400,6 +401,7 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
         overlay_ip: overlay_ip.to_string(),
         overlay_subnet: state.overlay_subnet.cidr.clone(),
         peers,
+        zone: state.config.zone.clone(),
     }
 }
 
@@ -475,10 +477,9 @@ fn is_dns_label(s: &str) -> bool {
 
 /// Validate a domain being exposed.
 ///
-/// Each cluster has its own subdomain `<cluster>.<zone>` and services live at
-/// `<label>.<cluster>.<zone>`. This gives natural multi-tenant isolation and
-/// scopes authorization to the caller's cluster. Custom-domain (CNAME) support
-/// is not handled here.
+/// Two valid shapes:
+///   - `<cluster>.<zone>` exactly — reserved for the cluster's admin UI.
+///   - `<label>.<cluster>.<zone>` — services hosted in the cluster.
 fn validate_ingress_domain(
     cfg_zone: &str,
     cluster_name: &str,
@@ -497,9 +498,14 @@ fn validate_ingress_domain(
         );
     }
 
+    // Bare cluster domain → admin UI.
+    if d == format!("{}.{}", cluster, zone) {
+        return Ok(());
+    }
+
     let suffix = format!(".{}.{}", cluster, zone);
     if !d.ends_with(&suffix) {
-        return Err("Domain must be under <label>.<cluster>.<zone>");
+        return Err("Domain must be <cluster>.<zone> or <label>.<cluster>.<zone>");
     }
     let label = &d[..d.len() - suffix.len()];
     if label.is_empty() {
@@ -845,9 +851,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_apex() {
+    fn rejects_apex_but_accepts_bare_cluster() {
         assert!(validate_ingress_domain("mlsh.io", "homelab", "mlsh.io").is_err());
-        assert!(validate_ingress_domain("mlsh.io", "homelab", "homelab.mlsh.io").is_err());
+        // Bare <cluster>.<zone> is the admin-UI domain.
+        assert!(validate_ingress_domain("mlsh.io", "homelab", "homelab.mlsh.io").is_ok());
     }
 
     #[test]
