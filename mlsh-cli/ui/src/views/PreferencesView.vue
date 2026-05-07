@@ -70,9 +70,7 @@ async function toggleExpose(next: boolean) {
         <div class="row-label">Expose admin UI</div>
         <div class="row-hint">
           <template v-if="exposeDomain">
-            Make this control plane reachable on the public Internet at
-            <code>{{ exposeDomain }}</code>. A Let's Encrypt certificate will be
-            issued automatically.
+            Make this control plane reachable on the public Internet at <code>{{ exposeDomain }}</code>. A Let's Encrypt certificate will be issued automatically.
           </template>
           <template v-else>
             The cluster zone is not yet known. Reconnect once to signal so the
@@ -145,7 +143,7 @@ async function toggleExpose(next: boolean) {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 1px 6px;
+  padding: 0 1px;
   color: var(--gold);
 }
 .row-error {

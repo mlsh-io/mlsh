@@ -98,21 +98,40 @@ async fn resume_expose(state: &auth::AuthState) {
     let Some(manager) = crate::tund::manager_handle::get() else {
         return;
     };
-    let domain = format!("{}.{}", state.cluster.name, zone);
+    let cluster = state.cluster.name.clone();
+    let domain = format!("{}.{}", cluster, zone);
     let target = "https://127.0.0.1:8443".to_string();
-    let mgr = manager.lock().await;
-    if let Err(e) = mgr.expose(&state.cluster.name, &domain, &target).await {
-        tracing::warn!(error = %e, %domain, "resume expose failed");
-        return;
-    }
-    drop(mgr);
+
+    // Ingress + ACME are local — wire them now. The signal-side declare can
+    // race the daemon's signal session at boot; retry until it succeeds.
     crate::tund::ingress::add(&domain, &target);
     crate::tund::acme::spawn_issuance(
         manager.clone(),
-        state.cluster.name.clone(),
+        cluster.clone(),
         domain.clone(),
         None,
         crate::tund::acme::Directory::Production,
     );
-    tracing::info!(%domain, "resumed expose for control UI");
+
+    tokio::spawn(async move {
+        let mut delay = std::time::Duration::from_millis(500);
+        let max = std::time::Duration::from_secs(10);
+        loop {
+            let res = {
+                let mgr = manager.lock().await;
+                mgr.expose(&cluster, &domain, &target).await
+            };
+            match res {
+                Ok(_) => {
+                    tracing::info!(%domain, "resumed expose for control UI");
+                    return;
+                }
+                Err(e) => {
+                    tracing::debug!(error = %e, %domain, "resume expose retry");
+                    tokio::time::sleep(delay).await;
+                    delay = (delay * 2).min(max);
+                }
+            }
+        }
+    });
 }

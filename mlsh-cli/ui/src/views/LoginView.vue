@@ -24,6 +24,16 @@ const device = ref<{ user_code: string; verification_uri: string; ticket: string
 const polling = ref(false)
 let pollTimer: number | null = null
 
+function verificationUrlWithCode(d: { user_code: string; verification_uri: string }): string {
+  try {
+    const u = new URL(d.verification_uri)
+    u.searchParams.set('user_code', d.user_code)
+    return u.toString()
+  } catch {
+    return d.verification_uri
+  }
+}
+
 onMounted(async () => {
   try {
     mode.value = (await api.bootstrapStatus()).mode
@@ -141,14 +151,19 @@ function cancelDevice() {
       <!-- Managed mode: device flow against mlsh.io -->
       <div v-if="mode === 'managed'" class="form">
         <div v-if="device" class="device-card">
-          <p>1. Open this URL on any device:</p>
-          <p>
-            <a :href="device.verification_uri" target="_blank" rel="noopener">
-              {{ device.verification_uri }}
-            </a>
-          </p>
-          <p>2. Enter this code:</p>
+          <p>Confirm this code on mlsh.io:</p>
           <pre class="user-code">{{ device.user_code }}</pre>
+          <a
+            class="cta"
+            :href="verificationUrlWithCode(device)"
+            target="_blank"
+            rel="noopener"
+          >
+            Continue on mlsh.io →
+          </a>
+          <p class="hint">
+            Or open <a :href="device.verification_uri" target="_blank" rel="noopener">{{ device.verification_uri }}</a> and enter the code manually.
+          </p>
           <p class="hint">Waiting for authorization{{ polling ? '…' : '' }}</p>
           <Btn variant="ghost" @click="cancelDevice">Cancel</Btn>
         </div>
@@ -268,4 +283,16 @@ input:focus { outline: none; border-color: var(--gold); }
 }
 .hint { color: var(--text-dim); font-size: 13px; }
 a { color: var(--gold); }
+.cta {
+  display: inline-block;
+  text-align: center;
+  background: var(--gold);
+  color: var(--bg);
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  font-weight: 600;
+  text-decoration: none;
+  margin-top: var(--space-2);
+}
+.cta:hover { filter: brightness(1.05); }
 </style>

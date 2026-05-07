@@ -116,12 +116,10 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
 
     println!("{}", "Authenticating with mlsh.io...".cyan());
     let device = cloud.request_device_code()?;
+    let prefilled = verification_url_with_code(&device.verification_uri, &device.user_code);
     println!();
-    println!(
-        "  Open {} and enter code: {}",
-        device.verification_uri,
-        device.user_code.bold()
-    );
+    println!("  Open: {}", prefilled.bold());
+    println!("  Code: {}", device.user_code.bold());
     println!();
     println!("{}", "Waiting for authorization...".dimmed());
 
@@ -142,6 +140,20 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
         true,
     )
     .await
+}
+
+/// Append `?user_code=<code>` to the verification URI so the user lands on
+/// the cloud page with the code prefilled (RFC 8628 verification_uri_complete).
+fn verification_url_with_code(uri: &str, user_code: &str) -> String {
+    let sep = if uri.contains('?') { '&' } else { '?' };
+    let encoded: String = user_code
+        .chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
+            _ => format!("%{:02X}", c as u8),
+        })
+        .collect();
+    format!("{}{}user_code={}", uri, sep, encoded)
 }
 
 /// Prompt for the first admin's email + password. Returns `None` if the
@@ -216,5 +228,21 @@ mod tests {
     fn parse_token_empty_parts() {
         assert!(parse_setup_token("@@fingerprint").is_err());
         assert!(parse_setup_token("code@@fp").is_err());
+    }
+
+    #[test]
+    fn verification_url_appends_user_code() {
+        assert_eq!(
+            verification_url_with_code("https://console.mlsh.io/device", "ABCD-1234"),
+            "https://console.mlsh.io/device?user_code=ABCD-1234"
+        );
+    }
+
+    #[test]
+    fn verification_url_uses_amp_when_query_present() {
+        assert_eq!(
+            verification_url_with_code("https://console.mlsh.io/device?ref=cli", "WXYZ-9999"),
+            "https://console.mlsh.io/device?ref=cli&user_code=WXYZ-9999"
+        );
     }
 }
