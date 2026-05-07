@@ -22,10 +22,16 @@ use super::store::User;
 use super::AuthState;
 use crate::control::nodes::{self, NodeRow};
 
-/// Strict human-only extractor — rejects with 403 when the request was
-/// authenticated via mTLS instead of a session cookie. Endpoints whose
-/// semantics make no sense for a machine (TOTP enrollment, WebAuthn
-/// ceremonies, password change) use this directly instead of `Caller`.
+/// Strict human-only extractor — requires a valid session cookie. The
+/// presence of a client cert is *ignored*: the cookie is the source of
+/// truth for human identity. This matters for the bundled UI accessed
+/// through the local `mlsh ui` proxy, which always presents a node cert
+/// for the upstream mTLS leg even when the operator is browsing as a
+/// human (the cookie is what authenticates the human).
+///
+/// Endpoints whose semantics make no sense for a machine (TOTP
+/// enrollment, WebAuthn ceremonies, password change) use this instead
+/// of `Caller`.
 pub struct HumanCaller(pub User);
 
 impl FromRequestParts<AuthState> for HumanCaller {
@@ -35,12 +41,6 @@ impl FromRequestParts<AuthState> for HumanCaller {
         parts: &mut Parts,
         state: &AuthState,
     ) -> Result<Self, Self::Rejection> {
-        // Reject when the connection presented a recognized client cert —
-        // even if a session cookie is also valid. Machines must not invoke
-        // human-only flows.
-        if let Some(_caller) = resolve_machine(parts, state).await? {
-            return Err((StatusCode::FORBIDDEN, "human caller required").into_response());
-        }
         match <CurrentUser as FromRequestParts<AuthState>>::from_request_parts(parts, state).await
         {
             Ok(CurrentUser(user)) => Ok(HumanCaller(user)),

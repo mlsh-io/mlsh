@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import Btn from '@/components/Btn.vue'
 import { api } from '@/api/client'
+import type { ClusterMode } from '@/api/types'
 
 const router = useRouter()
 const route = useRoute()
 
+const mode = ref<ClusterMode | null>(null)
+
+// --- Self-hosted flow (email + password [+ TOTP]) ---
 const email = ref('')
 const password = ref('')
 const totpCode = ref('')
@@ -14,6 +18,28 @@ const totpRequired = ref(false)
 const submitting = ref(false)
 const error = ref<string | null>(null)
 const totpInput = ref<HTMLInputElement | null>(null)
+
+// --- Managed flow (mlsh.io device code) ---
+const device = ref<{ user_code: string; verification_uri: string; ticket: string } | null>(null)
+const polling = ref(false)
+let pollTimer: number | null = null
+
+onMounted(async () => {
+  try {
+    mode.value = (await api.bootstrapStatus()).mode
+  } catch {
+    /* fall back to the password form on failure */
+  }
+})
+
+onUnmounted(() => {
+  if (pollTimer !== null) clearTimeout(pollTimer)
+})
+
+function nextPath(): string {
+  const next = typeof route.query.next === 'string' ? route.query.next : '/nodes'
+  return next.startsWith('/') ? next : '/nodes'
+}
 
 async function submit() {
   error.value = null
@@ -32,8 +58,7 @@ async function submit() {
       password.value,
       totpRequired.value ? totpCode.value.trim() : undefined,
     )
-    const next = typeof route.query.next === 'string' ? route.query.next : '/nodes'
-    router.replace(next.startsWith('/') ? next : '/nodes')
+    router.replace(nextPath())
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('totp_required')) {
@@ -55,15 +80,84 @@ async function submit() {
     submitting.value = false
   }
 }
+
+async function loginWithCloud() {
+  error.value = null
+  try {
+    const resp = await api.deviceStart()
+    device.value = {
+      user_code: resp.user_code,
+      verification_uri: resp.verification_uri,
+      ticket: resp.ticket,
+    }
+    polling.value = true
+    schedulePoll(resp.interval * 1000)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function schedulePoll(delayMs: number) {
+  pollTimer = window.setTimeout(pollOnce, delayMs)
+}
+
+async function pollOnce() {
+  if (!device.value) return
+  try {
+    const status = await api.devicePoll(device.value.ticket)
+    if (status === 'authorized') {
+      polling.value = false
+      router.replace(nextPath())
+      return
+    }
+    if (status === 'gone') {
+      polling.value = false
+      device.value = null
+      error.value = 'Login window expired or failed. Try again.'
+      return
+    }
+    schedulePoll(2000)
+  } catch (e) {
+    polling.value = false
+    error.value = e instanceof Error ? e.message : String(e)
+  }
+}
+
+function cancelDevice() {
+  if (pollTimer !== null) clearTimeout(pollTimer)
+  device.value = null
+  polling.value = false
+}
 </script>
 
 <template>
   <div class="page">
     <div class="card">
       <h1>Sign in</h1>
-      <p class="lede">mlsh-control · self-hosted</p>
+      <p class="lede">
+        mlsh-control · {{ mode === 'managed' ? 'managed' : 'self-hosted' }}
+      </p>
 
-      <form @submit.prevent="submit" class="form">
+      <!-- Managed mode: device flow against mlsh.io -->
+      <div v-if="mode === 'managed'" class="form">
+        <div v-if="device" class="device-card">
+          <p>1. Open this URL on any device:</p>
+          <p>
+            <a :href="device.verification_uri" target="_blank" rel="noopener">
+              {{ device.verification_uri }}
+            </a>
+          </p>
+          <p>2. Enter this code:</p>
+          <pre class="user-code">{{ device.user_code }}</pre>
+          <p class="hint">Waiting for authorization{{ polling ? '…' : '' }}</p>
+          <Btn variant="ghost" @click="cancelDevice">Cancel</Btn>
+        </div>
+        <Btn v-else variant="primary" @click="loginWithCloud">Login with mlsh.io</Btn>
+        <p v-if="error" class="error">{{ error }}</p>
+      </div>
+
+      <!-- Self-hosted mode: email + password [+ TOTP step-up] -->
+      <form v-else @submit.prevent="submit" class="form">
         <label>
           <span>Email</span>
           <input
@@ -154,4 +248,24 @@ input {
 }
 input:focus { outline: none; border-color: var(--gold); }
 .error { color: var(--red); font-size: 13px; margin: 0; }
+
+.device-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.user-code {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  letter-spacing: 0.2em;
+  background: var(--bg);
+  border: 1px solid var(--gold);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  text-align: center;
+  color: var(--gold);
+  margin: 0;
+}
+.hint { color: var(--text-dim); font-size: 13px; }
+a { color: var(--gold); }
 </style>

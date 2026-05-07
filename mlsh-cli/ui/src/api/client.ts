@@ -15,12 +15,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { accept: 'application/json', ...(init?.headers ?? {}) },
   })
   if (!res.ok) {
-    let detail = ''
-    try {
-      const body = await res.json()
-      detail = body.error ?? JSON.stringify(body)
-    } catch {
-      detail = await res.text()
+    // Read the body once as text, then try to parse it as JSON. Calling
+    // both res.json() and res.text() on the same Response throws
+    // "Body has already been consumed" on the second call.
+    const raw = await res.text()
+    let detail = raw
+    if (raw) {
+      try {
+        const body = JSON.parse(raw)
+        detail = body.error ?? body.message ?? raw
+      } catch {
+        // not JSON — keep the raw text
+      }
     }
     throw new Error(`${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`)
   }

@@ -158,10 +158,16 @@ async fn resolve(
     // Reserved label `control.<cluster>` → IP of the cluster's control
     // node. The UUID is pushed into `DisplayNameMap` by the mlsh-control
     // session (via the `is_control_node` flag in `ControlNodeInfo`).
+    //
+    // When the local node *is* the control node, return loopback rather
+    // than its overlay IP: macOS' utun device doesn't loop packets back
+    // to itself, so a TCP connect to our own overlay IP would just time
+    // out. Loopback bypasses the TUN entirely (the control listener
+    // binds on 0.0.0.0:8443 so it accepts both).
     if label == "control" {
         if let Some(uuid) = display_names.control_uuid().await {
             if uuid == my_node_id {
-                return Some(my_ip);
+                return Some(Ipv4Addr::new(127, 0, 0, 1));
             }
             if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
                 return p.overlay_ip.parse().ok();
@@ -559,7 +565,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_control_label_when_self_is_control() {
+    async fn resolve_control_label_when_self_is_control_returns_loopback() {
+        // When the local node is the control node we deliberately return
+        // 127.0.0.1 instead of `my_ip`: macOS doesn't loop packets sent
+        // to its own utun overlay IP, so TCP would time out. Loopback
+        // sidesteps the TUN entirely.
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -579,7 +589,7 @@ mod tests {
             &table,
         )
         .await;
-        assert_eq!(ip, Some(my_ip));
+        assert_eq!(ip, Some(Ipv4Addr::new(127, 0, 0, 1)));
     }
 
     #[tokio::test]
