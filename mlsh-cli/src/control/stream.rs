@@ -35,6 +35,12 @@ pub fn default_socket_path() -> PathBuf {
 pub struct StreamState {
     pub pool: SqlitePool,
     pub events: EventHub,
+    /// UUID of the node that hosts this control plane — i.e. the node
+    /// running this very mlshtund process. Used to flag the matching row
+    /// in `ListNodes` responses so daemons resolving `control.<cluster>`
+    /// can find the right IP. ADR-030 §2 keeps this single-valued
+    /// (one control node per cluster in v1).
+    pub control_node_uuid: String,
 }
 
 pub async fn serve(socket_path: &Path, state: StreamState) -> Result<()> {
@@ -144,7 +150,10 @@ async fn dispatch(
 
         ControlRequest::ListNodes => match nodes::list(pool, cluster_key(auth)).await {
             Ok(rows) => ControlResponse::Nodes {
-                nodes: rows.into_iter().map(node_row_to_info).collect(),
+                nodes: rows
+                    .into_iter()
+                    .map(|r| node_row_to_info(r, &state.control_node_uuid))
+                    .collect(),
             },
             Err(e) => ControlResponse::error("internal", &format!("list failed: {e:#}")),
         },
@@ -156,7 +165,8 @@ async fn dispatch(
     }
 }
 
-fn node_row_to_info(r: nodes::NodeRow) -> ControlNodeInfo {
+fn node_row_to_info(r: nodes::NodeRow, control_node_uuid: &str) -> ControlNodeInfo {
+    let is_control_node = r.node_uuid == control_node_uuid;
     ControlNodeInfo {
         node_uuid: r.node_uuid,
         fingerprint: r.fingerprint,
@@ -164,5 +174,6 @@ fn node_row_to_info(r: nodes::NodeRow) -> ControlNodeInfo {
         role: r.role,
         status: r.status,
         last_seen: r.last_seen,
+        is_control_node,
     }
 }

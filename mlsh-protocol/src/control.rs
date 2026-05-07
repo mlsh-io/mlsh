@@ -86,6 +86,12 @@ pub struct ControlNodeInfo {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+    /// `true` for the row corresponding to the cluster's control node — the
+    /// peer that hosts the REST admin surface (one per cluster, ADR-030 §2).
+    /// Used by the daemon's overlay DNS to resolve `control.<cluster>` to
+    /// the right IP without baking the role into signal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_control_node: bool,
 }
 
 impl ControlResponse {

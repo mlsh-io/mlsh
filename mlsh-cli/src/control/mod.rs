@@ -64,6 +64,7 @@ pub async fn serve(config: Arc<ClusterConfig>) -> anyhow::Result<()> {
     let stream_state = stream::StreamState {
         pool: state.store.pool().clone(),
         events: event_hub,
+        control_node_uuid: config.node_uuid.clone(),
     };
     let socket_path = stream::default_socket_path();
     tokio::spawn(async move {

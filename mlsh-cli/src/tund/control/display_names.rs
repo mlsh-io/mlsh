@@ -20,6 +20,11 @@ struct Inner {
     /// sanitised label (lowercase, RFC 1035) → node_uuid. Rebuilt from
     /// `by_uuid` on every mutation so lookups stay O(1).
     by_label: HashMap<String, String>,
+    /// UUID of the cluster's control node (one per cluster, ADR-030 §2).
+    /// Set by `seed()` from the `is_control_node` flag in the
+    /// `ControlNodeInfo` snapshot. Used by overlay DNS to resolve
+    /// `control.<cluster>`.
+    control_uuid: Option<String>,
 }
 
 /// Clone-cheap handle to the shared display-name map.
@@ -39,12 +44,31 @@ impl DisplayNameMap {
         let mut inner = self.inner.write().await;
         inner.by_uuid.clear();
         inner.by_label.clear();
+        inner.control_uuid = None;
         for n in nodes {
+            if n.is_control_node {
+                inner.control_uuid = Some(n.node_uuid.clone());
+            }
             if n.display_name.is_empty() {
                 continue;
             }
             insert(&mut inner, &n.node_uuid, &n.display_name);
         }
+    }
+
+    /// Pre-seed the control node UUID before the first `ListNodes` arrives.
+    /// Called by mlshtund when it boots with the `control` role itself —
+    /// it knows its own UUID without waiting for the network round-trip,
+    /// so `control.<cluster>` resolves immediately.
+    pub async fn set_local_control_uuid(&self, uuid: String) {
+        let mut inner = self.inner.write().await;
+        inner.control_uuid = Some(uuid);
+    }
+
+    /// UUID of the cluster's control node, when known. Returned by the
+    /// overlay DNS resolver to map `control.<cluster>` to an IP.
+    pub async fn control_uuid(&self) -> Option<String> {
+        self.inner.read().await.control_uuid.clone()
     }
 
     /// Apply a single push event from the subscribe stream. Unrelated events
@@ -127,6 +151,14 @@ mod tests {
             role: "node".into(),
             status: "active".into(),
             last_seen: None,
+            is_control_node: false,
+        }
+    }
+
+    fn control_node(uuid: &str, name: &str) -> ControlNodeInfo {
+        ControlNodeInfo {
+            is_control_node: true,
+            ..node(uuid, name)
         }
     }
 
@@ -197,6 +229,32 @@ mod tests {
         map.seed(&[node("u2", "second")]).await;
         assert!(map.lookup_uuid("first").await.is_none());
         assert_eq!(map.lookup_uuid("second").await.as_deref(), Some("u2"));
+    }
+
+    #[tokio::test]
+    async fn seed_picks_up_control_uuid() {
+        let map = DisplayNameMap::new();
+        map.seed(&[node("u1", "macbook"), control_node("u2", "homelab")])
+            .await;
+        assert_eq!(map.control_uuid().await.as_deref(), Some("u2"));
+    }
+
+    #[tokio::test]
+    async fn reseed_replaces_control_uuid() {
+        let map = DisplayNameMap::new();
+        map.seed(&[control_node("u1", "old-control")]).await;
+        assert_eq!(map.control_uuid().await.as_deref(), Some("u1"));
+        // Reseed without u1 holding the role — control_uuid must clear.
+        map.seed(&[node("u2", "successor")]).await;
+        assert!(map.control_uuid().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_seed_sets_control_uuid_eagerly() {
+        let map = DisplayNameMap::new();
+        // Before any ListNodes arrives, the local node knows it's control.
+        map.set_local_control_uuid("u1".into()).await;
+        assert_eq!(map.control_uuid().await.as_deref(), Some("u1"));
     }
 
     #[tokio::test]

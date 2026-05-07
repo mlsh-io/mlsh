@@ -155,6 +155,21 @@ async fn resolve(
         return p.overlay_ip.parse().ok();
     }
 
+    // Reserved label `control.<cluster>` → IP of the cluster's control
+    // node. The UUID is pushed into `DisplayNameMap` by the mlsh-control
+    // session (via the `is_control_node` flag in `ControlNodeInfo`).
+    if label == "control" {
+        if let Some(uuid) = display_names.control_uuid().await {
+            if uuid == my_node_id {
+                return Some(my_ip);
+            }
+            if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
+                return p.overlay_ip.parse().ok();
+            }
+        }
+        return None;
+    }
+
     // Display-name lookup: control owns the name → uuid mapping; the
     // peer_table (or our own identity) owns uuid → IP.
     if let Some(uuid) = display_names.lookup_uuid(label).await {
@@ -288,6 +303,7 @@ enum DnsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mlsh_protocol::control::ControlNodeInfo;
     use mlsh_protocol::types::PeerInfo;
 
     fn make_a_query(name: &str) -> Vec<u8> {
@@ -457,6 +473,7 @@ mod tests {
             role: "node".into(),
             status: "active".into(),
             last_seen: None,
+            is_control_node: false,
         }])
         .await;
         let ip = resolve(
@@ -492,6 +509,7 @@ mod tests {
             role: "admin".into(),
             status: "active".into(),
             last_seen: None,
+            is_control_node: false,
         }])
         .await;
 
@@ -538,6 +556,92 @@ mod tests {
         )
         .await;
         assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 2)));
+    }
+
+    #[tokio::test]
+    async fn resolve_control_label_when_self_is_control() {
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        let my_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let map = DisplayNameMap::new();
+        map.set_local_control_uuid("nas".into()).await;
+
+        let ip = resolve(
+            "control.homelab",
+            &config,
+            my_ip,
+            "nas",
+            &map,
+            &table,
+        )
+        .await;
+        assert_eq!(ip, Some(my_ip));
+    }
+
+    #[tokio::test]
+    async fn resolve_control_label_when_remote_is_control() {
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        table
+            .update_peers(std::sync::Arc::new(vec![PeerInfo {
+                node_id: "control-node-uuid".into(),
+                fingerprint: "fp".into(),
+                overlay_ip: "100.64.0.7".into(),
+                candidates: vec![],
+                public_key: String::new(),
+                admission_cert: String::new(),
+            }]))
+            .await;
+        let map = DisplayNameMap::new();
+        map.seed(&[ControlNodeInfo {
+            node_uuid: "control-node-uuid".into(),
+            fingerprint: "fp".into(),
+            display_name: "the-control-node".into(),
+            role: "admin".into(),
+            status: "active".into(),
+            last_seen: None,
+            is_control_node: true,
+        }])
+        .await;
+
+        let ip = resolve(
+            "control.homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &map,
+            &table,
+        )
+        .await;
+        assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 7)));
+    }
+
+    #[tokio::test]
+    async fn resolve_control_label_unknown_returns_none() {
+        let config = DnsConfig {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            zone: "homelab".into(),
+            ttl: 60,
+        };
+        let table = PeerTable::new();
+        let ip = resolve(
+            "control.homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &DisplayNameMap::new(),
+            &table,
+        )
+        .await;
+        assert!(ip.is_none());
     }
 
     #[tokio::test]

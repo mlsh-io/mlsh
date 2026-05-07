@@ -100,6 +100,20 @@ impl ManagedTunnel {
         let control_socket = control_plane_socket_path();
         let control_session =
             ControlSession::new(creds, config.display_name.clone(), control_socket)?;
+
+        // Self-host shortcut: when this node carries the `control` role, we
+        // already know who the cluster's control node is (us). Seed the
+        // display-name map eagerly so `control.<cluster>` resolves at the
+        // first DNS query, without waiting for the network round-trip
+        // through signal.
+        if config.roles.iter().any(|r| r == "control") {
+            let display_names = control_session.display_names();
+            let uuid = config.node_uuid.clone();
+            tokio::spawn(async move {
+                display_names.set_local_control_uuid(uuid).await;
+            });
+        }
+
         let warmup = control_session.clone();
         tokio::spawn(async move {
             if let Err(e) = warmup.ensure_connected().await {
