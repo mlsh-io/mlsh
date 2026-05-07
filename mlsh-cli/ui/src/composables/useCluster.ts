@@ -1,25 +1,25 @@
 import { ref } from 'vue'
 import { api } from '@/api/client'
-import type { SessionUser } from '@/api/types'
+import type { Cluster } from '@/api/types'
 
-const session = ref<SessionUser | null>(null)
+const cluster = ref<Cluster | null>(null)
 const error = ref<string | null>(null)
 let inflight: Promise<void> | null = null
 
 async function load(): Promise<void> {
   try {
-    session.value = await api.getCurrentUser()
+    cluster.value = await api.getCluster()
     error.value = null
   } catch (e) {
     error.value = (e as Error).message
   }
 }
 
-export function useSession() {
-  if (!session.value && !inflight) {
+export function useCluster() {
+  if (!cluster.value && !inflight) {
     inflight = load().finally(() => {
       inflight = null
     })
   }
-  return { session, error, reload: load }
+  return { cluster, error, reload: load }
 }

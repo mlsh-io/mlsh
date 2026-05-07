@@ -2,6 +2,7 @@
 import { computed, defineComponent, h } from 'vue'
 import { RouterLink } from 'vue-router'
 import BrandMark from './BrandMark.vue'
+import { useCluster } from '@/composables/useCluster'
 import { useSession } from '@/composables/useSession'
 import { useNodes } from '@/composables/useNodes'
 import { api } from '@/api/client'
@@ -43,6 +44,7 @@ interface NavItem {
   count?: number
 }
 
+const { cluster } = useCluster()
 const { session } = useSession()
 const { nodes } = useNodes()
 
@@ -70,7 +72,7 @@ const settings: NavItem[] = [
     <button class="cluster-pill" type="button">
       <span class="cluster-label">Cluster</span>
       <span class="cluster-name">
-        <span>{{ session?.cluster ?? '—' }}</span>
+        <span>{{ cluster?.name ?? '—' }}</span>
         <span class="chev">⌄</span>
       </span>
     </button>

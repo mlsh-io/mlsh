@@ -1,4 +1,17 @@
 //! Persistent QUIC connection from mlshtund to mlsh-signal on ALPN `mlsh-control`.
+//!
+//! ADR-035 Phase G — bootstrap-and-runtime-cache channel, not admin API.
+//! All steady-state admin operations (rename, promote, revoke, list…) live
+//! on the REST API at `https://control.<cluster>:8443` reached over the
+//! overlay (Phase E). What still goes through this CBOR-over-QUIC channel:
+//!   - `AdoptConfirm` once per session (registers the local node in the
+//!     control plane's `nodes` table — required before this daemon can
+//!     get an overlay address).
+//!   - `ListNodes` as the initial seed of the local peer-name cache, then
+//!     `Subscribe` to keep it in sync via `ControlEvent`s.
+//!
+//! Signal relays the bi-streams to the cluster's control node; this
+//! daemon never touches the control node's SQLite directly.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

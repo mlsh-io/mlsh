@@ -1,0 +1,1307 @@
+{
+  "components": {
+    "schemas": {
+      "BootstrapRequest": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
+      "BootstrapStatus": {
+        "properties": {
+          "mode": {
+            "description": "`\"self-hosted\"` or `\"managed\"`, or `null` if the mode hasn't been set\nyet (control plane started before `mlsh setup` declared a mode).",
+            "nullable": true,
+            "type": "string"
+          },
+          "needed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "needed"
+        ],
+        "type": "object"
+      },
+      "ClusterResponse": {
+        "properties": {
+          "id": {
+            "description": "Stable cluster UUID (matches `cluster.id` in the cluster TOML).",
+            "type": "string"
+          },
+          "name": {
+            "description": "Human-readable cluster name (matches `cluster.name` in the cluster TOML).",
+            "type": "string"
+          },
+          "version": {
+            "description": "mlsh version of the control instance serving this cluster.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "CreateInviteRequest": {
+        "properties": {
+          "role": {
+            "description": "`\"node\"` (default) or `\"admin\"`.",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "description": "Lifetime in seconds. Capped at 30 days; 0 falls back to one hour.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "CreateUserRequest": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "must_change_password": {
+            "type": "boolean"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
+      "CredentialView": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "type": "object"
+      },
+      "CurrentUserResponse": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable user id (UUID).",
+            "type": "string"
+          },
+          "must_change_password": {
+            "description": "`true` when the user was provisioned with a temporary password and\nmust rotate it before any other action.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "must_change_password"
+        ],
+        "type": "object"
+      },
+      "DevicePollRequest": {
+        "properties": {
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "type": "object"
+      },
+      "DeviceStartResponse": {
+        "properties": {
+          "interval": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ticket": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket",
+          "user_code",
+          "verification_uri",
+          "interval"
+        ],
+        "type": "object"
+      },
+      "HealthStatusResponse": {
+        "properties": {
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service",
+          "version"
+        ],
+        "type": "object"
+      },
+      "InviteResponse": {
+        "properties": {
+          "cluster": {
+            "description": "Cluster name this invite admits the new node into.",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Number of seconds remaining before the token expires.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "role": {
+            "description": "Role the new node will receive (`\"node\"` or `\"admin\"`).",
+            "type": "string"
+          },
+          "token": {
+            "description": "Opaque invite token (CBOR + Ed25519 signature, base64-url encoded).",
+            "type": "string"
+          },
+          "url": {
+            "description": "Ready-to-paste URL for `mlsh adopt`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "url",
+          "cluster",
+          "role",
+          "expires_in"
+        ],
+        "type": "object"
+      },
+      "LoginRequest": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "totp_code": {
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "type": "object"
+      },
+      "NodeResponse": {
+        "properties": {
+          "created_at": {
+            "description": "RFC 3339 UTC.",
+            "type": "string"
+          },
+          "display_name": {
+            "description": "Mutable, human-readable name.",
+            "type": "string"
+          },
+          "fingerprint": {
+            "description": "Cert fingerprint (cluster-CA-signed).",
+            "type": "string"
+          },
+          "id": {
+            "description": "Stable node UUID.",
+            "type": "string"
+          },
+          "last_seen": {
+            "description": "RFC 3339 UTC, last activity stamp. `None` on a fresh registration.",
+            "nullable": true,
+            "type": "string"
+          },
+          "online": {
+            "description": "`true` when `status == \"active\"`.",
+            "type": "boolean"
+          },
+          "role": {
+            "description": "`\"node\"` or `\"admin\"` (and the implied `\"control\"` superset).",
+            "type": "string"
+          },
+          "status": {
+            "description": "`\"active\"` or `\"revoked\"`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name",
+          "role",
+          "status",
+          "online",
+          "fingerprint",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "SetNameRequest": {
+        "properties": {
+          "display_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display_name"
+        ],
+        "type": "object"
+      },
+      "SetRoleRequest": {
+        "properties": {
+          "role": {
+            "description": "`\"node\"` or `\"admin\"`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role"
+        ],
+        "type": "object"
+      },
+      "TotpEnrollment": {
+        "properties": {
+          "otpauth_uri": {
+            "type": "string"
+          },
+          "secret_base32": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "secret_base32",
+          "otpauth_uri"
+        ],
+        "type": "object"
+      },
+      "TotpVerifyRequest": {
+        "properties": {
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "UpdateUserRequest": {
+        "properties": {
+          "active": {
+            "description": "Whether the user is active (can sign in).",
+            "type": "boolean"
+          },
+          "password": {
+            "description": "New password. Omit to keep the current one.",
+            "nullable": true,
+            "type": "string"
+          }
+        },
+        "required": [
+          "active"
+        ],
+        "type": "object"
+      },
+      "UserResponse": {
+        "properties": {
+          "active": {
+            "type": "boolean"
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "must_change_password": {
+            "type": "boolean"
+          },
+          "source": {
+            "description": "`\"local\"` (password-authenticated) or `\"managed\"` (mlsh-cloud OAuth).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "source",
+          "active",
+          "must_change_password"
+        ],
+        "type": "object"
+      },
+      "UserView": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "must_change_password": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "must_change_password"
+        ],
+        "type": "object"
+      },
+      "WebauthnId": {
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "API for managing the MLSH overlay network.",
+    "license": {
+      "identifier": "MIT",
+      "name": "MIT"
+    },
+    "title": "MLSH Control API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/api/v1/cluster": {
+      "get": {
+        "operationId": "get_cluster",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClusterResponse"
+                }
+              }
+            },
+            "description": "Cluster metadata"
+          }
+        },
+        "summary": "Get cluster metadata.",
+        "tags": [
+          "Cluster"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "get_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatusResponse"
+                }
+              }
+            },
+            "description": "Health status"
+          }
+        },
+        "summary": "Get cluster status.",
+        "tags": [
+          "Cluster"
+        ]
+      }
+    },
+    "/api/v1/invites": {
+      "post": {
+        "operationId": "create_invite",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateInviteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteResponse"
+                }
+              }
+            },
+            "description": "Invite created"
+          },
+          "400": {
+            "description": "Invalid role or empty key"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "500": {
+            "description": "Sponsor key unreadable or signing failed"
+          }
+        },
+        "summary": "Create a new sponsor-signed invite. The token is stateless: the response\nis the *only* time the server sees it. Lose it and you must re-issue.",
+        "tags": [
+          "Invites"
+        ]
+      }
+    },
+    "/api/v1/nodes": {
+      "get": {
+        "operationId": "list_nodes",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/NodeResponse"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Nodes"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "List every node in the cluster.",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
+    "/api/v1/nodes/{node}": {
+      "delete": {
+        "operationId": "delete_node",
+        "parameters": [
+          {
+            "description": "Node UUID or display name",
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Node revoked"
+          },
+          "404": {
+            "description": "Node not found"
+          }
+        },
+        "summary": "Delete (= revoke) a node. Idempotent.",
+        "tags": [
+          "Nodes"
+        ]
+      },
+      "get": {
+        "operationId": "get_node",
+        "parameters": [
+          {
+            "description": "Node UUID or display name",
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeResponse"
+                }
+              }
+            },
+            "description": "Node"
+          },
+          "404": {
+            "description": "Node not found"
+          }
+        },
+        "summary": "Get a single node by id (or display name).",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
+    "/api/v1/nodes/{node}/name": {
+      "post": {
+        "operationId": "set_name",
+        "parameters": [
+          {
+            "description": "Node UUID or display name",
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetNameRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Name updated"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "404": {
+            "description": "Node not found"
+          }
+        },
+        "summary": "Set the node's display name.",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
+    "/api/v1/nodes/{node}/revoke": {
+      "post": {
+        "operationId": "revoke",
+        "parameters": [
+          {
+            "description": "Node UUID or display name",
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Node revoked"
+          },
+          "404": {
+            "description": "Node not found"
+          }
+        },
+        "summary": "Revoke a node. Idempotent — succeeds even if the node was already revoked.",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
+    "/api/v1/nodes/{node}/role": {
+      "post": {
+        "operationId": "set_role",
+        "parameters": [
+          {
+            "description": "Node UUID or display name",
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Role updated"
+          },
+          "400": {
+            "description": "Invalid role"
+          },
+          "404": {
+            "description": "Node not found"
+          }
+        },
+        "summary": "Set the node's role (`node` or `admin`).",
+        "tags": [
+          "Nodes"
+        ]
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "operationId": "list_users",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/UserResponse"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Users"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "List every user in the cluster.",
+        "tags": [
+          "Users"
+        ]
+      },
+      "post": {
+        "operationId": "create_user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "User created"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "409": {
+            "description": "Email already exists, or managed-mode cluster"
+          }
+        },
+        "summary": "Create a local user. Rejected in managed mode (managed clusters provision\nusers from mlsh-cloud OAuth).",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/v1/users/current": {
+      "get": {
+        "operationId": "get_current",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentUserResponse"
+                }
+              }
+            },
+            "description": "Current user"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "Get the currently authenticated user.",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/api/v1/users/{user}": {
+      "delete": {
+        "operationId": "delete_user",
+        "parameters": [
+          {
+            "description": "User id (UUID)",
+            "in": "path",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "User deleted"
+          },
+          "401": {
+            "description": "Not authenticated or TOTP step-up failed"
+          },
+          "403": {
+            "description": "Self-delete or last-user-delete refused"
+          },
+          "404": {
+            "description": "User not found"
+          }
+        },
+        "summary": "Delete a user. Refuses self-deletion and last-user deletion. Step-up\nrequired when the caller has verified TOTP.",
+        "tags": [
+          "Users"
+        ]
+      },
+      "get": {
+        "operationId": "get_user",
+        "parameters": [
+          {
+            "description": "User id (UUID)",
+            "in": "path",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            },
+            "description": "User"
+          },
+          "404": {
+            "description": "User not found"
+          }
+        },
+        "summary": "Get a user by id.",
+        "tags": [
+          "Users"
+        ]
+      },
+      "put": {
+        "operationId": "update_user",
+        "parameters": [
+          {
+            "description": "User id (UUID)",
+            "in": "path",
+            "name": "user",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "User updated"
+          },
+          "400": {
+            "description": "Invalid request"
+          },
+          "401": {
+            "description": "Not authenticated or TOTP step-up failed"
+          }
+        },
+        "summary": "Replace a user (active state and optionally password). Step-up required\nwhen the caller has verified TOTP.",
+        "tags": [
+          "Users"
+        ]
+      }
+    },
+    "/auth/bootstrap": {
+      "get": {
+        "operationId": "bootstrap_status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatus"
+                }
+              }
+            },
+            "description": "Bootstrap status"
+          }
+        },
+        "summary": "Drives the first-admin path on the UI side. `needed` is true while\n`users` is empty; `mode` tells the UI which screen to show (form for\nself-hosted, \"Login with mlsh.io\" for managed).",
+        "tags": [
+          "Bootstrap"
+        ]
+      },
+      "post": {
+        "operationId": "bootstrap_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BootstrapRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserView"
+                }
+              }
+            },
+            "description": "First admin created and logged in"
+          },
+          "400": {
+            "description": "Email and password required"
+          },
+          "409": {
+            "description": "Bootstrap already completed or managed mode"
+          }
+        },
+        "summary": "Create the first admin and immediately log them in. Returns 409 if the\nbootstrap window already closed (any user exists, or managed mode).",
+        "tags": [
+          "Bootstrap"
+        ]
+      }
+    },
+    "/auth/login": {
+      "post": {
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserView"
+                }
+              }
+            },
+            "description": "Logged in"
+          },
+          "401": {
+            "description": "Invalid credentials or TOTP step-up failed"
+          }
+        },
+        "summary": "Self-hosted password login. On success returns the user object and sets\na session cookie. When the user has TOTP enrolled and `totp_code` is\nmissing, returns 401 with `{ \"error\": \"totp_required\" }`.",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/login/device/poll": {
+      "post": {
+        "operationId": "device_poll",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DevicePollRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserView"
+                }
+              }
+            },
+            "description": "Authorized — session cookie set"
+          },
+          "401": {
+            "description": "Invalid cloud token"
+          },
+          "403": {
+            "description": "Account suspended"
+          },
+          "410": {
+            "description": "Ticket expired or device flow failed"
+          },
+          "425": {
+            "description": "User has not authorized yet"
+          },
+          "503": {
+            "description": "Managed-mode auth not configured"
+          }
+        },
+        "summary": "One-shot poll. Returns 200 with a session cookie when mlsh-cloud emits a\ntoken. Returns 425 (Too Early) while the user hasn't authorized yet.\nReturns 410 (Gone) on expiry / unknown ticket.",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/login/device/start": {
+      "post": {
+        "operationId": "device_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceStartResponse"
+                }
+              }
+            },
+            "description": "Device flow started"
+          },
+          "502": {
+            "description": "mlsh-cloud unreachable"
+          },
+          "503": {
+            "description": "Managed-mode auth not configured"
+          }
+        },
+        "summary": "Kick off a mlsh-cloud device-flow login. mlsh-control reaches out to\nmlsh-cloud, gets a `(device_code, user_code, verification_uri, interval)`,\nreturns everything except `device_code` to the UI (the device_code stays\nserver-side, keyed by an opaque ticket).",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "responses": {
+          "200": {
+            "description": "Logged out"
+          }
+        },
+        "summary": "Revoke the current session and clear the session cookie. Idempotent.",
+        "tags": [
+          "Auth"
+        ]
+      }
+    },
+    "/auth/totp": {
+      "delete": {
+        "operationId": "totp_delete",
+        "responses": {
+          "204": {
+            "description": "TOTP removed"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "Remove the caller's TOTP credential.",
+        "tags": [
+          "TOTP"
+        ]
+      }
+    },
+    "/auth/totp/enroll": {
+      "post": {
+        "operationId": "totp_enroll",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TotpEnrollment"
+                }
+              }
+            },
+            "description": "TOTP enrollment material"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "Generate (or replace) the caller's TOTP secret. Resets `verified=0`;\nthe caller must POST /auth/totp/verify to confirm.",
+        "tags": [
+          "TOTP"
+        ]
+      }
+    },
+    "/auth/totp/verify": {
+      "post": {
+        "operationId": "totp_verify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TotpVerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "TOTP verified"
+          },
+          "401": {
+            "description": "Invalid code"
+          }
+        },
+        "summary": "Confirm TOTP enrollment by submitting a current code.",
+        "tags": [
+          "TOTP"
+        ]
+      }
+    },
+    "/auth/webauthn/credentials": {
+      "get": {
+        "operationId": "webauthn_list",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CredentialView"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Credentials"
+          },
+          "401": {
+            "description": "Not authenticated"
+          }
+        },
+        "summary": "List the caller's WebAuthn credentials.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    },
+    "/auth/webauthn/credentials/{credential}": {
+      "delete": {
+        "operationId": "webauthn_delete",
+        "parameters": [
+          {
+            "description": "Credential id",
+            "in": "path",
+            "name": "credential",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Credential deleted"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "404": {
+            "description": "Credential not found"
+          }
+        },
+        "summary": "Delete a WebAuthn credential by id.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    },
+    "/auth/webauthn/login/finish": {
+      "post": {
+        "operationId": "webauthn_login_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Authentication succeeded"
+          },
+          "401": {
+            "description": "Authentication failed"
+          },
+          "503": {
+            "description": "WebAuthn not configured"
+          }
+        },
+        "summary": "Complete WebAuthn authentication with the browser's assertion response.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    },
+    "/auth/webauthn/login/start": {
+      "post": {
+        "operationId": "webauthn_login_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Authentication challenge"
+          },
+          "400": {
+            "description": "No credentials enrolled"
+          },
+          "503": {
+            "description": "WebAuthn not configured"
+          }
+        },
+        "summary": "Begin WebAuthn authentication. Returns the\n`PublicKeyCredentialRequestOptions` blob.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    },
+    "/auth/webauthn/register/finish": {
+      "post": {
+        "operationId": "webauthn_register_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebauthnId"
+                }
+              }
+            },
+            "description": "Credential registered"
+          },
+          "400": {
+            "description": "Registration failed"
+          },
+          "503": {
+            "description": "WebAuthn not configured"
+          }
+        },
+        "summary": "Complete WebAuthn registration with the browser's credential response.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    },
+    "/auth/webauthn/register/start": {
+      "post": {
+        "operationId": "webauthn_register_start",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Registration challenge"
+          },
+          "401": {
+            "description": "Not authenticated"
+          },
+          "503": {
+            "description": "WebAuthn not configured"
+          }
+        },
+        "summary": "Begin WebAuthn registration. The response is the WebAuthn-spec\n`PublicKeyCredentialCreationOptions` blob to feed into\n`navigator.credentials.create()` browser-side.",
+        "tags": [
+          "WebAuthn"
+        ]
+      }
+    }
+  }
+}

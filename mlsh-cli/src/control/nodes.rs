@@ -62,6 +62,42 @@ pub async fn list(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRow>> {
     Ok(rows)
 }
 
+pub async fn find(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    node_uuid: &str,
+) -> Result<Option<NodeRow>> {
+    let q =
+        format!("SELECT {SELECT_COLS} FROM nodes WHERE cluster_id = ? AND node_uuid = ? LIMIT 1");
+    let row = sqlx::query_as::<_, NodeRow>(&q)
+        .bind(cluster_id)
+        .bind(node_uuid)
+        .fetch_optional(pool)
+        .await
+        .context("nodes find")?;
+    Ok(row)
+}
+
+/// Look up an active node by its TLS certificate fingerprint. Used by the
+/// mTLS middleware to authenticate machine callers (ADR-035 Phase D).
+pub async fn find_by_fingerprint(
+    pool: &SqlitePool,
+    cluster_id: &str,
+    fingerprint: &str,
+) -> Result<Option<NodeRow>> {
+    let q = format!(
+        "SELECT {SELECT_COLS} FROM nodes
+         WHERE cluster_id = ? AND fingerprint = ? AND status = 'active' LIMIT 1"
+    );
+    let row = sqlx::query_as::<_, NodeRow>(&q)
+        .bind(cluster_id)
+        .bind(fingerprint)
+        .fetch_optional(pool)
+        .await
+        .context("nodes find_by_fingerprint")?;
+    Ok(row)
+}
+
 pub async fn get_display_name(
     pool: &SqlitePool,
     cluster_id: &str,

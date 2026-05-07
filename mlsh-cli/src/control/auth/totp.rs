@@ -184,6 +184,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([5u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         };
         (state, user.id)
     }

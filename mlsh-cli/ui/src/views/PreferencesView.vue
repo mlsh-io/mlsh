@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import ThemeToggle from '@/components/ThemeToggle.vue'
-import { useSession } from '@/composables/useSession'
+import { useCluster } from '@/composables/useCluster'
 
-const { session } = useSession()
+const { cluster } = useCluster()
 </script>
 
 <template>
   <div class="topbar">
     <div class="breadcrumb">
-      <span>{{ session?.cluster ?? '—' }}</span>
+      <span>{{ cluster?.name ?? '—' }}</span>
       <span class="sep">/</span>
       <span class="current">Preferences</span>
     </div>

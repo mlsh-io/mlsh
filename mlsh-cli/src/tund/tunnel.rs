@@ -59,9 +59,11 @@ pub struct ManagedTunnel {
     /// Watch exposing the currently-active signal QUIC connection. Used by
     /// the ACME client to publish HTTP-01 challenge responses via signal.
     signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
-    /// Forked `mlsh-control` child process, when this node holds the
-    /// `control` role (ADR-030 §1).
-    control_child: Option<tokio::process::Child>,
+    /// In-process tokio task hosting the control HTTP server, when this
+    /// node holds the `control` role (ADR-035 Phase 0). Cluster config kept
+    /// alongside so `start_control()` can re-spawn after a previous stop.
+    control_task: Option<JoinHandle<()>>,
+    control_config: Arc<ClusterConfig>,
     control_session: ControlSession,
 }
 
@@ -85,15 +87,13 @@ impl ManagedTunnel {
         let config = Arc::new(config);
         let cluster_name = config.name.clone();
         let cluster_id = config.cluster_id.clone();
+        let control_config_arc = config.clone();
 
-        // Spawn mlsh-control if this node holds the `control` role.
-        // The child runs as the current user with no extra privileges.
-        // Lifecycle is tied to this ManagedTunnel — killed on stop().
-        let control_child = if config.roles.iter().any(|r| r == "control") {
-            spawn_control_child(&cluster_name)
-        } else {
-            None
-        };
+        // Spawn the control plane in-process when this node holds the
+        // `control` role (ADR-035 Phase 0). Lifecycle tied to the tunnel —
+        // task aborted on stop(). Gated on the `control-plane` Cargo feature
+        // so slim builds (mlshtund without admin UI) don't link the router.
+        let control_task = control_role_active(&config).then(|| spawn_control_task(config.clone()));
 
         // Build the mlsh-control session and warm it up so AdoptConfirm fires.
         let creds = config.signal_credentials()?;
@@ -136,7 +136,8 @@ impl ManagedTunnel {
             overlay_ip: Some(overlay_ip),
             info_rx,
             signal_conn_rx: Some(signal_conn_rx),
-            control_child,
+            control_task,
+            control_config: control_config_arc,
             control_session,
         })
     }
@@ -148,9 +149,9 @@ impl ManagedTunnel {
             .and_then(|rx| rx.borrow().clone())
     }
 
-    /// Whether the control-plane child process is currently running.
+    /// Whether the in-process control HTTP server is currently running.
     pub fn has_control_child(&self) -> bool {
-        self.control_child.is_some()
+        self.control_task.is_some()
     }
 
     /// Clone of the persistent mlsh-control session handle.
@@ -158,22 +159,23 @@ impl ManagedTunnel {
         self.control_session.clone()
     }
 
-    /// Start the `mlsh-control` child process for this tunnel. No-op if
+    /// Start the in-process control HTTP server for this tunnel. No-op if
     /// already running.
     pub fn start_control(&mut self) {
-        if self.control_child.is_some() {
+        if self.control_task.is_some() {
             return;
         }
-        self.control_child = spawn_control_child(&self.cluster_name);
+        self.control_task = Some(spawn_control_task(self.control_config.clone()));
     }
 
-    /// Stop the `mlsh-control` child process for this tunnel. No-op if not
-    /// running. Awaits the kill so the caller can be sure the port is
-    /// released before returning.
+    /// Stop the in-process control HTTP server for this tunnel. No-op if
+    /// not running. Aborts the task — the listener socket is released
+    /// synchronously when the task is dropped.
     pub async fn stop_control(&mut self) {
-        if let Some(mut child) = self.control_child.take() {
+        if let Some(task) = self.control_task.take() {
             tracing::info!("Stopping mlsh-control for '{}'", self.cluster_name);
-            let _ = child.kill().await;
+            task.abort();
+            let _ = task.await;
         }
     }
 
@@ -192,9 +194,10 @@ impl ManagedTunnel {
                 task.abort();
             }
         }
-        if let Some(mut child) = self.control_child.take() {
+        if let Some(task) = self.control_task.take() {
             tracing::info!("Stopping mlsh-control for '{}'", self.cluster_name);
-            let _ = child.kill().await;
+            task.abort();
+            let _ = task.await;
         }
         dns::remove_resolver(&self.cluster_name);
     }
@@ -221,14 +224,45 @@ impl ManagedTunnel {
     }
 }
 
-/// Spawn `mlsh-control` as a child process for the given cluster.
+/// Whether the cluster config carries the `control` role *and* the binary
+/// was compiled with the `control-plane` feature. Slim builds (no feature)
+/// silently ignore the role.
+fn control_role_active(config: &ClusterConfig) -> bool {
+    #[cfg(feature = "control-plane")]
+    {
+        config.roles.iter().any(|r| r == "control")
+    }
+    #[cfg(not(feature = "control-plane"))]
+    {
+        let _ = config;
+        false
+    }
+}
+
+/// Spawn the in-process control HTTP server for the given cluster.
 ///
-/// Re-execs the same binary with `MLSH_RUN_AS=control` (the binary's main
-/// dispatch detects the env var and runs the control plane). Child runs as
-/// the current user with no extra privileges (ADR-030 §1).
-///
-/// Returns `None` and logs a warning if spawning fails — the tunnel itself
-/// continues to work, only the admin UI is unavailable.
+/// Hosts the control router as a tokio task in mlshtund itself (ADR-035
+/// Phase 0). When the returned `JoinHandle` is aborted (or dropped), axum
+/// stops accepting connections and the listener socket is released.
+#[cfg(feature = "control-plane")]
+fn spawn_control_task(config: Arc<ClusterConfig>) -> JoinHandle<()> {
+    let cluster_name = config.name.clone();
+    tokio::spawn(async move {
+        if let Err(e) = crate::control::serve(config).await {
+            tracing::error!(cluster = %cluster_name, error = %e, "mlsh-control exited");
+        }
+    })
+}
+
+#[cfg(not(feature = "control-plane"))]
+#[allow(dead_code)]
+fn spawn_control_task(_config: Arc<ClusterConfig>) -> JoinHandle<()> {
+    // Unreachable: `control_role_active()` returns false without the feature,
+    // so the `then(|| spawn_control_task(...))` branch never fires. This stub
+    // exists so the call site type-checks in slim builds.
+    tokio::spawn(async {})
+}
+
 /// Long-running task that manages the tunnel lifecycle with reconnection.
 #[allow(clippy::too_many_arguments)]
 async fn tunnel_task(
@@ -525,7 +559,6 @@ enum ShutdownReason {
     ConnectionLost(String),
 }
 
-use crate::tund::control::child::spawn_control_child;
 use crate::tund::overlay::quic::create_shared_endpoint;
 use crate::tund::overlay::supervisor::{run_connection_manager, ConnectionManagerContext};
 

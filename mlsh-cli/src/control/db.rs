@@ -15,7 +15,7 @@ pub async fn init() -> Result<SqlitePool> {
     Ok(pool)
 }
 
-async fn migrate(pool: &SqlitePool) -> Result<()> {
+pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS schema_version (
             version  INTEGER PRIMARY KEY,
@@ -130,6 +130,15 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (cluster_id, node_uuid)
         )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Bound the mTLS lookup-by-fingerprint to <100µs even on large clusters
+    // (ADR-035 Phase D auth path).
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_nodes_fingerprint
+            ON nodes (cluster_id, fingerprint)",
     )
     .execute(pool)
     .await?;

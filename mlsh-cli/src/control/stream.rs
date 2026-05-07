@@ -1,11 +1,24 @@
 //! CBOR-over-UNIX-socket listener for the mlsh-control plane.
+//!
+//! The control node terminates the bi-streams that signal relays for it
+//! on ALPN `mlsh-control`. Every admin call has moved to the REST API
+//! (ADR-035 Phase E); the operations dispatched here are now strictly
+//! bootstrap + cache infrastructure (ADR-035 Phase G):
+//!   - [`ControlRequest::AdoptConfirm`] — register a new node before it
+//!     has an overlay address.
+//!   - [`ControlRequest::Subscribe`] — push `ControlEvent`s to drive the
+//!     daemon's peer-name cache and the UI live-updates panel.
+//!   - [`ControlRequest::ListNodes`] — seed the daemon's peer-name cache
+//!     at reconnect time (still pre-overlay so it can't go REST).
+//!
+//! New admin endpoints go to `api/*`, never here.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
 use mlsh_protocol::control::{
-    ControlAuthHeader, ControlEvent, ControlNodeInfo, ControlRequest, ControlResponse,
+    ControlAuthHeader, ControlNodeInfo, ControlRequest, ControlResponse,
 };
 use mlsh_protocol::framing;
 use sqlx::SqlitePool;
@@ -101,7 +114,6 @@ async fn dispatch(
     req: &ControlRequest,
 ) -> ControlResponse {
     let pool = &state.pool;
-    let events = &state.events;
     match req {
         ControlRequest::AdoptConfirm {
             node_uuid,
@@ -138,108 +150,6 @@ async fn dispatch(
             Err(e) => ControlResponse::error("internal", &format!("list failed: {e:#}")),
         },
 
-        ControlRequest::Rename {
-            target_node_uuid,
-            new_display_name,
-        } => {
-            if auth.caller_role != "admin" {
-                return ControlResponse::error("forbidden", "Only admin nodes can rename");
-            }
-            let key = cluster_key(auth);
-            let uuid = match nodes::resolve_target(pool, key, target_node_uuid).await {
-                Ok(Some(u)) => u,
-                Ok(None) => return ControlResponse::error("not_found", "Node not found"),
-                Err(e) => {
-                    return ControlResponse::error("internal", &format!("resolve failed: {e:#}"))
-                }
-            };
-            let old_name = match nodes::get_display_name(pool, key, &uuid).await {
-                Ok(Some(n)) => n,
-                Ok(None) => return ControlResponse::error("not_found", "Node not found"),
-                Err(e) => {
-                    return ControlResponse::error("internal", &format!("lookup failed: {e:#}"))
-                }
-            };
-            match nodes::set_display_name(pool, key, &uuid, new_display_name).await {
-                Ok(true) => {}
-                Ok(false) => return ControlResponse::error("not_found", "Node not found"),
-                Err(e) => {
-                    return ControlResponse::error("internal", &format!("rename failed: {e:#}"))
-                }
-            }
-            let _ = old_name;
-            events
-                .publish(
-                    key,
-                    ControlEvent::NodeRenamed {
-                        node_uuid: uuid,
-                        new_display_name: new_display_name.clone(),
-                    },
-                )
-                .await;
-            ControlResponse::Ok
-        }
-
-        ControlRequest::Promote {
-            target_node_uuid,
-            new_role,
-        } => {
-            if auth.caller_role != "admin" {
-                return ControlResponse::error("forbidden", "Only admin nodes can promote");
-            }
-            if new_role != "admin" && new_role != "node" {
-                return ControlResponse::error("bad_role", "role must be 'admin' or 'node'");
-            }
-            let key = cluster_key(auth);
-            let uuid = match nodes::resolve_target(pool, key, target_node_uuid).await {
-                Ok(Some(u)) => u,
-                Ok(None) => return ControlResponse::error("not_found", "Node not found"),
-                Err(e) => {
-                    return ControlResponse::error("internal", &format!("resolve failed: {e:#}"))
-                }
-            };
-            match nodes::set_role(pool, key, &uuid, new_role).await {
-                Ok(true) => {
-                    events
-                        .publish(
-                            key,
-                            ControlEvent::NodePromoted {
-                                node_uuid: uuid,
-                                new_role: new_role.clone(),
-                            },
-                        )
-                        .await;
-                    ControlResponse::Ok
-                }
-                Ok(false) => ControlResponse::error("not_found", "Node not found"),
-                Err(e) => ControlResponse::error("internal", &format!("promote failed: {e:#}")),
-            }
-        }
-
-        ControlRequest::Revoke { target_node_uuid } => {
-            if auth.caller_role != "admin" {
-                return ControlResponse::error("forbidden", "Only admin nodes can revoke");
-            }
-            let key = cluster_key(auth);
-            let uuid = match nodes::resolve_target(pool, key, target_node_uuid).await {
-                Ok(Some(u)) => u,
-                Ok(None) => return ControlResponse::error("not_found", "Node not found"),
-                Err(e) => {
-                    return ControlResponse::error("internal", &format!("resolve failed: {e:#}"))
-                }
-            };
-            match nodes::set_status(pool, key, &uuid, "revoked").await {
-                Ok(true) => {
-                    events
-                        .publish(key, ControlEvent::NodeRevoked { node_uuid: uuid })
-                        .await;
-                    ControlResponse::Ok
-                }
-                Ok(false) => ControlResponse::error("not_found", "Node not found"),
-                Err(e) => ControlResponse::error("internal", &format!("revoke failed: {e:#}")),
-            }
-        }
-
         ControlRequest::Subscribe => {
             // Handled in handle_one before dispatch is called.
             ControlResponse::error("internal", "Subscribe must not reach dispatch")
@@ -255,150 +165,5 @@ fn node_row_to_info(r: nodes::NodeRow) -> ControlNodeInfo {
         role: r.role,
         status: r.status,
         last_seen: r.last_seen,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-
-    async fn test_state() -> StreamState {
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TABLE nodes (
-                cluster_id    TEXT NOT NULL,
-                node_uuid     TEXT NOT NULL,
-                fingerprint   TEXT NOT NULL,
-                public_key    TEXT NOT NULL,
-                display_name  TEXT NOT NULL,
-                role          TEXT NOT NULL DEFAULT 'node',
-                status        TEXT NOT NULL DEFAULT 'active',
-                last_seen     TEXT,
-                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (cluster_id, node_uuid)
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        StreamState {
-            pool,
-            events: EventHub::new(),
-        }
-    }
-
-    fn admin_header(cluster: &str, caller_uuid: &str) -> ControlAuthHeader {
-        ControlAuthHeader {
-            cluster_id: cluster.into(),
-            cluster_name: cluster.into(),
-            caller_node_uuid: caller_uuid.into(),
-            caller_fingerprint: "fp".into(),
-            caller_role: "admin".into(),
-        }
-    }
-
-    async fn seed_node(state: &StreamState, cluster: &str, uuid: &str, name: &str) {
-        nodes::upsert(&state.pool, cluster, uuid, "fp", "pk", name, "admin")
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn rename_publishes_node_renamed_event() {
-        let state = test_state().await;
-        seed_node(&state, "auriol", "u1", "old-name").await;
-
-        let (_h, mut rx) = state.events.register("auriol").await;
-        let req = ControlRequest::Rename {
-            target_node_uuid: "u1".into(),
-            new_display_name: "new-name".into(),
-        };
-        let resp = dispatch(&state, &admin_header("auriol", "u1"), &req).await;
-        assert!(matches!(resp, ControlResponse::Ok));
-
-        let event = rx.recv().await.unwrap();
-        match &*event {
-            ControlEvent::NodeRenamed {
-                node_uuid,
-                new_display_name,
-            } => {
-                assert_eq!(node_uuid, "u1");
-                assert_eq!(new_display_name, "new-name");
-            }
-            other => panic!("expected NodeRenamed, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn promote_publishes_node_promoted_event() {
-        let state = test_state().await;
-        seed_node(&state, "auriol", "u1", "name").await;
-
-        let (_h, mut rx) = state.events.register("auriol").await;
-        let req = ControlRequest::Promote {
-            target_node_uuid: "u1".into(),
-            new_role: "node".into(),
-        };
-        let resp = dispatch(&state, &admin_header("auriol", "caller"), &req).await;
-        assert!(matches!(resp, ControlResponse::Ok));
-
-        let event = rx.recv().await.unwrap();
-        match &*event {
-            ControlEvent::NodePromoted {
-                node_uuid,
-                new_role,
-            } => {
-                assert_eq!(node_uuid, "u1");
-                assert_eq!(new_role, "node");
-            }
-            other => panic!("expected NodePromoted, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn revoke_publishes_node_revoked_event() {
-        let state = test_state().await;
-        seed_node(&state, "auriol", "u1", "doomed").await;
-
-        let (_h, mut rx) = state.events.register("auriol").await;
-        let req = ControlRequest::Revoke {
-            target_node_uuid: "u1".into(),
-        };
-        let resp = dispatch(&state, &admin_header("auriol", "caller"), &req).await;
-        assert!(matches!(resp, ControlResponse::Ok));
-
-        let event = rx.recv().await.unwrap();
-        match &*event {
-            ControlEvent::NodeRevoked { node_uuid } => assert_eq!(node_uuid, "u1"),
-            other => panic!("expected NodeRevoked, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn forbidden_rename_does_not_publish() {
-        let state = test_state().await;
-        seed_node(&state, "auriol", "u1", "name").await;
-
-        let (_h, mut rx) = state.events.register("auriol").await;
-        let mut header = admin_header("auriol", "u1");
-        header.caller_role = "node".into();
-        let req = ControlRequest::Rename {
-            target_node_uuid: "u1".into(),
-            new_display_name: "new".into(),
-        };
-        let resp = dispatch(&state, &header, &req).await;
-        assert!(matches!(resp, ControlResponse::Error { .. }));
-
-        // No event should land for a rejected mutation.
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-                .await
-                .is_err()
-        );
     }
 }

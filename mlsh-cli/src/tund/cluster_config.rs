@@ -232,3 +232,35 @@ fn parse_cluster_config_from_toml(
         identity_dir: identity_dir.to_path_buf(),
     })
 }
+
+impl ClusterConfig {
+    /// Minimal placeholder used by tests that need an `AuthState` but never
+    /// actually touch the cluster fields.
+    #[cfg(test)]
+    pub fn dummy() -> std::sync::Arc<Self> {
+        Self::dummy_with_identity_dir(std::path::PathBuf::new())
+    }
+
+    /// Like [`Self::dummy`] but with a caller-provided identity directory —
+    /// for tests that need to read `cert.pem` / `key.pem` (e.g. invite
+    /// generation, mTLS).
+    #[cfg(test)]
+    pub fn dummy_with_identity_dir(identity_dir: std::path::PathBuf) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            name: "test-cluster".into(),
+            signal_endpoint: "test.example.com:4433".into(),
+            signal_fingerprint: String::new(),
+            overlay_ip: None,
+            overlay_subnet: None,
+            cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            node_uuid: "11111111-1111-1111-1111-111111111111".into(),
+            display_name: String::new(),
+            node_id: String::new(),
+            fingerprint: String::new(),
+            public_key: String::new(),
+            root_fingerprint: String::new(),
+            roles: vec!["node".into(), "control".into()],
+            identity_dir,
+        })
+    }
+}

@@ -41,6 +41,10 @@ pub struct AuthState {
     /// Shared with the CBOR socket so HTTP mutations fan out to peer
     /// `Subscribe` streams the same way RPC mutations do.
     pub events: crate::control::events::EventHub,
+    /// Cluster configuration this control instance serves. Source for
+    /// `/api/v1/cluster`, future invite generation (key.pem path,
+    /// signal_fingerprint), node UUID lookups, etc.
+    pub cluster: std::sync::Arc<crate::tund::cluster_config::ClusterConfig>,
 }
 
 /// Issue a new session row + signed cookie value.
@@ -322,6 +326,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {
@@ -353,6 +358,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {
@@ -385,6 +391,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         };
         let user = store
             .create_local_user(super::super::store::NewLocalUser {

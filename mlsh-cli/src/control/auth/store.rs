@@ -45,14 +45,6 @@ pub struct TotpRow {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionRow {
-    pub id: String,
-    pub created_at: String,
-    pub expires_at: String,
-    pub revoked: bool,
-}
-
-#[derive(Debug, Clone)]
 pub struct WebauthnRow {
     pub id: String,
     pub credential_id: Vec<u8>,
@@ -318,35 +310,6 @@ impl AuthStore {
     pub async fn delete_webauthn(&self, user_id: &str, id: &str) -> Result<u64> {
         let n = sqlx::query("DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?")
             .bind(id)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
-        Ok(n)
-    }
-
-    pub async fn list_sessions(&self, user_id: &str) -> Result<Vec<SessionRow>> {
-        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT id, created_at, expires_at, revoked
-             FROM sessions WHERE user_id = ? ORDER BY created_at DESC",
-        )
-        .bind(user_id)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| SessionRow {
-                id: r.0,
-                created_at: r.1,
-                expires_at: r.2,
-                revoked: r.3 != 0,
-            })
-            .collect())
-    }
-
-    pub async fn revoke_session_for_user(&self, user_id: &str, session_id: &str) -> Result<u64> {
-        let n = sqlx::query("UPDATE sessions SET revoked = 1 WHERE id = ? AND user_id = ?")
-            .bind(session_id)
             .bind(user_id)
             .execute(&self.pool)
             .await?

@@ -1,24 +1,18 @@
 //! `mlsh nodes <cluster>` — list all nodes in a cluster.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
-use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::control::client::DaemonClient;
+use crate::commands::control_client;
 
 pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
-    let mut client = DaemonClient::connect_default().await?;
-    let resp = client
-        .control_call(cluster_name, &ControlRequest::ListNodes)
-        .await?;
+    let (client, _config) = control_client::for_cluster(cluster_name)?;
 
-    let nodes = match resp {
-        ControlResponse::Nodes { nodes } => nodes,
-        ControlResponse::Error { code, message } => {
-            anyhow::bail!("control error: {message} ({code})");
-        }
-        other => anyhow::bail!("unexpected control response: {other:?}"),
-    };
+    let nodes = client
+        .list_nodes()
+        .await
+        .context("GET /api/v1/nodes failed")?
+        .into_inner();
 
     if nodes.is_empty() {
         println!("{}", "No nodes in this cluster.".dimmed());
@@ -37,13 +31,13 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
             node.status.red().to_string()
         };
         let label = if node.display_name.is_empty() {
-            &node.node_uuid[..node.node_uuid.len().min(36)]
+            &node.id[..node.id.len().min(36)]
         } else {
             &node.display_name
         };
         println!(
             "{:<36} {:<8} {:<8} {}",
-            &node.node_uuid[..node.node_uuid.len().min(36)],
+            &node.id[..node.id.len().min(36)],
             node.role,
             status_str,
             label,

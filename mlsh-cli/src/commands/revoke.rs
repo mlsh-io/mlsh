@@ -1,10 +1,9 @@
 //! `mlsh revoke <cluster> <node>` — admin only.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
-use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::control::client::DaemonClient;
+use crate::commands::control_client;
 
 pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> {
     println!(
@@ -13,25 +12,15 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         cluster_name.bold()
     );
 
-    let mut client = DaemonClient::connect_default().await?;
-    let resp = client
-        .control_call(
-            cluster_name,
-            &ControlRequest::Revoke {
-                target_node_uuid: target_node.to_string(),
-            },
-        )
-        .await?;
+    let (client, _config) = control_client::for_cluster(cluster_name)?;
+    client
+        .revoke(target_node)
+        .await
+        .context("POST /api/v1/nodes/{node}/revoke failed")?;
 
-    match resp {
-        ControlResponse::Ok => {
-            println!(
-                "{}",
-                format!("Node '{}' revoked.", target_node).green().bold()
-            );
-            Ok(())
-        }
-        ControlResponse::Error { code, message } => anyhow::bail!("{message} ({code})"),
-        other => anyhow::bail!("unexpected control response: {other:?}"),
-    }
+    println!(
+        "{}",
+        format!("Node '{}' revoked.", target_node).green().bold()
+    );
+    Ok(())
 }

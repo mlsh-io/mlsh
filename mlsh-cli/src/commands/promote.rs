@@ -1,10 +1,10 @@
 //! `mlsh promote <cluster> <node> --role <admin|node>`.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use colored::Colorize;
-use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-use crate::tund::control::client::DaemonClient;
+use crate::commands::control_client;
+use crate::generated::types::SetRoleRequest;
 
 pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -> Result<()> {
     if role != "admin" && role != "node" {
@@ -18,31 +18,25 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
     };
     println!("{} node {} to {}...", action, target_node.bold(), role);
 
-    let mut client = DaemonClient::connect_default().await?;
-    let resp = client
-        .control_call(
-            cluster_name,
-            &ControlRequest::Promote {
-                target_node_uuid: target_node.to_string(),
-                new_role: role.to_string(),
+    let (client, _config) = control_client::for_cluster(cluster_name)?;
+    client
+        .set_role(
+            target_node,
+            &SetRoleRequest {
+                role: role.to_string(),
             },
         )
-        .await?;
+        .await
+        .context("POST /api/v1/nodes/{node}/role failed")?;
 
-    match resp {
-        ControlResponse::Ok => {
-            let done = if role == "admin" {
-                "promoted to admin"
-            } else {
-                "demoted to node"
-            };
-            println!(
-                "{}",
-                format!("Node '{}' {}.", target_node, done).green().bold()
-            );
-            Ok(())
-        }
-        ControlResponse::Error { code, message } => anyhow::bail!("{message} ({code})"),
-        other => anyhow::bail!("unexpected control response: {other:?}"),
-    }
+    let done = if role == "admin" {
+        "promoted to admin"
+    } else {
+        "demoted to node"
+    };
+    println!(
+        "{}",
+        format!("Node '{}' {}.", target_node, done).green().bold()
+    );
+    Ok(())
 }

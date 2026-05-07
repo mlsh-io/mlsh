@@ -53,11 +53,6 @@ pub enum DaemonRequest {
     Unexpose { cluster: String, domain: String },
     /// List all public ingress routes registered for this cluster.
     ListExposed { cluster: String },
-    /// Forward a CBOR `ControlRequest` over the daemon's mlsh-control session.
-    ControlCall {
-        cluster: String,
-        request_cbor: Vec<u8>,
-    },
 }
 
 // Daemon → Client
@@ -89,8 +84,6 @@ pub enum DaemonResponse {
     ExposedList {
         routes: Vec<mlsh_protocol::types::IngressRoute>,
     },
-    /// Raw CBOR-encoded `ControlResponse`.
-    ControlReply { response_cbor: Vec<u8> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

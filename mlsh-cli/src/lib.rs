@@ -1,6 +1,7 @@
 pub mod cloud;
 pub mod commands;
 pub mod config;
+pub mod generated;
 pub mod quic;
 pub mod tund;
 

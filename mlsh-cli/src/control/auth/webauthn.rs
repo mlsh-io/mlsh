@@ -248,7 +248,7 @@ pub async fn delete(state: &AuthState, user_id: &str, id: &str) -> Result<bool> 
     Ok(state.store.delete_webauthn(user_id, id).await? > 0)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct CredentialView {
     pub id: String,
     pub name: String,
@@ -326,6 +326,7 @@ mod tests {
             mfa_key: Arc::new([0u8; 32]),
             webauthn: Some(build_config()),
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         }
     }
 

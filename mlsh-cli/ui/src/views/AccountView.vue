@@ -3,10 +3,9 @@ import { onMounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import Btn from '@/components/Btn.vue'
 import { api } from '@/api/client'
-import type { SessionUser, SessionView, TotpEnrollment, WebauthnCredential } from '@/api/types'
+import type { SessionUser, TotpEnrollment, WebauthnCredential } from '@/api/types'
 
 const me = ref<SessionUser | null>(null)
-const sessions = ref<SessionView[]>([])
 const passkeys = ref<WebauthnCredential[]>([])
 
 const totpEnrollment = ref<TotpEnrollment | null>(null)
@@ -36,8 +35,7 @@ const error = ref<string | null>(null)
 async function reload() {
   error.value = null
   try {
-    me.value = await api.whoamiSession()
-    sessions.value = await api.listSessions()
+    me.value = await api.getCurrentUser()
     passkeys.value = await api.webauthnCredentials().catch(() => [])
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
@@ -67,11 +65,6 @@ async function deleteTotp() {
   if (!confirm('Remove TOTP from this account?')) return
   await api.totpDelete()
   totpVerified.value = false
-}
-
-async function revoke(id: string) {
-  await api.revokeSession(id)
-  await reload()
 }
 
 async function deletePasskey(id: string) {
@@ -139,20 +132,6 @@ onMounted(reload)
       <p v-else class="hint">No passkeys enrolled.</p>
     </div>
 
-    <div class="card">
-      <h2>Active sessions</h2>
-      <ul class="list">
-        <li v-for="s in sessions" :key="s.id">
-          <span>
-            <span :class="['badge', s.revoked ? 'off' : s.current ? 'cur' : 'ok']">
-              {{ s.revoked ? 'revoked' : s.current ? 'this session' : 'active' }}
-            </span>
-            <span class="muted">created {{ s.created_at }}</span>
-          </span>
-          <Btn v-if="!s.revoked && !s.current" variant="danger" @click="revoke(s.id)">Revoke</Btn>
-        </li>
-      </ul>
-    </div>
   </section>
 </template>
 
@@ -217,16 +196,4 @@ input {
   border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
-.muted { color: var(--text-dim); margin-left: var(--space-2); font-family: var(--font-mono); font-size: 11px; }
-.badge {
-  font-size: 11px;
-  padding: 2px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-dim);
-  margin-right: var(--space-2);
-}
-.badge.ok { color: var(--green); border-color: rgba(74, 222, 128, 0.3); }
-.badge.cur { color: var(--gold); border-color: var(--gold); }
-.badge.off { color: var(--red); border-color: rgba(248, 113, 113, 0.3); }
 </style>

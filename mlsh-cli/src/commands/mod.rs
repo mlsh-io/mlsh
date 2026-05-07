@@ -2,6 +2,7 @@ pub mod adopt;
 pub mod bootstrap;
 pub mod connect;
 pub mod control;
+pub mod control_client;
 pub mod daemon;
 pub mod expose;
 pub mod identity;
@@ -11,3 +12,5 @@ pub mod promote;
 pub mod rename;
 pub mod revoke;
 pub mod setup;
+#[cfg(feature = "control-plane")]
+pub mod ui;

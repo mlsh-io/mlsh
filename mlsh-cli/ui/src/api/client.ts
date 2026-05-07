@@ -1,13 +1,12 @@
 import type {
   BootstrapStatus,
+  Cluster,
   DeviceFlowStart,
   ManagedUser,
   NodeInfo,
   SessionUser,
-  SessionView,
   TotpEnrollment,
   WebauthnCredential,
-  WhoAmI,
 } from './types'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -41,39 +40,41 @@ function jsonInit(method: string, body?: unknown): RequestInit {
 }
 
 export const api = {
-  whoami(): Promise<WhoAmI> {
-    return request<WhoAmI>('/api/v1/whoami')
+  getCluster(): Promise<Cluster> {
+    return request<Cluster>('/api/v1/cluster')
   },
-  listNodes(cluster: string): Promise<NodeInfo[]> {
-    return request<NodeInfo[]>(`/api/v1/clusters/${encodeURIComponent(cluster)}/nodes`)
+  getCurrentUser(): Promise<SessionUser> {
+    return request<SessionUser>('/api/v1/users/current')
   },
-  revokeNode(cluster: string, target: string): Promise<unknown> {
+  listNodes(): Promise<NodeInfo[]> {
+    return request<NodeInfo[]>('/api/v1/nodes')
+  },
+  revokeNode(target: string): Promise<unknown> {
+    return request(`/api/v1/nodes/${encodeURIComponent(target)}`, jsonInit('DELETE'))
+  },
+  renameNode(target: string, displayName: string): Promise<unknown> {
     return request(
-      `/api/v1/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(target)}`,
-      jsonInit('DELETE'),
+      `/api/v1/nodes/${encodeURIComponent(target)}/name`,
+      jsonInit('POST', { display_name: displayName }),
     )
   },
-  renameNode(cluster: string, target: string, displayName: string): Promise<unknown> {
+  promoteNode(target: string, role: 'admin' | 'node'): Promise<unknown> {
     return request(
-      `/api/v1/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(target)}`,
-      jsonInit('PATCH', { display_name: displayName }),
-    )
-  },
-  promoteNode(cluster: string, target: string, role: 'admin' | 'node'): Promise<unknown> {
-    return request(
-      `/api/v1/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(target)}/promote`,
+      `/api/v1/nodes/${encodeURIComponent(target)}/role`,
       jsonInit('POST', { role }),
     )
   },
   inviteNode(
-    cluster: string,
     role: 'admin' | 'node',
-    ttl: number,
-  ): Promise<{ token: string; cluster: string; role: string; expires_in: number }> {
-    return request(
-      `/api/v1/clusters/${encodeURIComponent(cluster)}/invite`,
-      jsonInit('POST', { role, ttl }),
-    )
+    ttl_seconds: number,
+  ): Promise<{
+    token: string
+    url: string
+    cluster: string
+    role: string
+    expires_in: number
+  }> {
+    return request('/api/v1/invites', jsonInit('POST', { role, ttl_seconds }))
   },
   bootstrapStatus(): Promise<BootstrapStatus> {
     return request<BootstrapStatus>('/auth/bootstrap')
@@ -111,10 +112,10 @@ export const api = {
   },
   updateUser(
     id: string,
-    body: { active?: boolean; password?: string },
+    body: { active: boolean; password?: string },
     mfaCode?: string,
   ): Promise<unknown> {
-    const init = jsonInit('PATCH', body)
+    const init = jsonInit('PUT', body)
     if (mfaCode) init.headers = { ...(init.headers ?? {}), 'X-MFA-Code': mfaCode }
     return request(`/api/v1/users/${encodeURIComponent(id)}`, init)
   },
@@ -125,9 +126,6 @@ export const api = {
   },
 
   // Session (caller's own)
-  whoamiSession(): Promise<SessionUser> {
-    return request<SessionUser>('/auth/session')
-  },
   login(email: string, password: string, totp_code?: string): Promise<SessionUser> {
     return request<SessionUser>(
       '/auth/login',
@@ -136,12 +134,6 @@ export const api = {
   },
   logout(): Promise<unknown> {
     return request('/auth/logout', jsonInit('POST'))
-  },
-  listSessions(): Promise<SessionView[]> {
-    return request<SessionView[]>('/auth/sessions')
-  },
-  revokeSession(id: string): Promise<unknown> {
-    return request(`/auth/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   },
 
   // TOTP

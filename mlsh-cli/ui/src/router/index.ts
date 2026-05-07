@@ -55,7 +55,7 @@ router.beforeEach(async (to) => {
   if (to.meta.public) return true
 
   try {
-    await api.whoami()
+    await api.getCurrentUser()
     if (to.name === 'login') return { name: 'nodes' }
     return true
   } catch {

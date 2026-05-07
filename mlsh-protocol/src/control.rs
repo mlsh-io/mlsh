@@ -1,4 +1,30 @@
 //! Wire types for the `mlsh-control` ALPN stream.
+//!
+//! This protocol predates the REST API. Most CLI admin calls (`Rename`,
+//! `Promote`, `Revoke`) used to live here; they have moved to the REST
+//! surface documented in ADR-035 Phase E. What still travels over CBOR on
+//! this channel is the **bootstrap and runtime-cache** glue — operations
+//! that happen on a connection to signal **before** the joining node has
+//! an overlay address (so HTTP+mTLS to `control.<cluster>:8443` is not
+//! reachable yet). See ADR-035 Phase G.
+//!
+//! Surface kept:
+//!   - [`ControlRequest::AdoptConfirm`] — bootstrap registration. The
+//!     joining node opens a QUIC connection on ALPN `mlsh-control` to
+//!     signal, signal relays the bi-stream to the cluster's control node,
+//!     the control node upserts the node row.
+//!   - [`ControlRequest::Subscribe`] — long-lived event stream that pushes
+//!     `ControlEvent`s to drive the UI's live updates and the daemon's
+//!     `display_names_loop` cache.
+//!   - [`ControlRequest::ListNodes`] — initial seed of the daemon's
+//!     in-memory peer-name cache. Runs **on every tunnel daemon** at
+//!     reconnect time, before the overlay is up — it cannot read the
+//!     control node's SQLite directly because the daemon isn't on the
+//!     control node. The Subscribe stream then incrementally maintains
+//!     the cache.
+//!
+//! All three flows are *internal infrastructure*, not user-facing API.
+//! New admin endpoints go to the REST router (`api/*`), never here.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,23 +48,15 @@ pub enum ControlRequest {
         display_name: String,
         invite_token: String,
     },
+    /// Internal: seed the daemon's display-name cache. Not exposed to the
+    /// CLI — admin listing happens over `GET /api/v1/nodes` (ADR-035 Phase
+    /// E).
     ListNodes,
-    Rename {
-        target_node_uuid: String,
-        new_display_name: String,
-    },
-    Promote {
-        target_node_uuid: String,
-        new_role: String,
-    },
-    Revoke {
-        target_node_uuid: String,
-    },
     /// Open a long-lived event stream. The control server keeps the bi-stream
-    /// alive and writes a sequence of `ControlEvent` records on it. The client
-    /// reads them as they arrive — no per-event response is sent. Subscribers
-    /// that fall behind (write blocks) are dropped server-side; the client
-    /// reconnects and reseeds via `ListNodes`.
+    /// alive and writes a sequence of `ControlEvent` records on it. The
+    /// client reads them as they arrive — no per-event response is sent.
+    /// Subscribers that fall behind (write blocks) are dropped server-side;
+    /// the client reconnects.
     Subscribe,
 }
 
@@ -53,20 +71,10 @@ pub enum ControlResponse {
     Nodes {
         nodes: Vec<ControlNodeInfo>,
     },
-    Ok,
     Error {
         code: String,
         message: String,
     },
-}
-
-impl ControlResponse {
-    pub fn error(code: &str, message: &str) -> Self {
-        Self::Error {
-            code: code.to_string(),
-            message: message.to_string(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +86,15 @@ pub struct ControlNodeInfo {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
+}
+
+impl ControlResponse {
+    pub fn error(code: &str, message: &str) -> Self {
+        Self::Error {
+            code: code.to_string(),
+            message: message.to_string(),
+        }
+    }
 }
 
 /// Server-pushed event on a `Subscribe` stream.
@@ -216,38 +233,6 @@ mod tests {
                 assert_eq!(node_uuid, "u1");
             }
             _ => panic!("wrong variant"),
-        }
-    }
-
-    #[test]
-    fn nodes_response_with_optional_last_seen() {
-        let r = ControlResponse::Nodes {
-            nodes: vec![
-                ControlNodeInfo {
-                    node_uuid: "u".into(),
-                    fingerprint: "fp".into(),
-                    display_name: "host".into(),
-                    role: "node".into(),
-                    status: "active".into(),
-                    last_seen: Some("2026-04-27T00:00:00Z".into()),
-                },
-                ControlNodeInfo {
-                    node_uuid: "u2".into(),
-                    fingerprint: "fp2".into(),
-                    display_name: "h2".into(),
-                    role: "admin".into(),
-                    status: "active".into(),
-                    last_seen: None,
-                },
-            ],
-        };
-        let back: ControlResponse = roundtrip(&r);
-        if let ControlResponse::Nodes { nodes } = back {
-            assert_eq!(nodes.len(), 2);
-            assert_eq!(nodes[0].last_seen.as_deref(), Some("2026-04-27T00:00:00Z"));
-            assert!(nodes[1].last_seen.is_none());
-        } else {
-            panic!("wrong variant");
         }
     }
 }

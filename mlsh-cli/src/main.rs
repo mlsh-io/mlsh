@@ -159,6 +159,19 @@ enum Commands {
         cluster: String,
     },
 
+    /// Open the cluster's web UI in the default browser via a localhost
+    /// proxy. Requires the tunnel to be up so `control.<cluster>` resolves
+    /// over the overlay (ADR-035 Phase F). Available only on control-plane
+    /// builds.
+    #[cfg(feature = "control-plane")]
+    Ui {
+        /// Cluster name
+        cluster: String,
+        /// Don't open the browser automatically; just print the URL.
+        #[arg(long)]
+        no_open: bool,
+    },
+
     /// Manage the overlay tunnel daemon
     #[command(subcommand)]
     Tunnel(commands::daemon::DaemonCommands),
@@ -198,19 +211,8 @@ fn main() {
         .install_default()
         .expect("Failed to install crypto provider");
 
-    // MLSH_RUN_AS=control wins over argv[0] so mlshtund can fork itself.
-    #[cfg(feature = "control-plane")]
-    if std::env::var("MLSH_RUN_AS").as_deref() == Ok("control") {
-        return run_control();
-    }
-
     if is_tund_invocation() {
         return run_tund();
-    }
-
-    #[cfg(feature = "control-plane")]
-    if is_control_invocation() {
-        return run_control();
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -240,11 +242,6 @@ fn argv0_stem() -> Option<String> {
 /// Check if we were invoked as "mlshtund" (argv[0] ends with "mlshtund" or "mlshtund.exe").
 fn is_tund_invocation() -> bool {
     argv0_stem().is_some_and(|name| name == "mlshtund")
-}
-
-#[cfg(feature = "control-plane")]
-fn is_control_invocation() -> bool {
-    argv0_stem().is_some_and(|name| name == "mlsh-control")
 }
 
 /// Boot a multi-threaded tokio runtime, run `f` to completion, and exit
@@ -277,11 +274,6 @@ where
         }
     };
     std::process::exit(code);
-}
-
-#[cfg(feature = "control-plane")]
-fn run_control() {
-    run_daemon(mlsh_cli::control::run);
 }
 
 fn run_tund() {
@@ -353,6 +345,8 @@ async fn run_cli() -> Result<()> {
             commands::expose::handle_unexpose(&cluster, &domain).await
         }
         Commands::Exposed { cluster } => commands::expose::handle_list_exposed(&cluster).await,
+        #[cfg(feature = "control-plane")]
+        Commands::Ui { cluster, no_open } => commands::ui::handle_ui(&cluster, !no_open).await,
         Commands::Tunnel(cmd) => commands::daemon::handle(cmd).await,
         Commands::Control(cmd) => match cmd {
             ControlCommands::Promote { cluster } => {

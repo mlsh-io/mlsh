@@ -3,12 +3,12 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import StatBlock from '@/components/StatBlock.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import Btn from '@/components/Btn.vue'
-import { useSession } from '@/composables/useSession'
+import { useCluster } from '@/composables/useCluster'
 import { useNodes, nodeStatus, type NodeStatus } from '@/composables/useNodes'
 import { api } from '@/api/client'
 import type { NodeInfo } from '@/api/types'
 
-const { session } = useSession()
+const { cluster } = useCluster()
 const { nodes, summary, loading, error, reload } = useNodes()
 
 type Filter = 'all' | NodeStatus
@@ -61,7 +61,7 @@ onBeforeUnmount(() => {
 
 async function runAction(node: NodeInfo, action: () => Promise<unknown>) {
   closeMenu()
-  busyNodeId.value = node.node_id
+  busyNodeId.value = node.id
   actionError.value = null
   try {
     await action()
@@ -84,15 +84,14 @@ function cancelRevoke() {
 
 function doRevoke() {
   const node = confirmRevoke.value
-  const cluster = session.value?.cluster
   confirmRevoke.value = null
-  if (!node || !cluster) return
-  runAction(node, () => api.revokeNode(cluster, node.node_id))
+  if (!node) return
+  runAction(node, () => api.revokeNode(node.id))
 }
 
 function startRename(node: NodeInfo) {
   closeMenu()
-  renamingNodeId.value = node.node_id
+  renamingNodeId.value = node.id
   renameDraft.value = node.display_name || ''
   nextTick(() => {
     renameInputRef.value?.focus()
@@ -106,25 +105,22 @@ function cancelRename() {
 }
 
 function commitRename(node: NodeInfo) {
-  const cluster = session.value?.cluster
   const trimmed = renameDraft.value.trim()
   const current = node.display_name || ''
   renamingNodeId.value = null
-  if (!cluster || !trimmed || trimmed === current) return
-  runAction(node, () => api.renameNode(cluster, node.node_id, trimmed))
+  if (!trimmed || trimmed === current) return
+  runAction(node, () => api.renameNode(node.id, trimmed))
 }
 
 function onPromote(node: NodeInfo, role: 'admin' | 'node') {
-  const cluster = session.value?.cluster
-  if (!cluster) return
-  runAction(node, () => api.promoteNode(cluster, node.node_id, role))
+  runAction(node, () => api.promoteNode(node.id, role))
 }
 
 // Invite flow
 const showInvite = ref(false)
 const inviteRole = ref<'admin' | 'node'>('node')
 const inviteTtl = ref(3600)
-const inviteResult = ref<{ token: string; cluster: string; role: string; expires_in: number } | null>(null)
+const inviteResult = ref<{ token: string; url: string; cluster: string; role: string; expires_in: number } | null>(null)
 const inviteBusy = ref(false)
 const inviteError = ref<string | null>(null)
 const copied = ref(false)
@@ -146,12 +142,10 @@ function closeInvite() {
 }
 
 async function generateInvite() {
-  const cluster = session.value?.cluster
-  if (!cluster) return
   inviteBusy.value = true
   inviteError.value = null
   try {
-    inviteResult.value = await api.inviteNode(cluster, inviteRole.value, inviteTtl.value)
+    inviteResult.value = await api.inviteNode(inviteRole.value, inviteTtl.value)
   } catch (e) {
     inviteError.value = (e as Error).message
   } finally {
@@ -161,7 +155,7 @@ async function generateInvite() {
 
 function copyJoinCmd() {
   if (!inviteResult.value) return
-  const cmd = `mlsh join ${inviteResult.value.cluster} ${inviteResult.value.token}`
+  const cmd = `mlsh adopt ${inviteResult.value.url}`
   navigator.clipboard.writeText(cmd).then(() => {
     copied.value = true
     setTimeout(() => { copied.value = false }, 2000)
@@ -178,7 +172,7 @@ function formatTtl(seconds: number): string {
 <template>
   <div class="topbar">
     <div class="breadcrumb">
-      <span>{{ session?.cluster ?? '—' }}</span>
+      <span>{{ cluster?.name ?? '—' }}</span>
       <span class="sep">/</span>
       <span class="current">Nodes</span>
     </div>
@@ -208,7 +202,7 @@ function formatTtl(seconds: number): string {
       accent
     />
     <StatBlock label="Offline" :value="offlineCount" />
-    <StatBlock label="Cluster" :value="session?.cluster ?? '—'" />
+    <StatBlock label="Cluster" :value="cluster?.name ?? '—'" />
   </div>
 
   <div class="section-header">
@@ -237,12 +231,12 @@ function formatTtl(seconds: number): string {
     <div v-if="!filtered.length && !loading" class="empty">
       No nodes match this filter.
     </div>
-    <div v-for="node in filtered" :key="node.node_id" class="row">
+    <div v-for="node in filtered" :key="node.id" class="row">
       <div class="node-name">
         <StatusDot :state="nodeStatus(node)" />
         <div class="node-meta">
           <input
-            v-if="renamingNodeId === node.node_id"
+            v-if="renamingNodeId === node.id"
             :ref="setRenameInputRef"
             v-model="renameDraft"
             class="rename-input"
@@ -251,25 +245,25 @@ function formatTtl(seconds: number): string {
             @blur="commitRename(node)"
           />
           <span v-else class="node-hostname">
-            {{ node.display_name || node.node_id.slice(0, 8) }}
+            {{ node.display_name || node.id.slice(0, 8) }}
           </span>
           <span class="node-tag">{{ nodeStatus(node) }}</span>
         </div>
       </div>
-      <div class="ip">{{ node.overlay_ip }}</div>
+      <div class="ip">{{ node.fingerprint.slice(0, 12) }}…</div>
       <div class="role">{{ node.role }}</div>
-      <div class="ip">{{ node.node_id.slice(0, 12) }}…</div>
+      <div class="ip">{{ node.id.slice(0, 12) }}…</div>
       <div class="row-action">
         <button
           class="row-action-btn"
-          :disabled="busyNodeId === node.node_id"
-          @click.stop="toggleMenu(node.node_id)"
-          :aria-label="`Actions for ${node.display_name || node.node_id}`"
+          :disabled="busyNodeId === node.id"
+          @click.stop="toggleMenu(node.id)"
+          :aria-label="`Actions for ${node.display_name || node.id}`"
         >
-          <span v-if="busyNodeId === node.node_id">…</span>
+          <span v-if="busyNodeId === node.id">…</span>
           <span v-else>⋯</span>
         </button>
-        <div v-if="openMenuFor === node.node_id" class="action-menu" @click.stop>
+        <div v-if="openMenuFor === node.id" class="action-menu" @click.stop>
           <button class="menu-item" @click="startRename(node)">Rename…</button>
           <button
             v-if="node.role !== 'admin'"
@@ -294,7 +288,7 @@ function formatTtl(seconds: number): string {
   <div v-if="actionError" class="action-error">{{ actionError }}</div>
 
   <div class="footer-note">
-    cluster {{ session?.cluster ?? '—' }} · {{ nodes.length }} nodes ·
+    cluster {{ cluster?.name ?? '—' }} · {{ nodes.length }} nodes ·
     <span v-if="loading">refreshing…</span>
     <span v-else>up to date</span>
   </div>
@@ -354,7 +348,7 @@ function formatTtl(seconds: number): string {
           Run on the new machine:
         </p>
         <div class="join-cmd">
-          <code>mlsh join {{ inviteResult.cluster }} {{ inviteResult.token }}</code>
+          <code>mlsh adopt {{ inviteResult.url }}</code>
           <button class="copy-btn" @click="copyJoinCmd">{{ copied ? '✓' : 'Copy' }}</button>
         </div>
         <div class="modal-actions" style="margin-top: var(--space-5)">
@@ -376,7 +370,7 @@ function formatTtl(seconds: number): string {
       <p class="modal-body">
         This removes
         <span class="modal-highlight">
-          {{ confirmRevoke.display_name || confirmRevoke.node_id.slice(0, 8) }}
+          {{ confirmRevoke.display_name || confirmRevoke.id.slice(0, 8) }}
         </span>
         from the cluster. The node loses overlay access immediately.
       </p>

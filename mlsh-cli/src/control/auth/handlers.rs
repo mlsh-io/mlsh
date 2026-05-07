@@ -5,10 +5,12 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-use super::session::{self, AuthState, CurrentUser};
+use super::caller::HumanCaller;
+use super::session::{self, AuthState};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LoginRequest {
     pub email: String,
     pub password: String,
@@ -16,7 +18,7 @@ pub struct LoginRequest {
     pub totp_code: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct UserView {
     pub id: String,
     pub email: String,
@@ -33,7 +35,8 @@ impl From<super::store::User> for UserView {
     }
 }
 
-/// POST /auth/login — self-hosted password login.
+/// Self-hosted password login (logic). The HTTP surface lives in
+/// `crate::control::api::auth::login`.
 pub async fn login(State(state): State<AuthState>, Json(body): Json<LoginRequest>) -> Response {
     let user = match state
         .store
@@ -91,7 +94,8 @@ pub async fn login(State(state): State<AuthState>, Json(body): Json<LoginRequest
     (StatusCode::OK, headers, Json(UserView::from(user))).into_response()
 }
 
-/// POST /auth/logout — revoke the current session, clear cookie.
+/// Revoke the current session and clear the session cookie. Idempotent.
+/// HTTP surface in `crate::control::api::auth::logout`.
 pub async fn logout(State(state): State<AuthState>, headers: HeaderMap) -> Response {
     if let Some(session_id) = current_session_id(&state, &headers) {
         if let Err(e) = session::revoke(state.store.pool(), &session_id).await {
@@ -103,20 +107,16 @@ pub async fn logout(State(state): State<AuthState>, headers: HeaderMap) -> Respo
     (StatusCode::OK, out).into_response()
 }
 
-/// GET /auth/session — return the current user, or 401.
-pub async fn whoami(user: CurrentUser) -> Json<UserView> {
-    Json(UserView::from(user.0))
-}
-
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct TotpEnrollment {
     pub secret_base32: String,
     pub otpauth_uri: String,
 }
 
-/// POST /auth/totp/enroll — generate (or replace) the caller's TOTP secret.
-/// Resets `verified=0`; the user must POST /auth/totp/verify to confirm.
-pub async fn totp_enroll(State(state): State<AuthState>, user: CurrentUser) -> Response {
+/// Generate (or replace) the caller's TOTP secret. Resets `verified=0`;
+/// the caller must POST /auth/totp/verify to confirm.
+/// HTTP surface in `crate::control::api::auth::totp_enroll`.
+pub async fn totp_enroll(State(state): State<AuthState>, user: HumanCaller) -> Response {
     match super::totp::enroll(&state, &user.0.id, &user.0.email).await {
         Ok(e) => Json(TotpEnrollment {
             secret_base32: e.secret_base32,
@@ -130,15 +130,16 @@ pub async fn totp_enroll(State(state): State<AuthState>, user: CurrentUser) -> R
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct TotpVerifyRequest {
     pub code: String,
 }
 
-/// POST /auth/totp/verify — confirm enrollment by submitting a current code.
+/// Confirm TOTP enrollment by submitting a current code.
+/// HTTP surface in `crate::control::api::auth::totp_verify`.
 pub async fn totp_verify(
     State(state): State<AuthState>,
-    user: CurrentUser,
+    user: HumanCaller,
     Json(body): Json<TotpVerifyRequest>,
 ) -> Response {
     match super::totp::verify(&state, &user.0.id, &user.0.email, &body.code).await {
@@ -151,60 +152,9 @@ pub async fn totp_verify(
     }
 }
 
-#[derive(Serialize)]
-pub struct SessionView {
-    pub id: String,
-    pub created_at: String,
-    pub expires_at: String,
-    pub revoked: bool,
-    pub current: bool,
-}
-
-/// GET /auth/sessions — list the caller's own sessions.
-pub async fn list_sessions(
-    State(state): State<AuthState>,
-    user: CurrentUser,
-    headers: HeaderMap,
-) -> Response {
-    let current = current_session_id(&state, &headers);
-    match state.store.list_sessions(&user.0.id).await {
-        Ok(rows) => Json(
-            rows.into_iter()
-                .map(|r| SessionView {
-                    current: current.as_deref() == Some(&r.id),
-                    id: r.id,
-                    created_at: r.created_at,
-                    expires_at: r.expires_at,
-                    revoked: r.revoked,
-                })
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
-        Err(e) => {
-            tracing::warn!(error = %e, "list_sessions failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
-}
-
-/// DELETE /auth/sessions/:id — revoke a single session belonging to the caller.
-pub async fn revoke_session(
-    State(state): State<AuthState>,
-    user: CurrentUser,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> Response {
-    match state.store.revoke_session_for_user(&user.0.id, &id).await {
-        Ok(0) => StatusCode::NOT_FOUND.into_response(),
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => {
-            tracing::warn!(error = %e, "revoke_session failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
-        }
-    }
-}
-
-/// DELETE /auth/totp — remove the caller's TOTP credential.
-pub async fn totp_delete(State(state): State<AuthState>, user: CurrentUser) -> Response {
+/// Remove the caller's TOTP credential.
+/// HTTP surface in `crate::control::api::auth::totp_delete`.
+pub async fn totp_delete(State(state): State<AuthState>, user: HumanCaller) -> Response {
     match super::totp::delete(&state, &user.0.id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
@@ -222,9 +172,10 @@ fn webauthn_unavailable() -> Response {
         .into_response()
 }
 
+/// HTTP surface in `crate::control::api::auth::webauthn_register_start`.
 pub async fn webauthn_register_start(
     State(state): State<AuthState>,
-    user: CurrentUser,
+    user: HumanCaller,
 ) -> Response {
     if state.webauthn.is_none() {
         return webauthn_unavailable();
@@ -238,14 +189,15 @@ pub async fn webauthn_register_start(
     }
 }
 
-#[derive(Serialize)]
-struct WebauthnId {
-    id: String,
+#[derive(Serialize, ToSchema)]
+pub struct WebauthnId {
+    pub id: String,
 }
 
+/// HTTP surface in `crate::control::api::auth::webauthn_register_finish`.
 pub async fn webauthn_register_finish(
     State(state): State<AuthState>,
-    user: CurrentUser,
+    user: HumanCaller,
     Json(body): Json<super::webauthn::FinishRegistration>,
 ) -> Response {
     if state.webauthn.is_none() {
@@ -260,7 +212,8 @@ pub async fn webauthn_register_finish(
     }
 }
 
-pub async fn webauthn_login_start(State(state): State<AuthState>, user: CurrentUser) -> Response {
+/// HTTP surface in `crate::control::api::auth::webauthn_login_start`.
+pub async fn webauthn_login_start(State(state): State<AuthState>, user: HumanCaller) -> Response {
     if state.webauthn.is_none() {
         return webauthn_unavailable();
     }
@@ -273,9 +226,10 @@ pub async fn webauthn_login_start(State(state): State<AuthState>, user: CurrentU
     }
 }
 
+/// HTTP surface in `crate::control::api::auth::webauthn_login_finish`.
 pub async fn webauthn_login_finish(
     State(state): State<AuthState>,
-    user: CurrentUser,
+    user: HumanCaller,
     Json(body): Json<super::webauthn::FinishAuthentication>,
 ) -> Response {
     if state.webauthn.is_none() {
@@ -290,7 +244,8 @@ pub async fn webauthn_login_finish(
     }
 }
 
-pub async fn webauthn_list(State(state): State<AuthState>, user: CurrentUser) -> Response {
+/// HTTP surface in `crate::control::api::auth::webauthn_list`.
+pub async fn webauthn_list(State(state): State<AuthState>, user: HumanCaller) -> Response {
     match super::webauthn::list(&state, &user.0.id).await {
         Ok(creds) => Json(creds).into_response(),
         Err(e) => {
@@ -300,9 +255,10 @@ pub async fn webauthn_list(State(state): State<AuthState>, user: CurrentUser) ->
     }
 }
 
+/// HTTP surface in `crate::control::api::auth::webauthn_delete`.
 pub async fn webauthn_delete(
     State(state): State<AuthState>,
-    user: CurrentUser,
+    user: HumanCaller,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Response {
     match super::webauthn::delete(&state, &user.0.id, &id).await {
@@ -315,7 +271,7 @@ pub async fn webauthn_delete(
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct BootstrapStatus {
     pub needed: bool,
     /// `"self-hosted"` or `"managed"`, or `null` if the mode hasn't been set
@@ -323,9 +279,8 @@ pub struct BootstrapStatus {
     pub mode: Option<&'static str>,
 }
 
-/// GET /auth/bootstrap — drives the first-admin path on the UI side. `needed`
-/// is true while `users` is empty; `mode` tells the UI which screen to show
-/// (form for self-hosted, "Login with mlsh.io" for managed).
+/// Drives the first-admin path on the UI side.
+/// HTTP surface in `crate::control::api::auth::bootstrap_status`.
 pub async fn bootstrap_status(State(state): State<AuthState>) -> Response {
     let needed = match state.store.user_count().await {
         Ok(n) => n == 0,
@@ -345,7 +300,7 @@ pub async fn bootstrap_status(State(state): State<AuthState>) -> Response {
     Json(BootstrapStatus { needed, mode }).into_response()
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct DeviceStartResponse {
     pub ticket: String,
     pub user_code: String,
@@ -353,10 +308,11 @@ pub struct DeviceStartResponse {
     pub interval: u64,
 }
 
-/// POST /auth/login/device/start — kick off a mlsh-cloud device-flow login.
-/// mlsh-control reaches out to mlsh-cloud, gets a `(device_code, user_code,
-/// verification_uri, interval)`, returns everything except `device_code` to
-/// the UI (the device_code stays server-side, keyed by an opaque ticket).
+/// Kick off a mlsh-cloud device-flow login. mlsh-control reaches out to
+/// mlsh-cloud, gets a `(device_code, user_code, verification_uri, interval)`,
+/// returns everything except `device_code` to the UI (the device_code stays
+/// server-side, keyed by an opaque ticket).
+/// HTTP surface in `crate::control::api::auth::device_start`.
 pub async fn device_start(State(state): State<AuthState>) -> Response {
     if !state.oauth.is_ready() {
         return (
@@ -388,14 +344,15 @@ pub async fn device_start(State(state): State<AuthState>) -> Response {
     .into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct DevicePollRequest {
     pub ticket: String,
 }
 
-/// POST /auth/login/device/poll — one-shot poll. Returns 200 with a session
-/// cookie when mlsh-cloud emits a token. Returns 425 (Too Early) while the
-/// user hasn't authorized yet. Returns 410 (Gone) on expiry / unknown ticket.
+/// One-shot poll. Returns 200 with a session cookie when mlsh-cloud emits a
+/// token. Returns 425 (Too Early) while the user hasn't authorized yet.
+/// Returns 410 (Gone) on expiry / unknown ticket.
+/// HTTP surface in `crate::control::api::auth::device_poll`.
 pub async fn device_poll(
     State(state): State<AuthState>,
     Json(body): Json<DevicePollRequest>,
@@ -465,14 +422,15 @@ pub async fn device_poll(
     (StatusCode::OK, headers, Json(UserView::from(user))).into_response()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct BootstrapRequest {
     pub email: String,
     pub password: String,
 }
 
-/// POST /auth/bootstrap — create the first admin and immediately log them in.
-/// Returns 409 if the bootstrap window already closed (any user exists).
+/// Create the first admin and immediately log them in. Returns 409 if the
+/// bootstrap window already closed (any user exists, or managed mode).
+/// HTTP surface in `crate::control::api::auth::bootstrap_create`.
 pub async fn bootstrap_create(
     State(state): State<AuthState>,
     Json(body): Json<BootstrapRequest>,
@@ -580,6 +538,17 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            "CREATE TABLE totp_credentials (
+                user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                secret_enc BLOB NOT NULL,
+                verified INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let store = AuthStore::new(pool);
         store
             .create_local_user(NewLocalUser {
@@ -596,6 +565,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         }
     }
 
@@ -687,6 +657,7 @@ mod tests {
             mfa_key: std::sync::Arc::new([0u8; 32]),
             webauthn: None,
             events: crate::control::events::EventHub::new(),
+            cluster: crate::tund::cluster_config::ClusterConfig::dummy(),
         }
     }
 

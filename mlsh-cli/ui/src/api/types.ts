@@ -3,16 +3,31 @@
 // `serde` representation on the Rust side.
 
 export interface NodeInfo {
-  node_id: string
-  overlay_ip: string
-  role: string
-  online: boolean
+  /** Stable node UUID. */
+  id: string
+  /** Mutable, human-readable name. */
   display_name: string
+  /** `"node"` or `"admin"` (and the implied `"control"` superset). */
+  role: string
+  /** `"active"` or `"revoked"`. */
+  status: string
+  /** `true` when `status === "active"`. */
+  online: boolean
+  /** Cert fingerprint (cluster-CA-signed). */
+  fingerprint: string
+  /** RFC 3339 UTC. */
+  last_seen: string | null
+  /** RFC 3339 UTC. */
+  created_at: string
 }
 
-export interface WhoAmI {
-  cluster: string
-  roles: string[]
+export interface Cluster {
+  /** Stable cluster UUID. */
+  id: string
+  /** Human-readable cluster name. */
+  name: string
+  /** mlsh version of the control instance serving this cluster. */
+  version: string
 }
 
 export interface ApiError {
@@ -39,14 +54,6 @@ export interface ManagedUser {
   source: 'local' | 'managed'
   active: boolean
   must_change_password: boolean
-}
-
-export interface SessionView {
-  id: string
-  created_at: string
-  expires_at: string
-  revoked: boolean
-  current: boolean
 }
 
 export interface TotpEnrollment {

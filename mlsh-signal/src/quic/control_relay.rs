@@ -1,4 +1,22 @@
 //! ALPN `mlsh-control` connection handler — relays streams to the control node.
+//!
+//! ADR-035 Phase G — **this is the bootstrap path only**.
+//!
+//! Every steady-state admin operation now uses the REST API at
+//! `https://control.<cluster>:8443` over the overlay (Phase E). The relay
+//! kept here serves nodes that **do not yet have an overlay address**:
+//!   - `mlsh adopt <invite>` — first-ever connection of a new node, before
+//!     it's been registered in the cluster's `nodes` table.
+//!   - The joining node sends [`ControlRequest::AdoptConfirm`] CBOR,
+//!     signal relays it to the control node, the control node upserts.
+//!   - From the next call onward the new node has an overlay address
+//!     and reaches the control plane directly.
+//!
+//! Two non-bootstrap flows still ride this relay because they happen
+//! *before* the overlay is up on a given tunnel daemon, even after the
+//! node has joined: `Subscribe` (event stream) and `ListNodes` (seed of
+//! the daemon's local peer-name cache). All three flows are internal
+//! infrastructure — never expose new admin operations through this relay.
 
 use std::sync::Arc;
 
