@@ -40,9 +40,7 @@ pub async fn handle_ui(cluster_name: &str, open_browser: bool) -> Result<()> {
     let config = load_cluster_config(cluster_name, &base_dir)?;
 
     let state = build_proxy_state(&config)?;
-    let app = Router::new()
-        .fallback(any(proxy_handler))
-        .with_state(state);
+    let app = Router::new().fallback(any(proxy_handler)).with_state(state);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -54,7 +52,7 @@ pub async fn handle_ui(cluster_name: &str, open_browser: bool) -> Result<()> {
         "{} {} {}",
         "mlsh ui:".bold(),
         url.cyan(),
-        format!("→ control.{}:{}", config.name, CONTROL_PORT).dimmed()
+        format!("→ {}:{}", config.name, CONTROL_PORT).dimmed()
     );
 
     if open_browser {
@@ -70,10 +68,10 @@ pub async fn handle_ui(cluster_name: &str, open_browser: bool) -> Result<()> {
 }
 
 fn build_proxy_state(config: &ClusterConfig) -> Result<ProxyState> {
-    let cert_pem = std::fs::read(config.identity_dir.join("cert.pem"))
-        .context("read identity cert.pem")?;
-    let key_pem = std::fs::read(config.identity_dir.join("key.pem"))
-        .context("read identity key.pem")?;
+    let cert_pem =
+        std::fs::read(config.identity_dir.join("cert.pem")).context("read identity cert.pem")?;
+    let key_pem =
+        std::fs::read(config.identity_dir.join("key.pem")).context("read identity key.pem")?;
 
     let mut identity_pem = cert_pem;
     identity_pem.extend_from_slice(b"\n");
@@ -91,7 +89,7 @@ fn build_proxy_state(config: &ClusterConfig) -> Result<ProxyState> {
         .context("build reqwest client")?;
 
     Ok(ProxyState {
-        upstream_base: format!("https://control.{}:{}", config.name, CONTROL_PORT),
+        upstream_base: format!("https://{}:{}", config.name, CONTROL_PORT),
         client,
     })
 }
@@ -149,9 +147,12 @@ async fn proxy_handler(
             .expect("axum::Response::Builder::headers_mut on fresh builder");
         copy_response_headers(&upstream_headers, headers);
     }
-    response
-        .body(Body::from(body_bytes))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("build resp: {e}")))
+    response.body(Body::from(body_bytes)).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("build resp: {e}"),
+        )
+    })
 }
 
 /// Headers that must not be forwarded from the browser to the upstream.
@@ -160,7 +161,10 @@ async fn proxy_handler(
 fn filter_request_headers(src: &HeaderMap) -> HeaderMap {
     let mut out = HeaderMap::with_capacity(src.len());
     for (name, value) in src {
-        if HOP_BY_HOP.iter().any(|h| name.as_str().eq_ignore_ascii_case(h)) {
+        if HOP_BY_HOP
+            .iter()
+            .any(|h| name.as_str().eq_ignore_ascii_case(h))
+        {
             continue;
         }
         if name == header::HOST {
@@ -178,7 +182,10 @@ fn filter_request_headers(src: &HeaderMap) -> HeaderMap {
 /// cookie outright).
 fn copy_response_headers(upstream: &HeaderMap, dest: &mut HeaderMap) {
     for (name, value) in upstream {
-        if HOP_BY_HOP.iter().any(|h| name.as_str().eq_ignore_ascii_case(h)) {
+        if HOP_BY_HOP
+            .iter()
+            .any(|h| name.as_str().eq_ignore_ascii_case(h))
+        {
             continue;
         }
         if name == header::SET_COOKIE {
@@ -236,4 +243,3 @@ fn open_in_browser(url: &str) {
         );
     }
 }
-

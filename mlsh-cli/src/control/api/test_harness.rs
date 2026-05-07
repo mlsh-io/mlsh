@@ -47,7 +47,19 @@ pub async fn body_json<T: DeserializeOwned>(resp: Response) -> T {
     let bytes = body_bytes(resp).await;
     serde_json::from_slice(&bytes).unwrap_or_else(|e| {
         let preview = String::from_utf8_lossy(&bytes);
-        panic!("expected JSON {}, got: {}", std::any::type_name::<T>(), preview.chars().take(500).collect::<String>().trim().to_string() + " (" + &e.to_string() + ")")
+        panic!(
+            "expected JSON {}, got: {}",
+            std::any::type_name::<T>(),
+            preview
+                .chars()
+                .take(500)
+                .collect::<String>()
+                .trim()
+                .to_string()
+                + " ("
+                + &e.to_string()
+                + ")"
+        )
     })
 }
 
@@ -85,8 +97,7 @@ impl TestApp {
     /// (drop it when the test ends).
     pub async fn with_identity_dir() -> (Self, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        let identity =
-            mlsh_crypto::identity::load_or_generate(dir.path(), "test-node").unwrap();
+        let identity = mlsh_crypto::identity::load_or_generate(dir.path(), "test-node").unwrap();
         // load_or_generate writes cert.pem + key.pem; double-check the
         // shape so tests don't fail later for opaque IO reasons.
         assert!(dir.path().join("cert.pem").exists());

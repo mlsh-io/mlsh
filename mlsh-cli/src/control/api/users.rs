@@ -443,11 +443,7 @@ mod tests {
     #[tokio::test]
     async fn create_user_rejected_in_managed_mode() {
         let app = TestApp::new().await;
-        app.state
-            .store
-            .set_config("mode", "managed")
-            .await
-            .unwrap();
+        app.state.store.set_config("mode", "managed").await.unwrap();
         let resp = app
             .post(
                 "/api/v1/users",
@@ -576,9 +572,7 @@ mod tests {
     #[tokio::test]
     async fn delete_self_returns_403() {
         let app = TestApp::new().await;
-        let resp = app
-            .delete(&format!("/api/v1/users/{}", app.admin.id))
-            .await;
+        let resp = app.delete(&format!("/api/v1/users/{}", app.admin.id)).await;
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
@@ -607,9 +601,7 @@ mod tests {
             .await
             .unwrap();
 
-        let resp = app
-            .delete(&format!("/api/v1/users/{}", alice.id))
-            .await;
+        let resp = app.delete(&format!("/api/v1/users/{}", alice.id)).await;
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
         let reread = app.state.store.find_by_id(&alice.id).await.unwrap();

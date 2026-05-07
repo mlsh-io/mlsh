@@ -43,7 +43,10 @@ pub fn router(state: AuthState) -> Router {
         .route("/auth/totp/verify", post(totp_verify))
         .route("/auth/totp", delete(totp_delete))
         // WebAuthn
-        .route("/auth/webauthn/register/start", post(webauthn_register_start))
+        .route(
+            "/auth/webauthn/register/start",
+            post(webauthn_register_start),
+        )
         .route(
             "/auth/webauthn/register/finish",
             post(webauthn_register_finish),

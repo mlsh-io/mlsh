@@ -23,7 +23,9 @@ pub async fn serve(state: AuthState) -> Result<()> {
     let app = build_app(state);
 
     let bind = std::env::var("MLSH_CONTROL_BIND").unwrap_or_else(|_| "0.0.0.0:8443".to_string());
-    let addr: std::net::SocketAddr = bind.parse().with_context(|| format!("invalid bind address {bind}"))?;
+    let addr: std::net::SocketAddr = bind
+        .parse()
+        .with_context(|| format!("invalid bind address {bind}"))?;
 
     let rustls_config = tls::build_server_config(&cluster).context("build TLS server config")?;
     let tls = RustlsConfig::from_config(Arc::new(rustls_config));

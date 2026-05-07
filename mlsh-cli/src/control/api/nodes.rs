@@ -20,10 +20,7 @@ use mlsh_protocol::control::ControlEvent;
 pub fn router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/nodes", get(list_nodes))
-        .route(
-            "/api/v1/nodes/{node}",
-            get(get_node).delete(delete_node),
-        )
+        .route("/api/v1/nodes/{node}", get(get_node).delete(delete_node))
         .route("/api/v1/nodes/{node}/name", post(set_name))
         .route("/api/v1/nodes/{node}/role", post(set_role))
         .route("/api/v1/nodes/{node}/revoke", post(revoke))
@@ -416,10 +413,7 @@ mod tests {
         seed_node(&app, "u1", "fp1", "name", "node").await;
 
         let resp = app
-            .post(
-                "/api/v1/nodes/u1/name",
-                &json!({ "display_name": "   " }),
-            )
+            .post("/api/v1/nodes/u1/name", &json!({ "display_name": "   " }))
             .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
@@ -428,10 +422,7 @@ mod tests {
     async fn set_name_unknown_node_returns_404() {
         let app = TestApp::new().await;
         let resp = app
-            .post(
-                "/api/v1/nodes/ghost/name",
-                &json!({ "display_name": "x" }),
-            )
+            .post("/api/v1/nodes/ghost/name", &json!({ "display_name": "x" }))
             .await;
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
@@ -478,10 +469,7 @@ mod tests {
         seed_node(&app, "u1", "fp1", "name", "node").await;
 
         let resp = app
-            .post(
-                "/api/v1/nodes/u1/role",
-                &json!({ "role": "superadmin" }),
-            )
+            .post("/api/v1/nodes/u1/role", &json!({ "role": "superadmin" }))
             .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }

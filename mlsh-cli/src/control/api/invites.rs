@@ -96,18 +96,17 @@ pub async fn create_invite(
         Ok(k) => k,
         Err(e) => {
             tracing::warn!(path = %key_path.display(), error = %e, "sponsor key.pem unreadable");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "sponsor key unavailable")
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "sponsor key unavailable").into_response();
         }
     };
 
-    let signal_fingerprint = (!cluster.signal_fingerprint.is_empty())
-        .then_some(cluster.signal_fingerprint.as_str());
+    let signal_fingerprint =
+        (!cluster.signal_fingerprint.is_empty()).then_some(cluster.signal_fingerprint.as_str());
     let root_fingerprint =
         (!cluster.root_fingerprint.is_empty()).then_some(cluster.root_fingerprint.as_str());
 
-    let token = match mlsh_crypto::invite::generate_signed_invite_full(
-        &mlsh_crypto::invite::InviteParams {
+    let token =
+        match mlsh_crypto::invite::generate_signed_invite_full(&mlsh_crypto::invite::InviteParams {
             key_pem: &key_pem,
             cluster_id: &cluster.cluster_id,
             cluster_name: &cluster.name,
@@ -116,15 +115,14 @@ pub async fn create_invite(
             ttl_seconds: ttl,
             signal_fingerprint,
             root_fingerprint,
-        },
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!(error = %e, "invite signing failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "invite signing failed")
-                .into_response();
-        }
-    };
+        }) {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(error = %e, "invite signing failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "invite signing failed")
+                    .into_response();
+            }
+        };
 
     let url = format!("mlsh://{}/adopt/{}", cluster.signal_endpoint, token);
 
@@ -197,10 +195,7 @@ mod tests {
     async fn create_invite_ttl_capped_at_30_days() {
         let (app, _dir) = TestApp::with_identity_dir().await;
         let resp = app
-            .post(
-                "/api/v1/invites",
-                &json!({ "ttl_seconds": u64::MAX / 2 }),
-            )
+            .post("/api/v1/invites", &json!({ "ttl_seconds": u64::MAX / 2 }))
             .await;
         assert_eq!(resp.status(), StatusCode::CREATED);
         let body: InviteResponse = body_json(resp).await;

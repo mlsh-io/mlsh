@@ -30,10 +30,10 @@ pub fn for_cluster(cluster_name: &str) -> Result<(Client, ClusterConfig)> {
     let base_dir = crate::config::config_dir()?;
     let config = load_cluster_config(cluster_name, &base_dir)?;
 
-    let cert_pem = std::fs::read(config.identity_dir.join("cert.pem"))
-        .context("read identity cert.pem")?;
-    let key_pem = std::fs::read(config.identity_dir.join("key.pem"))
-        .context("read identity key.pem")?;
+    let cert_pem =
+        std::fs::read(config.identity_dir.join("cert.pem")).context("read identity cert.pem")?;
+    let key_pem =
+        std::fs::read(config.identity_dir.join("key.pem")).context("read identity key.pem")?;
 
     let mut identity_pem = cert_pem.clone();
     identity_pem.extend_from_slice(b"\n");
@@ -48,7 +48,7 @@ pub fn for_cluster(cluster_name: &str) -> Result<(Client, ClusterConfig)> {
         .build()
         .context("build reqwest client")?;
 
-    let base_url = format!("https://control.{}:{}", config.name, DEFAULT_CONTROL_PORT);
+    let base_url = format!("https://{}:{}", config.name, DEFAULT_CONTROL_PORT);
     let client = Client::new_with_client(&base_url, http);
 
     Ok((client, config))

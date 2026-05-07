@@ -62,11 +62,7 @@ pub async fn list(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRow>> {
     Ok(rows)
 }
 
-pub async fn find(
-    pool: &SqlitePool,
-    cluster_id: &str,
-    node_uuid: &str,
-) -> Result<Option<NodeRow>> {
+pub async fn find(pool: &SqlitePool, cluster_id: &str, node_uuid: &str) -> Result<Option<NodeRow>> {
     let q =
         format!("SELECT {SELECT_COLS} FROM nodes WHERE cluster_id = ? AND node_uuid = ? LIMIT 1");
     let row = sqlx::query_as::<_, NodeRow>(&q)

@@ -11,16 +11,16 @@
 //! either flavor takes `Caller`; a handler that only wants one variant
 //! pattern-matches and returns 403 on the wrong flavor.
 
-use axum::{
-    extract::{FromRequestParts, OptionalFromRequestParts},
-    http::{request::Parts, StatusCode},
-    response::{IntoResponse, Response},
-};
 use super::mtls_acceptor::PeerCert;
 use super::session::CurrentUser;
 use super::store::User;
 use super::AuthState;
 use crate::control::nodes::{self, NodeRow};
+use axum::{
+    extract::{FromRequestParts, OptionalFromRequestParts},
+    http::{request::Parts, StatusCode},
+    response::{IntoResponse, Response},
+};
 
 /// Strict human-only extractor — requires a valid session cookie. The
 /// presence of a client cert is *ignored*: the cookie is the source of
@@ -41,8 +41,7 @@ impl FromRequestParts<AuthState> for HumanCaller {
         parts: &mut Parts,
         state: &AuthState,
     ) -> Result<Self, Self::Rejection> {
-        match <CurrentUser as FromRequestParts<AuthState>>::from_request_parts(parts, state).await
-        {
+        match <CurrentUser as FromRequestParts<AuthState>>::from_request_parts(parts, state).await {
             Ok(CurrentUser(user)) => Ok(HumanCaller(user)),
             Err(rej) => Err(rej),
         }
@@ -91,8 +90,7 @@ impl FromRequestParts<AuthState> for Caller {
         if let Some(caller) = resolve_machine(parts, state).await? {
             return Ok(caller);
         }
-        match <CurrentUser as FromRequestParts<AuthState>>::from_request_parts(parts, state).await
-        {
+        match <CurrentUser as FromRequestParts<AuthState>>::from_request_parts(parts, state).await {
             Ok(CurrentUser(user)) => Ok(Caller::from_user(user)),
             Err(rej) => Err(rej),
         }
@@ -109,10 +107,8 @@ impl OptionalFromRequestParts<AuthState> for Caller {
         if let Some(caller) = resolve_machine(parts, state).await? {
             return Ok(Some(caller));
         }
-        match <CurrentUser as OptionalFromRequestParts<AuthState>>::from_request_parts(
-            parts, state,
-        )
-        .await
+        match <CurrentUser as OptionalFromRequestParts<AuthState>>::from_request_parts(parts, state)
+            .await
         {
             Ok(opt) => Ok(opt.map(|CurrentUser(u)| Caller::from_user(u))),
             Err(rej) => Err(rej),
@@ -126,10 +122,7 @@ impl OptionalFromRequestParts<AuthState> for Caller {
 /// the registry — the caller falls back to the session-cookie path.
 /// `Ok(Some)` returns a fully-resolved `Caller::Machine`. Errors only on
 /// internal failures (DB unreachable).
-async fn resolve_machine(
-    parts: &Parts,
-    state: &AuthState,
-) -> Result<Option<Caller>, Response> {
+async fn resolve_machine(parts: &Parts, state: &AuthState) -> Result<Option<Caller>, Response> {
     let Some(PeerCert(cert)) = parts.extensions.get::<PeerCert>().cloned() else {
         return Ok(None);
     };
@@ -141,10 +134,7 @@ async fn resolve_machine(
         Ok(None) => Ok(None),
         Err(e) => {
             tracing::warn!(error = %e, "machine fingerprint lookup failed");
-            Err(
-                (StatusCode::INTERNAL_SERVER_ERROR, "machine auth failed")
-                    .into_response(),
-            )
+            Err((StatusCode::INTERNAL_SERVER_ERROR, "machine auth failed").into_response())
         }
     }
 }

@@ -130,8 +130,32 @@ async fn resolve(
     let name = name.strip_suffix('.').unwrap_or(name).to_lowercase();
     let zone = config.zone.to_lowercase();
 
-    // Bare zone → self
+    let peers = peer_table.known_peers().await;
+
+    // Bare zone → cluster control node. This is the canonical entry point
+    // for the admin REST API and the bundled UI: `<cluster>` (overlay) and
+    // `<cluster>.<public_zone>` (Internet, when exposed) resolve to the
+    // same control node, mirroring each other.
+    //
+    // When the local node *is* the control node, return loopback rather
+    // than its own overlay IP: macOS' utun does not loop packets back to
+    // itself, so a TCP connect to the local overlay IP would time out.
+    // Loopback bypasses the TUN entirely (the control listener binds on
+    // 0.0.0.0:8443 so it accepts both).
+    //
+    // Bootstrap window: while `display_names.control_uuid()` is None
+    // (between tunnel up and the first `ListNodes` seed), fall back to
+    // `my_ip` so the bare zone keeps resolving to *something* — better
+    // than NXDOMAIN that would force a retry loop.
     if name == zone {
+        if let Some(uuid) = display_names.control_uuid().await {
+            if uuid == my_node_id {
+                return Some(Ipv4Addr::new(127, 0, 0, 1));
+            }
+            if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
+                return p.overlay_ip.parse().ok();
+            }
+        }
         return Some(my_ip);
     }
 
@@ -149,31 +173,8 @@ async fn resolve(
         return Some(my_ip);
     }
 
-    let peers = peer_table.known_peers().await;
-
     if let Some(p) = peers.iter().find(|p| p.node_id.to_lowercase() == label) {
         return p.overlay_ip.parse().ok();
-    }
-
-    // Reserved label `control.<cluster>` → IP of the cluster's control
-    // node. The UUID is pushed into `DisplayNameMap` by the mlsh-control
-    // session (via the `is_control_node` flag in `ControlNodeInfo`).
-    //
-    // When the local node *is* the control node, return loopback rather
-    // than its overlay IP: macOS' utun device doesn't loop packets back
-    // to itself, so a TCP connect to our own overlay IP would just time
-    // out. Loopback bypasses the TUN entirely (the control listener
-    // binds on 0.0.0.0:8443 so it accepts both).
-    if label == "control" {
-        if let Some(uuid) = display_names.control_uuid().await {
-            if uuid == my_node_id {
-                return Some(Ipv4Addr::new(127, 0, 0, 1));
-            }
-            if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
-                return p.overlay_ip.parse().ok();
-            }
-        }
-        return None;
     }
 
     // Display-name lookup: control owns the name → uuid mapping; the
@@ -347,7 +348,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_bare_zone_returns_self() {
+    async fn resolve_bare_zone_falls_back_to_self_during_bootstrap() {
+        // Before the daemon's mlsh-control session has seeded the
+        // display-name map, the control UUID is unknown. The resolver
+        // must still return *something* for the bare zone to avoid an
+        // NXDOMAIN retry loop, so we fall back to my_ip until the seed
+        // arrives.
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -565,35 +571,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_control_label_when_self_is_control_returns_loopback() {
-        // When the local node is the control node we deliberately return
-        // 127.0.0.1 instead of `my_ip`: macOS doesn't loop packets sent
-        // to its own utun overlay IP, so TCP would time out. Loopback
-        // sidesteps the TUN entirely.
+    async fn resolve_bare_zone_self_is_control_returns_loopback() {
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
             ttl: 60,
         };
         let table = PeerTable::new();
-        let my_ip = Ipv4Addr::new(100, 64, 0, 1);
         let map = DisplayNameMap::new();
         map.set_local_control_uuid("nas".into()).await;
 
-        let ip = resolve(
-            "control.homelab",
-            &config,
-            my_ip,
-            "nas",
-            &map,
-            &table,
-        )
-        .await;
+        let ip = resolve("homelab", &config, Ipv4Addr::new(100, 64, 0, 1), "nas", &map, &table).await;
         assert_eq!(ip, Some(Ipv4Addr::new(127, 0, 0, 1)));
     }
 
     #[tokio::test]
-    async fn resolve_control_label_when_remote_is_control() {
+    async fn resolve_bare_zone_remote_control() {
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
@@ -622,36 +615,8 @@ mod tests {
         }])
         .await;
 
-        let ip = resolve(
-            "control.homelab",
-            &config,
-            Ipv4Addr::new(100, 64, 0, 1),
-            "nas",
-            &map,
-            &table,
-        )
-        .await;
+        let ip = resolve("homelab", &config, Ipv4Addr::new(100, 64, 0, 1), "nas", &map, &table).await;
         assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 7)));
-    }
-
-    #[tokio::test]
-    async fn resolve_control_label_unknown_returns_none() {
-        let config = DnsConfig {
-            bind_addr: "127.0.0.1:0".parse().unwrap(),
-            zone: "homelab".into(),
-            ttl: 60,
-        };
-        let table = PeerTable::new();
-        let ip = resolve(
-            "control.homelab",
-            &config,
-            Ipv4Addr::new(100, 64, 0, 1),
-            "nas",
-            &DisplayNameMap::new(),
-            &table,
-        )
-        .await;
-        assert!(ip.is_none());
     }
 
     #[tokio::test]
