@@ -73,5 +73,45 @@ pub async fn serve(config: Arc<ClusterConfig>) -> anyhow::Result<()> {
         }
     });
 
+    resume_expose(&state).await;
+
     server::serve(state).await
+}
+
+/// On boot, if the operator previously enabled "expose admin UI" via the
+/// REST endpoint, re-declare the route to signal so it survives daemon
+/// restarts. Best-effort — if signal is unreachable or rejects, the
+/// toggle stays on and the next user action will retry.
+async fn resume_expose(state: &auth::AuthState) {
+    let enabled = state
+        .store
+        .get_config("expose_control_enabled")
+        .await
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if !enabled || state.cluster.zone.is_empty() {
+        return;
+    }
+    let Some(manager) = crate::tund::manager_handle::get() else {
+        return;
+    };
+    let domain = format!("{}.{}", state.cluster.name, state.cluster.zone);
+    let target = "https://127.0.0.1:8443".to_string();
+    let mgr = manager.lock().await;
+    if let Err(e) = mgr.expose(&state.cluster.name, &domain, &target).await {
+        tracing::warn!(error = %e, %domain, "resume expose failed");
+        return;
+    }
+    drop(mgr);
+    crate::tund::ingress::add(&domain, &target);
+    crate::tund::acme::spawn_issuance(
+        manager.clone(),
+        state.cluster.name.clone(),
+        domain.clone(),
+        None,
+        crate::tund::acme::Directory::Production,
+    );
+    tracing::info!(%domain, "resumed expose for control UI");
 }

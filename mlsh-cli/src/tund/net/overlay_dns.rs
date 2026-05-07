@@ -581,7 +581,15 @@ mod tests {
         let map = DisplayNameMap::new();
         map.set_local_control_uuid("nas".into()).await;
 
-        let ip = resolve("homelab", &config, Ipv4Addr::new(100, 64, 0, 1), "nas", &map, &table).await;
+        let ip = resolve(
+            "homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &map,
+            &table,
+        )
+        .await;
         assert_eq!(ip, Some(Ipv4Addr::new(127, 0, 0, 1)));
     }
 
@@ -615,7 +623,15 @@ mod tests {
         }])
         .await;
 
-        let ip = resolve("homelab", &config, Ipv4Addr::new(100, 64, 0, 1), "nas", &map, &table).await;
+        let ip = resolve(
+            "homelab",
+            &config,
+            Ipv4Addr::new(100, 64, 0, 1),
+            "nas",
+            &map,
+            &table,
+        )
+        .await;
         assert_eq!(ip, Some(Ipv4Addr::new(100, 64, 0, 7)));
     }
 

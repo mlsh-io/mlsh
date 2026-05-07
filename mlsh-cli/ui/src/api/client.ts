@@ -1,6 +1,7 @@
 import type {
   BootstrapStatus,
   Cluster,
+  ClusterExpose,
   DeviceFlowStart,
   ManagedUser,
   NodeInfo,
@@ -48,6 +49,12 @@ function jsonInit(method: string, body?: unknown): RequestInit {
 export const api = {
   getCluster(): Promise<Cluster> {
     return request<Cluster>('/api/v1/cluster')
+  },
+  getClusterExpose(): Promise<ClusterExpose> {
+    return request<ClusterExpose>('/api/v1/cluster/expose')
+  },
+  setClusterExpose(enabled: boolean): Promise<ClusterExpose> {
+    return request<ClusterExpose>('/api/v1/cluster/expose', jsonInit('PUT', { enabled }))
   },
   getCurrentUser(): Promise<SessionUser> {
     return request<SessionUser>('/api/v1/users/current')

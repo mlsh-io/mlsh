@@ -32,6 +32,8 @@ use utoipa::OpenApi;
         super::auth::webauthn_delete,
         // Cluster
         super::cluster::get_cluster,
+        super::cluster::get_expose,
+        super::cluster::put_expose,
         // Users
         super::users::get_current,
         super::users::list_users,
@@ -68,6 +70,8 @@ use utoipa::OpenApi;
             crate::control::auth::webauthn::CredentialView,
             // Cluster
             super::cluster::ClusterResponse,
+            super::cluster::ClusterExposeResponse,
+            super::cluster::ClusterExposeRequest,
             // Users
             super::users::CurrentUserResponse,
             super::users::UserResponse,

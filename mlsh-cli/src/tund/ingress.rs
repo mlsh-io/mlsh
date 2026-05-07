@@ -225,12 +225,10 @@ pub async fn handle_ingress_stream(
             return Ok(());
         }
     };
-    let upstream_addr = parse_upstream(&target)
+    let parsed = parse_upstream(&target)
         .with_context(|| format!("Invalid ingress target URL: {}", target))?;
 
-    // Build a TLS acceptor for this SNI. Self-signed until ACME supplies one.
     let acceptor = get_or_build_acceptor(&domain)?;
-
     let quic_stream = DuplexStream::new(send, recv);
     let tls_stream = match acceptor.accept(quic_stream).await {
         Ok(s) => s,
@@ -239,51 +237,129 @@ pub async fn handle_ingress_stream(
             return Ok(());
         }
     };
-    info!(%domain, %client_ip, upstream = %upstream_addr, "Ingress TLS established, splicing");
+    info!(%domain, %client_ip, upstream = %parsed.addr, "Ingress TLS established, splicing");
 
-    let upstream = TcpStream::connect(upstream_addr)
+    let upstream = TcpStream::connect(parsed.addr)
         .await
-        .with_context(|| format!("Failed to connect to upstream {}", upstream_addr))?;
+        .with_context(|| format!("Failed to connect to upstream {}", parsed.addr))?;
 
-    let (mut tls_read, mut tls_write) = tokio::io::split(tls_stream);
-    let (mut u_read, mut u_write) = upstream.into_split();
-
-    let c_to_u = tokio::io::copy(&mut tls_read, &mut u_write);
-    let u_to_c = tokio::io::copy(&mut u_read, &mut tls_write);
-    let (r1, r2) = tokio::join!(c_to_u, u_to_c);
-    debug!(
-        %domain,
-        client_to_upstream = ?r1.ok(),
-        upstream_to_client = ?r2.ok(),
-        "Ingress splice done"
-    );
-
-    let _ = u_write.shutdown().await;
-    let _ = tls_write.shutdown().await;
+    if parsed.tls {
+        let connector = upstream_tls_connector();
+        let server_name = rustls::pki_types::ServerName::try_from(parsed.host.clone())
+            .with_context(|| format!("Invalid upstream host {}", parsed.host))?;
+        let upstream_tls = connector
+            .connect(server_name, upstream)
+            .await
+            .context("upstream TLS handshake failed")?;
+        splice(tls_stream, upstream_tls).await;
+    } else {
+        splice(tls_stream, upstream).await;
+    }
     Ok(())
 }
 
-/// Parse `http://host:port` or `host:port` into a SocketAddr.
-fn parse_upstream(url: &str) -> Result<SocketAddr> {
-    let stripped = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .unwrap_or(url);
-    let hostport = stripped.split('/').next().unwrap_or(stripped);
+async fn splice<C, U>(client: C, upstream: U)
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    U: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut c_r, mut c_w) = tokio::io::split(client);
+    let (mut u_r, mut u_w) = tokio::io::split(upstream);
+    let c_to_u = tokio::io::copy(&mut c_r, &mut u_w);
+    let u_to_c = tokio::io::copy(&mut u_r, &mut c_w);
+    let _ = tokio::join!(c_to_u, u_to_c);
+    let _ = u_w.shutdown().await;
+    let _ = c_w.shutdown().await;
+}
+
+/// Build a rustls client connector that accepts self-signed certs. Used to
+/// reach mlsh-control's own listener (it presents a self-signed identity
+/// cert) when the operator chooses to expose the admin UI: the ingress
+/// terminates the public Let's Encrypt cert and re-encrypts toward
+/// `https://127.0.0.1:8443`.
+fn upstream_tls_connector() -> tokio_rustls::TlsConnector {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+
+    #[derive(Debug)]
+    struct AcceptAnyServer;
+    impl ServerCertVerifier for AcceptAnyServer {
+        fn verify_server_cert(
+            &self,
+            _e: &rustls::pki_types::CertificateDer<'_>,
+            _i: &[rustls::pki_types::CertificateDer<'_>],
+            _s: &rustls::pki_types::ServerName<'_>,
+            _o: &[u8],
+            _n: rustls::pki_types::UnixTime,
+        ) -> std::result::Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            _m: &[u8],
+            _c: &rustls::pki_types::CertificateDer<'_>,
+            _d: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn verify_tls13_signature(
+            &self,
+            _m: &[u8],
+            _c: &rustls::pki_types::CertificateDer<'_>,
+            _d: &rustls::DigitallySignedStruct,
+        ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            rustls::crypto::aws_lc_rs::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    let cfg = rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAnyServer))
+        .with_no_client_auth();
+    tokio_rustls::TlsConnector::from(std::sync::Arc::new(cfg))
+}
+
+struct ParsedUpstream {
+    addr: SocketAddr,
+    host: String,
+    tls: bool,
+}
+
+/// Parse `http://host:port`, `https://host:port`, or `host:port`.
+fn parse_upstream(url: &str) -> Result<ParsedUpstream> {
+    let (rest, tls) = if let Some(r) = url.strip_prefix("https://") {
+        (r, true)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (r, false)
+    } else {
+        (url, false)
+    };
+    let hostport = rest.split('/').next().unwrap_or(rest);
     let (host, port_str) = hostport
         .rsplit_once(':')
         .context("Upstream must include :port")?;
     let port: u16 = port_str.parse().context("Invalid upstream port")?;
     let host = host.trim_start_matches('[').trim_end_matches(']');
 
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return Ok(SocketAddr::new(ip, port));
-    }
-    use std::net::ToSocketAddrs;
-    (host, port)
-        .to_socket_addrs()?
-        .next()
-        .context("Upstream resolve failed")
+    let addr = if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        SocketAddr::new(ip, port)
+    } else {
+        use std::net::ToSocketAddrs;
+        (host, port)
+            .to_socket_addrs()?
+            .next()
+            .context("Upstream resolve failed")?
+    };
+
+    Ok(ParsedUpstream {
+        addr,
+        host: host.to_string(),
+        tls,
+    })
 }
 
 // -------------------------------------------------------------------------
@@ -308,19 +384,29 @@ mod tests {
     #[test]
     fn parse_upstream_with_scheme() {
         let a = parse_upstream("http://127.0.0.1:3000").unwrap();
-        assert_eq!(a.port(), 3000);
+        assert_eq!(a.addr.port(), 3000);
+        assert!(!a.tls);
     }
 
     #[test]
     fn parse_upstream_without_scheme() {
         let a = parse_upstream("127.0.0.1:3000").unwrap();
-        assert_eq!(a.port(), 3000);
+        assert_eq!(a.addr.port(), 3000);
+        assert!(!a.tls);
     }
 
     #[test]
     fn parse_upstream_with_path_is_stripped() {
         let a = parse_upstream("http://127.0.0.1:3000/foo").unwrap();
-        assert_eq!(a.port(), 3000);
+        assert_eq!(a.addr.port(), 3000);
+        assert!(!a.tls);
+    }
+
+    #[test]
+    fn parse_upstream_https_sets_tls_flag() {
+        let a = parse_upstream("https://127.0.0.1:8443").unwrap();
+        assert_eq!(a.addr.port(), 8443);
+        assert!(a.tls);
     }
 
     #[test]

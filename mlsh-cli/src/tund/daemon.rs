@@ -24,6 +24,7 @@ pub async fn run() -> Result<()> {
     tracing::info!("mlshtund starting, socket: {}", sock_path.display());
 
     let manager = Arc::new(Mutex::new(TunnelManager::new()));
+    crate::tund::manager_handle::set(manager.clone());
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Reconnect clusters persisted to the daemon state dir so users don't

@@ -28,6 +28,13 @@ export interface Cluster {
   name: string
   /** mlsh version of the control instance serving this cluster. */
   version: string
+  /** Public DNS zone (e.g. `mlsh.io`). Empty until learned from signal. */
+  zone: string
+}
+
+export interface ClusterExpose {
+  enabled: boolean
+  domain: string
 }
 
 export interface ApiError {

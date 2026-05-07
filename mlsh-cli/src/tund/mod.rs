@@ -9,6 +9,7 @@ pub mod cluster_config;
 pub mod control;
 pub mod daemon;
 pub mod ingress;
+pub mod manager_handle;
 pub mod net;
 pub mod overlay;
 pub mod signal_session;
