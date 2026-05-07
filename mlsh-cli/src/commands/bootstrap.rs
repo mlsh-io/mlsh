@@ -76,13 +76,14 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
     let resp: ServerMessage = framing::read_msg(&mut recv).await?;
     conn.close(quinn::VarInt::from_u32(0), b"done");
 
-    let (overlay_ip, overlay_subnet, resp_cluster_id) = match resp {
+    let (overlay_ip, overlay_subnet, resp_cluster_id, zone) = match resp {
         ServerMessage::AdoptOk {
             overlay_ip,
             overlay_subnet,
             cluster_id,
+            zone,
             ..
-        } => (overlay_ip, overlay_subnet, cluster_id),
+        } => (overlay_ip, overlay_subnet, cluster_id, zone),
         ServerMessage::Error { code, message } => {
             anyhow::bail!("Adopt failed: {} ({})", message, code);
         }
@@ -95,6 +96,7 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
         &identity.fingerprint,
         &overlay_ip,
         &overlay_subnet,
+        &zone,
     )?;
 
     Ok(BootstrapOutput {
@@ -112,6 +114,7 @@ fn write_cluster_toml(
     fingerprint: &str,
     overlay_ip: &str,
     overlay_subnet: &str,
+    zone: &str,
 ) -> Result<()> {
     let config_dir = crate::config::config_dir()?;
     let clusters_dir = config_dir.join("clusters");
@@ -132,6 +135,7 @@ fn write_cluster_toml(
          signal_endpoint = \"{signal_endpoint}\"\n\
          signal_fingerprint = \"{signal_fingerprint}\"\n\
          root_fingerprint = \"{root_fingerprint}\"\n\
+         zone = \"{zone}\"\n\
          \n\
          [node_auth]\n\
          node_uuid = \"{node_uuid}\"\n\

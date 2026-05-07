@@ -28,6 +28,11 @@ pub struct ClusterConfig {
     /// Roles this node holds: `node` (always), optionally `admin` and `control`
     /// (ADR-030). When `control` is present, mlshtund forks `mlsh-control`.
     pub roles: Vec<String>,
+    /// Public DNS zone served by signal (`mlsh.io`, `dev.mlsh.io`, …). Used
+    /// to build admin URLs (`<name>.<zone>`). May be empty for clusters
+    /// adopted before signal started publishing it; populated on first
+    /// `NodeAuthOk` and persisted then.
+    pub zone: String,
     /// Path to the identity directory containing cert.pem and key.pem.
     pub identity_dir: std::path::PathBuf,
 }
@@ -154,6 +159,12 @@ fn parse_cluster_config_from_toml(
         .context("Missing cluster.id")?
         .to_string();
 
+    let zone = cluster
+        .get("zone")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
     let node_auth = table
         .get("node_auth")
         .context("Missing [node_auth] section. Is this cluster configured with 'mlsh setup' (mode 2) or 'mlsh adopt'?")?;
@@ -229,6 +240,7 @@ fn parse_cluster_config_from_toml(
         public_key,
         root_fingerprint,
         roles,
+        zone,
         identity_dir: identity_dir.to_path_buf(),
     })
 }
@@ -260,6 +272,7 @@ impl ClusterConfig {
             public_key: String::new(),
             root_fingerprint: String::new(),
             roles: vec!["node".into(), "control".into()],
+            zone: "test.local".into(),
             identity_dir,
         })
     }
