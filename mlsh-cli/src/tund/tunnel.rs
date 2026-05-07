@@ -415,6 +415,23 @@ async fn tunnel_task(
 
     // Spawn ONE signal session — it handles its own reconnection internally.
     // Pass the PeerTable so incoming relay streams can register routes.
+    let zone_cb: signal_session::ZoneCallback = {
+        let cfg = config.clone();
+        Arc::new(move |zone: String| {
+            if cfg.zone() == zone {
+                return;
+            }
+            cfg.set_zone(zone.clone());
+            if let Ok(state_dir) = crate::config::daemon_state_dir() {
+                let path = state_dir
+                    .join("clusters")
+                    .join(format!("{}.toml", cfg.name));
+                if let Err(e) = crate::tund::cluster_config::persist_zone(&path, &zone) {
+                    tracing::warn!(error = %e, "persist cluster zone failed");
+                }
+            }
+        })
+    };
     let session = signal_session::spawn(signal_session::SpawnParams {
         creds: match config.signal_credentials() {
             Ok(c) => c,
@@ -430,6 +447,7 @@ async fn tunnel_task(
         overlay_port,
         overlay_prefix_len,
         fsm_registry: fsm_registry.clone(),
+        on_zone_learned: Some(zone_cb),
     });
     let dns_config = crate::tund::net::overlay_dns::DnsConfig {
         bind_addr: dns_bind,

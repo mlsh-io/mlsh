@@ -110,7 +110,10 @@ struct SessionContext {
     /// Last resolved signal address. Used as a warm fallback when the system
     /// resolver is temporarily unresponsive (e.g. just after a wake).
     last_resolved_addr: Option<SocketAddr>,
+    on_zone_learned: Option<ZoneCallback>,
 }
+
+pub type ZoneCallback = Arc<dyn Fn(String) + Send + Sync>;
 
 pub struct SpawnParams {
     pub creds: SignalCredentials,
@@ -123,6 +126,9 @@ pub struct SpawnParams {
     pub overlay_port: u16,
     pub overlay_prefix_len: u8,
     pub fsm_registry: crate::tund::overlay::fsm::FsmRegistry,
+    /// Fired on every NodeAuthOk so the caller can persist the zone learned
+    /// from signal (TOML + live ClusterConfig). May be a no-op.
+    pub on_zone_learned: Option<ZoneCallback>,
 }
 
 /// Spawn a persistent signal session as a background task.
@@ -164,6 +170,7 @@ pub fn spawn(params: SpawnParams) -> SignalSessionHandle {
         kick_rx,
         candidates_port_rx,
         last_resolved_addr: None,
+        on_zone_learned: params.on_zone_learned,
     };
 
     tokio::spawn(session_loop(ctx, shutdown_rx));
@@ -300,8 +307,16 @@ async fn run_session(
             anyhow::bail!("Signal auth failed ({}): {}", code, message);
         }
         ServerMessage::NodeAuthOk {
-            overlay_ip, peers, ..
+            overlay_ip,
+            peers,
+            zone,
+            ..
         } => {
+            if !zone.is_empty() {
+                if let Some(cb) = &ctx.on_zone_learned {
+                    cb(zone);
+                }
+            }
             let ip: Ipv4Addr = overlay_ip.parse().context("Invalid overlay IP")?;
             (ip, peers)
         }

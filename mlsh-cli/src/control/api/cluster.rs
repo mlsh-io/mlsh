@@ -43,7 +43,7 @@ pub async fn get_cluster(State(state): State<AuthState>) -> Json<ClusterResponse
         id: state.cluster.cluster_id.clone(),
         name: state.cluster.name.clone(),
         version: env!("GIT_VERSION").to_string(),
-        zone: state.cluster.zone.clone(),
+        zone: state.cluster.zone(),
     })
 }
 
@@ -62,10 +62,11 @@ pub struct ClusterExposeRequest {
 }
 
 fn expose_domain(state: &AuthState) -> String {
-    if state.cluster.zone.is_empty() {
+    let zone = state.cluster.zone();
+    if zone.is_empty() {
         String::new()
     } else {
-        format!("{}.{}", state.cluster.name, state.cluster.zone)
+        format!("{}.{}", state.cluster.name, zone)
     }
 }
 

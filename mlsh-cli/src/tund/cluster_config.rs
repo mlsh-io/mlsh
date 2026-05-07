@@ -1,5 +1,7 @@
 //! Cluster configuration: TOML schema, on-disk loading, and signal credential derivation.
 
+use std::sync::{Arc, RwLock};
+
 use anyhow::{Context, Result};
 use base64::Engine;
 
@@ -31,10 +33,21 @@ pub struct ClusterConfig {
     /// Public DNS zone served by signal (`mlsh.io`, `dev.mlsh.io`, …). Used
     /// to build admin URLs (`<name>.<zone>`). May be empty for clusters
     /// adopted before signal started publishing it; populated on first
-    /// `NodeAuthOk` and persisted then.
-    pub zone: String,
+    /// `NodeAuthOk` and persisted then. Wrapped so the live value learned
+    /// from the signal session is visible to the in-process control plane.
+    pub zone: Arc<RwLock<String>>,
     /// Path to the identity directory containing cert.pem and key.pem.
     pub identity_dir: std::path::PathBuf,
+}
+
+impl ClusterConfig {
+    pub fn zone(&self) -> String {
+        self.zone.read().unwrap().clone()
+    }
+
+    pub fn set_zone(&self, value: String) {
+        *self.zone.write().unwrap() = value;
+    }
 }
 
 impl ClusterConfig {
@@ -67,6 +80,51 @@ pub fn parse_cluster_config(
 ) -> Result<ClusterConfig> {
     let table: toml::Value = toml::from_str(toml_contents)?;
     parse_cluster_config_from_toml(&table, identity_dir)
+}
+
+/// Rewrite `cluster.zone` in the TOML at `path` so the value learned from
+/// signal survives a daemon restart. No-op when the value is already there.
+pub fn persist_zone(path: &std::path::Path, zone: &str) -> Result<()> {
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("read cluster TOML {}", path.display()))?;
+    let updated = patch_cluster_zone(&contents, zone);
+    if updated == contents {
+        return Ok(());
+    }
+    std::fs::write(path, updated)
+        .with_context(|| format!("write cluster TOML {}", path.display()))?;
+    Ok(())
+}
+
+fn patch_cluster_zone(contents: &str, zone: &str) -> String {
+    let target = format!("zone = \"{}\"\n", zone);
+    let mut out = String::with_capacity(contents.len() + target.len());
+    let mut in_cluster = false;
+    let mut zone_written = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_cluster && !zone_written {
+                out.push_str(&target);
+                zone_written = true;
+            }
+            in_cluster = trimmed == "[cluster]";
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_cluster && trimmed.starts_with("zone") && trimmed.contains('=') {
+            out.push_str(&target);
+            zone_written = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if in_cluster && !zone_written {
+        out.push_str(&target);
+    }
+    out
 }
 
 /// Load cluster config from disk under the given base directory.
@@ -240,7 +298,7 @@ fn parse_cluster_config_from_toml(
         public_key,
         root_fingerprint,
         roles,
-        zone,
+        zone: Arc::new(RwLock::new(zone)),
         identity_dir: identity_dir.to_path_buf(),
     })
 }
@@ -272,8 +330,40 @@ impl ClusterConfig {
             public_key: String::new(),
             root_fingerprint: String::new(),
             roles: vec!["node".into(), "control".into()],
-            zone: "test.local".into(),
+            zone: Arc::new(RwLock::new("test.local".into())),
             identity_dir,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::patch_cluster_zone;
+
+    #[test]
+    fn inserts_zone_when_missing() {
+        let input =
+            "[cluster]\nname = \"homelab\"\nid = \"abc\"\n\n[node_auth]\nfingerprint = \"f\"\n";
+        let out = patch_cluster_zone(input, "mlsh.io");
+        assert!(out.contains("zone = \"mlsh.io\"\n"));
+        assert!(out.contains("[node_auth]"));
+    }
+
+    #[test]
+    fn replaces_existing_zone() {
+        let input =
+            "[cluster]\nname = \"homelab\"\nzone = \"old.example\"\n\n[node_auth]\nfingerprint = \"f\"\n";
+        let out = patch_cluster_zone(input, "mlsh.io");
+        assert!(out.contains("zone = \"mlsh.io\""));
+        assert!(!out.contains("old.example"));
+    }
+
+    #[test]
+    fn ignores_zone_outside_cluster_section() {
+        let input = "[cluster]\nname = \"homelab\"\n\n[other]\nzone = \"keep.me\"\n";
+        let out = patch_cluster_zone(input, "mlsh.io");
+        assert!(out.contains("[cluster]"));
+        assert!(out.contains("zone = \"mlsh.io\""));
+        assert!(out.contains("zone = \"keep.me\""));
     }
 }
