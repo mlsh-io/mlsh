@@ -13,11 +13,7 @@ use colored::Colorize;
 #[derive(Subcommand)]
 pub enum DaemonCommands {
     /// Install mlshtund as a system daemon
-    Install {
-        /// Clusters to auto-connect on daemon start (comma-separated)
-        #[arg(long, value_delimiter = ',')]
-        auto_connect: Vec<String>,
-    },
+    Install,
 
     /// Uninstall the mlshtund daemon
     Uninstall,
@@ -28,7 +24,7 @@ pub enum DaemonCommands {
 
 pub async fn handle(cmd: DaemonCommands) -> Result<()> {
     match cmd {
-        DaemonCommands::Install { auto_connect } => install_daemon(&auto_connect),
+        DaemonCommands::Install => install_daemon(),
         DaemonCommands::Uninstall => uninstall_daemon(),
         DaemonCommands::Status => daemon_status(),
     }
@@ -43,7 +39,7 @@ const PLIST_PATH: &str = "/Library/LaunchDaemons/io.mlsh.tund.plist";
 const LABEL: &str = "io.mlsh.tund";
 
 #[cfg(target_os = "macos")]
-fn install_daemon(auto_connect: &[String]) -> Result<()> {
+fn install_daemon() -> Result<()> {
     let mlshtund_bin = std::env::current_exe()
         .context("Failed to determine binary path")?
         .parent()
@@ -54,15 +50,10 @@ fn install_daemon(auto_connect: &[String]) -> Result<()> {
     let log_dir = "/var/log/mlsh";
     std::fs::create_dir_all(log_dir).ok();
 
-    // Build ProgramArguments
-    let mut args_xml = format!("    <array>\n        <string>{}</string>\n", bin_path);
-    if !auto_connect.is_empty() {
-        args_xml.push_str(&format!(
-            "        <string>--auto-connect</string>\n        <string>{}</string>\n",
-            auto_connect.join(",")
-        ));
-    }
-    args_xml.push_str("    </array>");
+    let args_xml = format!(
+        "    <array>\n        <string>{}</string>\n    </array>",
+        bin_path
+    );
 
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -118,12 +109,10 @@ fn install_daemon(auto_connect: &[String]) -> Result<()> {
 
     println!("{}", "mlshtund daemon installed!".green().bold());
     println!("  Plist: {}", PLIST_PATH);
-    if !auto_connect.is_empty() {
-        println!("  Auto-connect: {}", auto_connect.join(", "));
-    }
     println!("  Logs:  {}/mlshtund.log", log_dir);
     println!();
-    println!("The daemon runs at boot. Use 'mlsh connect <cluster>' to start tunnels.");
+    println!("The daemon runs at boot and reconnects every cluster you have");
+    println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
     println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
 
     Ok(())
@@ -198,7 +187,7 @@ fn daemon_status() -> Result<()> {
 const SERVICE_PATH: &str = "/etc/systemd/system/mlshtund.service";
 
 #[cfg(target_os = "linux")]
-fn install_daemon(auto_connect: &[String]) -> Result<()> {
+fn install_daemon() -> Result<()> {
     let mlshtund_bin = std::env::current_exe()
         .context("Failed to determine binary path")?
         .parent()
@@ -206,10 +195,7 @@ fn install_daemon(auto_connect: &[String]) -> Result<()> {
         .join("mlshtund");
     let bin_path = mlshtund_bin.to_string_lossy();
 
-    let mut exec_start = bin_path.to_string();
-    if !auto_connect.is_empty() {
-        exec_start.push_str(&format!(" --auto-connect {}", auto_connect.join(",")));
-    }
+    let exec_start = bin_path.to_string();
 
     let unit = format!(
         r#"[Unit]
@@ -251,11 +237,9 @@ WantedBy=multi-user.target
 
     println!("{}", "mlshtund daemon installed!".green().bold());
     println!("  Unit: {}", SERVICE_PATH);
-    if !auto_connect.is_empty() {
-        println!("  Auto-connect: {}", auto_connect.join(", "));
-    }
     println!();
-    println!("The daemon runs at boot. Use 'mlsh connect <cluster>' to start tunnels.");
+    println!("The daemon runs at boot and reconnects every cluster you have");
+    println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
     println!("To check: {}", "systemctl status mlshtund".bold());
     println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
 
@@ -305,7 +289,7 @@ fn daemon_status() -> Result<()> {
 // --- Unsupported platforms
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn install_daemon(_auto_connect: &[String]) -> Result<()> {
+fn install_daemon() -> Result<()> {
     anyhow::bail!("Daemon installation is only supported on macOS and Linux")
 }
 

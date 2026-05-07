@@ -272,6 +272,73 @@ fn atomic_write_restricted(path: &Path, content: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reconnect every cluster persisted under `{state_dir}/clusters/` at daemon
+/// startup. Errors are logged per-cluster so a single broken cluster does not
+/// prevent the rest from coming up.
+pub async fn resume_persisted_clusters(manager: Arc<Mutex<TunnelManager>>) {
+    let state_dir = match crate::config::daemon_state_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!("Cannot resume clusters: state dir unavailable: {:#}", e);
+            return;
+        }
+    };
+    let clusters_dir = state_dir.join("clusters");
+    if !clusters_dir.exists() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&clusters_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(
+                "Cannot resume clusters: read_dir({}) failed: {}",
+                clusters_dir.display(),
+                e
+            );
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("toml") {
+            continue;
+        }
+        let Some(name) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+
+        let toml_contents = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("Skip resume of '{}': read failed: {}", name, e);
+                continue;
+            }
+        };
+        let identity_dir = clusters_dir.join(&name);
+        let config = match parse_cluster_config(&toml_contents, &identity_dir) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Skip resume of '{}': invalid config: {:#}", name, e);
+                continue;
+            }
+        };
+
+        tracing::info!("Resuming persisted cluster '{}'", name);
+        match manager.lock().await.connect(config).await {
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("Resume of '{}' failed: {:#}", name, e);
+            }
+        }
+    }
+}
+
 /// Persist cluster config and identity to the daemon state directory.
 /// Returns the state directory path on success.
 fn persist_config(

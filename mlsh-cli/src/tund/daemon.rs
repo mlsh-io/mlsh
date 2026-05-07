@@ -26,6 +26,10 @@ pub async fn run() -> Result<()> {
     let manager = Arc::new(Mutex::new(TunnelManager::new()));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    // Reconnect clusters persisted to the daemon state dir so users don't
+    // have to re-run `mlsh connect` after every daemon restart / reboot.
+    control::resume_persisted_clusters(manager.clone()).await;
+
     // Resume ACME renewal watchers for every cert that has a sidecar
     // `{domain}.meta.json`. Without this, certs issued before the daemon
     // restart would silently expire.
