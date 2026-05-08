@@ -13,16 +13,11 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use std::collections::HashSet;
+
 use crate::control::auth::{AuthState, Caller};
 use crate::control::nodes::{self, NodeRow};
-use chrono::{NaiveDateTime, Utc};
 use mlsh_protocol::control::ControlEvent;
-
-/// A node is reported online while its `last_seen` is within this window.
-/// The control stream's `Subscribe` heartbeat refreshes it every 15s
-/// (`HEARTBEAT_INTERVAL` in `control/stream.rs`); 60s gives three ticks of
-/// slack for transient stalls before flipping the dot to offline.
-const ONLINE_TTL_SECS: i64 = 60;
 
 pub fn router(state: AuthState) -> Router {
     Router::new()
@@ -46,8 +41,9 @@ pub struct NodeResponse {
     pub role: String,
     /// `"active"` or `"revoked"`.
     pub status: String,
-    /// `true` when the node is `active` AND its `last_seen` is within
-    /// `ONLINE_TTL_SECS`. Liveness, not registration state.
+    /// `true` when the node is `active` AND signal currently has a live QUIC
+    /// session for it. Real liveness, sourced from signal's session map —
+    /// not from a heartbeat.
     pub online: bool,
     /// Cert fingerprint (cluster-CA-signed).
     pub fingerprint: String,
@@ -57,33 +53,43 @@ pub struct NodeResponse {
     pub created_at: String,
 }
 
-impl From<NodeRow> for NodeResponse {
-    fn from(n: NodeRow) -> Self {
-        let online = n.status == "active" && is_fresh(n.last_seen.as_deref());
-        Self {
-            id: n.node_uuid,
-            display_name: n.display_name,
-            role: n.role,
-            status: n.status,
-            online,
-            fingerprint: n.fingerprint,
-            last_seen: n.last_seen,
-            created_at: n.created_at,
-        }
+/// Build a response row, marking online only if the node is `active` AND
+/// `online_uuids` contains its UUID. The live set is fetched once per
+/// request from the local tund manager (which round-trips to signal).
+fn build_response(n: NodeRow, online_uuids: &HashSet<String>) -> NodeResponse {
+    let online = n.status == "active" && online_uuids.contains(&n.node_uuid);
+    NodeResponse {
+        id: n.node_uuid,
+        display_name: n.display_name,
+        role: n.role,
+        status: n.status,
+        online,
+        fingerprint: n.fingerprint,
+        last_seen: n.last_seen,
+        created_at: n.created_at,
     }
 }
 
-/// Parses a SQLite `datetime('now')` stamp (`YYYY-MM-DD HH:MM:SS`, UTC) and
-/// returns `true` if it's within `ONLINE_TTL_SECS` of now. A row with no
-/// `last_seen` (fresh registration that hasn't completed a heartbeat yet)
-/// is treated as offline.
-fn is_fresh(last_seen: Option<&str>) -> bool {
-    let Some(s) = last_seen else { return false };
-    let Ok(ts) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") else {
-        return false;
+/// Ask the daemon's tunnel manager which nodes have a live signal session
+/// for this cluster. Returns an empty set if the manager isn't running or
+/// signal is unreachable — callers degrade to "everyone offline" rather
+/// than a stale fiction.
+async fn fetch_online_uuids(cluster_name: &str) -> HashSet<String> {
+    let Some(manager) = crate::tund::manager_handle::get() else {
+        return HashSet::new();
     };
-    let age = Utc::now().naive_utc().signed_duration_since(ts);
-    age.num_seconds() <= ONLINE_TTL_SECS
+    let mgr = manager.lock().await;
+    match mgr.list_nodes(cluster_name).await {
+        Ok(nodes) => nodes
+            .into_iter()
+            .filter(|n| n.online)
+            .map(|n| n.node_id)
+            .collect(),
+        Err(e) => {
+            tracing::debug!(error = %e, cluster = %cluster_name, "online-set fetch failed");
+            HashSet::new()
+        }
+    }
 }
 
 // ---------- request bodies ----------
@@ -115,7 +121,11 @@ pub async fn list_nodes(State(state): State<AuthState>, _caller: Caller) -> Resp
     let cluster = state.cluster.cluster_id.clone();
     match nodes::list(state.store.pool(), &cluster).await {
         Ok(rows) => {
-            let out: Vec<NodeResponse> = rows.into_iter().map(NodeResponse::from).collect();
+            let online_uuids = fetch_online_uuids(&state.cluster.name).await;
+            let out: Vec<NodeResponse> = rows
+                .into_iter()
+                .map(|r| build_response(r, &online_uuids))
+                .collect();
             Json(out).into_response()
         }
         Err(e) => internal_error(e),
@@ -145,7 +155,10 @@ pub async fn get_node(
         Err(e) => return internal_error(e),
     };
     match nodes::find(state.store.pool(), &cluster, &uuid).await {
-        Ok(Some(row)) => Json(NodeResponse::from(row)).into_response(),
+        Ok(Some(row)) => {
+            let online_uuids = fetch_online_uuids(&state.cluster.name).await;
+            Json(build_response(row, &online_uuids)).into_response()
+        }
         Ok(None) => not_found(),
         Err(e) => internal_error(e),
     }
@@ -362,41 +375,47 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let nodes: Vec<NodeResponse> = body_json(resp).await;
         assert_eq!(nodes.len(), 2);
-        // active by default — but offline until a heartbeat lands.
         assert!(nodes.iter().all(|n| n.status == "active"));
+        // No tund manager registered in the test harness → live presence
+        // can't be queried → everyone is reported offline. Liveness is
+        // covered directly via `build_response_marks_online_set` below.
         assert!(nodes.iter().all(|n| !n.online));
     }
 
-    #[tokio::test]
-    async fn list_nodes_online_reflects_recent_heartbeat() {
-        let app = TestApp::new().await;
-        seed_node(&app, "u1", "fp1", "macbook", "admin").await;
-
-        // No last_seen yet → offline.
-        let nodes: Vec<NodeResponse> = body_json(app.get("/api/v1/nodes").await).await;
-        assert!(!nodes[0].online);
-
-        // After a heartbeat → online.
-        nodes::touch_last_seen(app.state.store.pool(), app.cluster_id(), "u1")
-            .await
-            .unwrap();
-        let nodes: Vec<NodeResponse> = body_json(app.get("/api/v1/nodes").await).await;
-        assert!(nodes[0].online);
-    }
-
     #[test]
-    fn is_fresh_handles_edge_cases() {
-        assert!(!is_fresh(None), "missing last_seen is offline");
-        assert!(!is_fresh(Some("garbage")), "unparseable is offline");
-        let now = Utc::now()
-            .naive_utc()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        assert!(is_fresh(Some(&now)));
-        let stale = (Utc::now().naive_utc() - chrono::Duration::seconds(ONLINE_TTL_SECS + 5))
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        assert!(!is_fresh(Some(&stale)));
+    fn build_response_marks_online_set() {
+        let row = NodeRow {
+            cluster_id: "c".into(),
+            node_uuid: "u1".into(),
+            fingerprint: "fp".into(),
+            public_key: "pk".into(),
+            display_name: "macbook".into(),
+            role: "admin".into(),
+            status: "active".into(),
+            last_seen: None,
+            created_at: "2026-01-01 00:00:00".into(),
+        };
+
+        let mut live = HashSet::new();
+        assert!(
+            !build_response(row.clone(), &live).online,
+            "absent → offline"
+        );
+
+        live.insert("u1".into());
+        assert!(
+            build_response(row.clone(), &live).online,
+            "present → online"
+        );
+
+        let revoked = NodeRow {
+            status: "revoked".into(),
+            ..row
+        };
+        assert!(
+            !build_response(revoked, &live).online,
+            "revoked node is never online, even with a live session"
+        );
     }
 
     #[tokio::test]
