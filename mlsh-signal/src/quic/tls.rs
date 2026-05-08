@@ -12,7 +12,7 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 
 use crate::config::QuicConfig;
 
-const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const MAX_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Accept any client certificate — we verify identity by fingerprint after

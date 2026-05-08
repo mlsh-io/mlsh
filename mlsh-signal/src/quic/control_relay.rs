@@ -73,7 +73,8 @@ async fn accept_loop(
         let (cli_send, cli_recv) = match stream {
             Ok(s) => s,
             Err(quinn::ConnectionError::ApplicationClosed(_))
-            | Err(quinn::ConnectionError::ConnectionClosed(_)) => {
+            | Err(quinn::ConnectionError::ConnectionClosed(_))
+            | Err(quinn::ConnectionError::LocallyClosed) => {
                 debug!(fp = %caller_fp, "control: peer closed");
                 return Ok(());
             }
