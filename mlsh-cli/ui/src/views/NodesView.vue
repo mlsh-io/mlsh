@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import StatBlock from '@/components/StatBlock.vue'
 import StatusDot from '@/components/StatusDot.vue'
 import Btn from '@/components/Btn.vue'
@@ -55,8 +55,35 @@ watch(openMenuFor, (open) => {
   }
 })
 
+// Poll while the view is mounted so the online/offline dots track the
+// backend's `last_seen` TTL without a manual refresh. Tab visibility is
+// honored — no traffic while hidden.
+let pollTimer: number | null = null
+function startPolling() {
+  stopPolling()
+  pollTimer = window.setInterval(() => {
+    if (document.visibilityState === 'visible') void reload()
+  }, 10_000)
+}
+function stopPolling() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') void reload()
+}
+
+onMounted(() => {
+  startPolling()
+  document.addEventListener('visibilitychange', onVisibilityChange)
+})
+
 onBeforeUnmount(() => {
   document.removeEventListener('mousedown', onDocMousedown)
+  document.removeEventListener('visibilitychange', onVisibilityChange)
+  stopPolling()
 })
 
 async function runAction(node: NodeInfo, action: () => Promise<unknown>) {

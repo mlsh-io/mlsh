@@ -15,6 +15,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use mlsh_protocol::control::{ControlAuthHeader, ControlNodeInfo, ControlRequest, ControlResponse};
@@ -24,6 +25,11 @@ use tokio::net::{UnixListener, UnixStream};
 
 use crate::control::events::EventHub;
 use crate::control::nodes;
+
+/// How often a live `Subscribe` stream refreshes its row's `last_seen`. Must
+/// be comfortably below `ONLINE_TTL` in `api/nodes.rs` so a brief stall
+/// between ticks never flips a healthy daemon to offline.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 
 pub fn default_socket_path() -> PathBuf {
     crate::tund::tunnel::control_plane_socket_path()
@@ -76,8 +82,24 @@ async fn handle_one(mut stream: UnixStream, state: &StreamState) -> Result<()> {
     let header: ControlAuthHeader = framing::read_msg(&mut rd).await?;
     let request: ControlRequest = framing::read_msg(&mut rd).await?;
 
+    // Every authenticated CBOR session is a liveness signal. Bumping
+    // last_seen here covers AdoptConfirm / ListNodes / Subscribe at
+    // connect-time; the Subscribe loop refreshes it on its own ticker.
+    if let Err(e) =
+        nodes::touch_last_seen(&state.pool, cluster_key(&header), &header.caller_node_uuid).await
+    {
+        tracing::debug!(error = %e, "control: touch_last_seen on connect failed");
+    }
+
     if matches!(request, ControlRequest::Subscribe) {
-        return run_subscribe(&mut wr, &state.events, cluster_key(&header)).await;
+        return run_subscribe(
+            &mut wr,
+            &state.events,
+            &state.pool,
+            cluster_key(&header),
+            &header.caller_node_uuid,
+        )
+        .await;
     }
 
     let response = dispatch(state, &header, &request).await;
@@ -86,18 +108,37 @@ async fn handle_one(mut stream: UnixStream, state: &StreamState) -> Result<()> {
 }
 
 /// Stream `ControlEvent` records to a subscriber until the connection drops or
-/// the hub evicts us (slow consumer).
+/// the hub evicts us (slow consumer). While the stream is alive, periodically
+/// bumps `nodes.last_seen` so the API can derive a real online/offline flag
+/// from staleness rather than registration state.
 async fn run_subscribe(
     wr: &mut (impl tokio::io::AsyncWrite + Unpin),
     hub: &EventHub,
+    pool: &SqlitePool,
     cluster_key: &str,
+    node_uuid: &str,
 ) -> Result<()> {
     let (_handle, mut rx) = hub.register(cluster_key).await;
     tracing::debug!(cluster = %cluster_key, "control: subscribe stream opened");
-    while let Some(event) = rx.recv().await {
-        if let Err(e) = framing::write_msg(wr, &*event).await {
-            tracing::debug!(cluster = %cluster_key, error = %e, "control: subscribe write failed; closing");
-            break;
+
+    let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+    // First tick fires immediately — already touched in handle_one, skip it.
+    heartbeat.tick().await;
+
+    loop {
+        tokio::select! {
+            maybe_event = rx.recv() => {
+                let Some(event) = maybe_event else { break };
+                if let Err(e) = framing::write_msg(wr, &*event).await {
+                    tracing::debug!(cluster = %cluster_key, error = %e, "control: subscribe write failed; closing");
+                    break;
+                }
+            }
+            _ = heartbeat.tick() => {
+                if let Err(e) = nodes::touch_last_seen(pool, cluster_key, node_uuid).await {
+                    tracing::debug!(error = %e, "control: heartbeat touch_last_seen failed");
+                }
+            }
         }
     }
     tracing::debug!(cluster = %cluster_key, "control: subscribe stream closed");

@@ -15,7 +15,14 @@ use utoipa::ToSchema;
 
 use crate::control::auth::{AuthState, Caller};
 use crate::control::nodes::{self, NodeRow};
+use chrono::{NaiveDateTime, Utc};
 use mlsh_protocol::control::ControlEvent;
+
+/// A node is reported online while its `last_seen` is within this window.
+/// The control stream's `Subscribe` heartbeat refreshes it every 15s
+/// (`HEARTBEAT_INTERVAL` in `control/stream.rs`); 60s gives three ticks of
+/// slack for transient stalls before flipping the dot to offline.
+const ONLINE_TTL_SECS: i64 = 60;
 
 pub fn router(state: AuthState) -> Router {
     Router::new()
@@ -39,7 +46,8 @@ pub struct NodeResponse {
     pub role: String,
     /// `"active"` or `"revoked"`.
     pub status: String,
-    /// `true` when `status == "active"`.
+    /// `true` when the node is `active` AND its `last_seen` is within
+    /// `ONLINE_TTL_SECS`. Liveness, not registration state.
     pub online: bool,
     /// Cert fingerprint (cluster-CA-signed).
     pub fingerprint: String,
@@ -51,7 +59,7 @@ pub struct NodeResponse {
 
 impl From<NodeRow> for NodeResponse {
     fn from(n: NodeRow) -> Self {
-        let online = n.status == "active";
+        let online = n.status == "active" && is_fresh(n.last_seen.as_deref());
         Self {
             id: n.node_uuid,
             display_name: n.display_name,
@@ -63,6 +71,19 @@ impl From<NodeRow> for NodeResponse {
             created_at: n.created_at,
         }
     }
+}
+
+/// Parses a SQLite `datetime('now')` stamp (`YYYY-MM-DD HH:MM:SS`, UTC) and
+/// returns `true` if it's within `ONLINE_TTL_SECS` of now. A row with no
+/// `last_seen` (fresh registration that hasn't completed a heartbeat yet)
+/// is treated as offline.
+fn is_fresh(last_seen: Option<&str>) -> bool {
+    let Some(s) = last_seen else { return false };
+    let Ok(ts) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") else {
+        return false;
+    };
+    let age = Utc::now().naive_utc().signed_duration_since(ts);
+    age.num_seconds() <= ONLINE_TTL_SECS
 }
 
 // ---------- request bodies ----------
@@ -341,8 +362,41 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let nodes: Vec<NodeResponse> = body_json(resp).await;
         assert_eq!(nodes.len(), 2);
-        // both come back active by default
-        assert!(nodes.iter().all(|n| n.online && n.status == "active"));
+        // active by default — but offline until a heartbeat lands.
+        assert!(nodes.iter().all(|n| n.status == "active"));
+        assert!(nodes.iter().all(|n| !n.online));
+    }
+
+    #[tokio::test]
+    async fn list_nodes_online_reflects_recent_heartbeat() {
+        let app = TestApp::new().await;
+        seed_node(&app, "u1", "fp1", "macbook", "admin").await;
+
+        // No last_seen yet → offline.
+        let nodes: Vec<NodeResponse> = body_json(app.get("/api/v1/nodes").await).await;
+        assert!(!nodes[0].online);
+
+        // After a heartbeat → online.
+        nodes::touch_last_seen(app.state.store.pool(), app.cluster_id(), "u1")
+            .await
+            .unwrap();
+        let nodes: Vec<NodeResponse> = body_json(app.get("/api/v1/nodes").await).await;
+        assert!(nodes[0].online);
+    }
+
+    #[test]
+    fn is_fresh_handles_edge_cases() {
+        assert!(!is_fresh(None), "missing last_seen is offline");
+        assert!(!is_fresh(Some("garbage")), "unparseable is offline");
+        let now = Utc::now()
+            .naive_utc()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        assert!(is_fresh(Some(&now)));
+        let stale = (Utc::now().naive_utc() - chrono::Duration::seconds(ONLINE_TTL_SECS + 5))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        assert!(!is_fresh(Some(&stale)));
     }
 
     #[tokio::test]
