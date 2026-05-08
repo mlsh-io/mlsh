@@ -89,6 +89,16 @@ impl TunnelManager {
         self.tunnels.get(cluster).map(|t| t.control_session())
     }
 
+    /// Return the live signal-session handle for a cluster, if the
+    /// tunnel_task has already spawned one. The handle's `peers` watch
+    /// is the local mirror of signal's `online_node_ids` set.
+    pub fn signal_session(
+        &self,
+        cluster: &str,
+    ) -> Option<crate::tund::signal_session::SignalSessionHandle> {
+        self.tunnels.get(cluster).and_then(|t| t.signal_session())
+    }
+
     /// Look up the cluster UUID for a named cluster.
     fn cluster_id_for(&self, cluster: &str) -> Result<String> {
         self.tunnels

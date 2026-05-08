@@ -70,26 +70,37 @@ fn build_response(n: NodeRow, online_uuids: &HashSet<String>) -> NodeResponse {
     }
 }
 
-/// Ask the daemon's tunnel manager which nodes have a live signal session
-/// for this cluster. Returns an empty set if the manager isn't running or
-/// signal is unreachable — callers degrade to "everyone offline" rather
-/// than a stale fiction.
-async fn fetch_online_uuids(cluster_name: &str) -> HashSet<String> {
+/// Snapshot the live online set from the daemon's signal-session peers
+/// cache. The cache is `PeerJoined`/`PeerLeft`-driven, so this is the
+/// same source of truth as signal's `online_node_ids` — without a
+/// per-request round-trip to signal.
+///
+/// `self_uuid` is always inserted: signal's broadcasts exclude the
+/// caller, so the local node never appears in its own peers list — but
+/// the API only runs while the local control daemon is up, so it's
+/// online by construction.
+async fn fetch_online_uuids(cluster_name: &str, self_uuid: &str) -> HashSet<String> {
     let Some(manager) = crate::tund::manager_handle::get() else {
         return HashSet::new();
     };
-    let mgr = manager.lock().await;
-    match mgr.list_nodes(cluster_name).await {
-        Ok(nodes) => nodes
-            .into_iter()
-            .filter(|n| n.online)
-            .map(|n| n.node_id)
-            .collect(),
-        Err(e) => {
-            tracing::debug!(error = %e, cluster = %cluster_name, "online-set fetch failed");
-            HashSet::new()
-        }
-    }
+    let session = {
+        let mgr = manager.lock().await;
+        mgr.signal_session(cluster_name)
+    };
+    let peers = match session {
+        Some(s) => s.peers(),
+        None => return HashSet::new(),
+    };
+    compute_online_set(&peers, self_uuid)
+}
+
+fn compute_online_set(
+    peers: &[mlsh_protocol::types::PeerInfo],
+    self_uuid: &str,
+) -> HashSet<String> {
+    let mut set: HashSet<String> = peers.iter().map(|p| p.node_id.clone()).collect();
+    set.insert(self_uuid.to_string());
+    set
 }
 
 // ---------- request bodies ----------
@@ -121,7 +132,8 @@ pub async fn list_nodes(State(state): State<AuthState>, _caller: Caller) -> Resp
     let cluster = state.cluster.cluster_id.clone();
     match nodes::list(state.store.pool(), &cluster).await {
         Ok(rows) => {
-            let online_uuids = fetch_online_uuids(&state.cluster.name).await;
+            let online_uuids =
+                fetch_online_uuids(&state.cluster.name, &state.cluster.node_uuid).await;
             let out: Vec<NodeResponse> = rows
                 .into_iter()
                 .map(|r| build_response(r, &online_uuids))
@@ -156,7 +168,8 @@ pub async fn get_node(
     };
     match nodes::find(state.store.pool(), &cluster, &uuid).await {
         Ok(Some(row)) => {
-            let online_uuids = fetch_online_uuids(&state.cluster.name).await;
+            let online_uuids =
+                fetch_online_uuids(&state.cluster.name, &state.cluster.node_uuid).await;
             Json(build_response(row, &online_uuids)).into_response()
         }
         Ok(None) => not_found(),
@@ -416,6 +429,33 @@ mod tests {
             !build_response(revoked, &live).online,
             "revoked node is never online, even with a live session"
         );
+    }
+
+    #[test]
+    fn compute_online_set_includes_self_and_peers() {
+        use mlsh_protocol::types::PeerInfo;
+        let peer = |id: &str| PeerInfo {
+            node_id: id.into(),
+            fingerprint: String::new(),
+            overlay_ip: String::new(),
+            candidates: Vec::new(),
+            public_key: String::new(),
+            admission_cert: String::new(),
+        };
+
+        // Empty peers + self-uuid → only self is online.
+        let set = compute_online_set(&[], "self-u");
+        assert!(set.contains("self-u"));
+        assert_eq!(set.len(), 1);
+
+        // Peers list never contains self by design (signal scrubs it).
+        // We add it back unconditionally.
+        let peers = vec![peer("dev-u"), peer("homelab-u")];
+        let set = compute_online_set(&peers, "self-u");
+        assert!(set.contains("self-u"));
+        assert!(set.contains("dev-u"));
+        assert!(set.contains("homelab-u"));
+        assert_eq!(set.len(), 3);
     }
 
     #[tokio::test]

@@ -59,6 +59,11 @@ pub struct ManagedTunnel {
     /// Watch exposing the currently-active signal QUIC connection. Used by
     /// the ACME client to publish HTTP-01 challenge responses via signal.
     signal_conn_rx: Option<watch::Receiver<Option<quinn::Connection>>>,
+    /// Watch exposing the live `SignalSessionHandle` once `tunnel_task` has
+    /// spawned it. The handle is `Clone` and exposes the local peers cache
+    /// (`PeerJoined`/`PeerLeft`-driven), which the in-process control plane
+    /// reads to compute node liveness without a signal round-trip.
+    signal_session_rx: watch::Receiver<Option<signal_session::SignalSessionHandle>>,
     /// In-process tokio task hosting the control HTTP server, when this
     /// node holds the `control` role (ADR-035 Phase 0). Cluster config kept
     /// alongside so `start_control()` can re-spawn after a previous stop.
@@ -73,6 +78,8 @@ impl ManagedTunnel {
         let (state_tx, state_rx) = watch::channel(TunnelState::Connecting);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let (signal_conn_tx, signal_conn_rx) = watch::channel(None::<quinn::Connection>);
+        let (signal_session_tx, signal_session_rx) =
+            watch::channel(None::<signal_session::SignalSessionHandle>);
         let bytes_tx = Arc::new(AtomicU64::new(0));
         let bytes_rx = Arc::new(AtomicU64::new(0));
         let (info_tx, info_rx) = watch::channel(SharedInfo::default());
@@ -134,6 +141,7 @@ impl ManagedTunnel {
                 tx_counter,
                 rx_counter,
                 signal_conn_tx,
+                signal_session_tx,
                 display_names,
             )
             .await;
@@ -150,6 +158,7 @@ impl ManagedTunnel {
             overlay_ip: Some(overlay_ip),
             info_rx,
             signal_conn_rx: Some(signal_conn_rx),
+            signal_session_rx,
             control_task,
             control_config: control_config_arc,
             control_session,
@@ -171,6 +180,13 @@ impl ManagedTunnel {
     /// Clone of the persistent mlsh-control session handle.
     pub fn control_session(&self) -> ControlSession {
         self.control_session.clone()
+    }
+
+    /// Snapshot of the live signal-session handle, if `tunnel_task` has
+    /// already spawned one. Returns `None` during the brief window between
+    /// `start()` and the first `signal_session::spawn` call.
+    pub fn signal_session(&self) -> Option<signal_session::SignalSessionHandle> {
+        self.signal_session_rx.borrow().clone()
     }
 
     /// Start the in-process control HTTP server for this tunnel. No-op if
@@ -288,6 +304,7 @@ async fn tunnel_task(
     bytes_tx: Arc<AtomicU64>,
     bytes_rx: Arc<AtomicU64>,
     signal_conn_tx: watch::Sender<Option<quinn::Connection>>,
+    signal_session_tx: watch::Sender<Option<signal_session::SignalSessionHandle>>,
     display_names: crate::tund::control::display_names::DisplayNameMap,
 ) {
     let mut backoff = Duration::from_secs(1);
@@ -449,6 +466,7 @@ async fn tunnel_task(
         fsm_registry: fsm_registry.clone(),
         on_zone_learned: Some(zone_cb),
     });
+    let _ = signal_session_tx.send(Some(session.clone()));
     let dns_config = crate::tund::net::overlay_dns::DnsConfig {
         bind_addr: dns_bind,
         zone: config.name.clone(),
