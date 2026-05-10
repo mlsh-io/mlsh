@@ -727,19 +727,21 @@ fn gather_host_candidates(
     overlay_ip: Ipv4Addr,
     overlay_prefix_len: u8,
 ) -> Vec<Candidate> {
-    let overlay = crate::tund::net::filter::OverlayNet::new(overlay_ip, overlay_prefix_len);
+    use crate::tund::net::filter::{interface_kind, is_interesting_ip, OverlayNet};
+
+    let overlay = OverlayNet::new(overlay_ip, overlay_prefix_len);
     let mut candidates = Vec::new();
 
     if let Ok(interfaces) = local_ip_address::list_afinet_netifas() {
         for (name, ip) in &interfaces {
             if let std::net::IpAddr::V4(v4) = ip {
-                if !crate::tund::net::filter::is_interesting_ip(*v4, Some(name), overlay) {
+                if !is_interesting_ip(*v4, Some(name), overlay) {
                     continue;
                 }
                 candidates.push(Candidate {
                     kind: "host".into(),
                     addr: format!("{}:{}", v4, quic_port),
-                    priority: 100,
+                    priority: interface_kind(name).base_priority(),
                 });
             }
         }
