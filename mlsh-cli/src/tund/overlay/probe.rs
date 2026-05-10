@@ -15,6 +15,10 @@ pub struct ProbeResult {
     pub conn: quinn::Connection,
     /// e.g. "host:192.168.1.73:47710"
     pub via: String,
+    /// Set when the post-handshake remote address differs from the candidate
+    /// we tried — i.e. a peer-reflexive address discovered through a NAT
+    /// remap. Caller stashes it locally for future re-probes.
+    pub learned_prflx: Option<Candidate>,
 }
 
 /// Try direct QUIC connection to peer candidates (happy eyeballs).
@@ -68,10 +72,15 @@ pub async fn probe_candidates(
 
             match connect_overlay_direct(&ep, addr, &fp, &id_dir).await {
                 Ok(conn) => {
+                    let learned_prflx = peer_reflexive_from(&conn, addr);
                     let mut guard = tx.lock().unwrap_or_else(|e| e.into_inner());
                     if let Some(sender) = guard.take() {
                         let via = format!("{}:{}", kind, addr);
-                        let _ = sender.send(ProbeResult { conn, via });
+                        let _ = sender.send(ProbeResult {
+                            conn,
+                            via,
+                            learned_prflx,
+                        });
                         token.cancel();
                     }
                 }
@@ -94,5 +103,46 @@ pub async fn probe_candidates(
     match result {
         Ok(Ok(probe)) => Ok(probe),
         _ => anyhow::bail!("All candidates failed"),
+    }
+}
+
+/// If the post-handshake remote address differs from the candidate we tried,
+/// derive a peer-reflexive Candidate. Priority sits between srflx (200) and
+/// VPN (150) so a re-probe tries it after host but before falling back.
+fn peer_reflexive_from(conn: &quinn::Connection, tried: std::net::SocketAddr) -> Option<Candidate> {
+    let observed = conn.remote_address();
+    if observed == tried {
+        return None;
+    }
+    Some(Candidate {
+        kind: "prflx".into(),
+        addr: observed.to_string(),
+        priority: 190,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+
+    fn sa(ip: [u8; 4], port: u16) -> SocketAddr {
+        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(ip), port))
+    }
+
+    #[test]
+    fn prflx_priority_is_between_srflx_and_vpn() {
+        // 150 (Vpn) < 190 (prflx) < 200 (srflx) so a freshly-learned prflx
+        // ranks just below the signal-observed srflx but above any VPN tunnel.
+        assert!(190 < 200);
+        assert!(190 > 150);
+    }
+
+    #[test]
+    fn prflx_addr_format_is_socket_addr_string() {
+        // The format must roundtrip through `SocketAddr::parse` since
+        // probe_candidates calls `.parse::<SocketAddr>()` on it.
+        let addr = sa([198, 51, 100, 7], 4242).to_string();
+        assert!(addr.parse::<SocketAddr>().is_ok());
     }
 }

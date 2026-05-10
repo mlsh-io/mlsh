@@ -8,6 +8,7 @@ use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 
+use mlsh_protocol::types::Candidate;
 use tokio::sync::{mpsc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,14 +34,26 @@ pub enum Event {
     /// Periodic tick while the peer is on relay or stuck probing — an
     /// opportunity to re-try direct in case the network changed.
     ProbeRetryTick,
+    /// Peer reported a new candidate list (signal forwarded an updated
+    /// `PeerJoined`). The driver swaps the candidates used by future probes
+    /// before applying the transition's effects.
+    CandidatesUpdated,
 
     // Carrier variants: smuggle handles from I/O tasks to the driver. The
     // driver stashes the payload and feeds the matching pure variant to
     // `transition`.
     #[doc(hidden)]
-    __ProbeSucceededWith(Box<quinn::Connection>),
+    __ProbeSucceededWith {
+        conn: Box<quinn::Connection>,
+        /// Peer-reflexive address discovered post-handshake when the remote
+        /// addr differs from the candidate we tried (NAT remap). The driver
+        /// stashes it for re-probes — never broadcast back to signal.
+        learned_prflx: Option<Candidate>,
+    },
     #[doc(hidden)]
     __RelayReadyWith(Box<tokio::sync::mpsc::Sender<Vec<u8>>>),
+    #[doc(hidden)]
+    __CandidatesUpdatedWith(Vec<Candidate>),
 }
 
 impl PartialEq for Event {
@@ -58,6 +71,7 @@ impl PartialEq for Event {
                 | (Cancelled, Cancelled)
                 | (WakeKick, WakeKick)
                 | (ProbeRetryTick, ProbeRetryTick)
+                | (CandidatesUpdated, CandidatesUpdated)
         )
     }
 }
@@ -76,7 +90,10 @@ impl Clone for Event {
             Event::Cancelled => Event::Cancelled,
             Event::WakeKick => Event::WakeKick,
             Event::ProbeRetryTick => Event::ProbeRetryTick,
-            Event::__ProbeSucceededWith(_) | Event::__RelayReadyWith(_) => {
+            Event::CandidatesUpdated => Event::CandidatesUpdated,
+            Event::__ProbeSucceededWith { .. }
+            | Event::__RelayReadyWith(_)
+            | Event::__CandidatesUpdatedWith(_) => {
                 panic!("carrier Event variants are not Clone-able")
             }
         }
@@ -144,6 +161,15 @@ pub fn transition(state: State, event: Event, is_initiator: bool) -> (State, Vec
         // Background direct re-probe: relay stays up while a fresh probe runs.
         (Relay, ProbeRetryTick) => (RelayWithProbing, vec![SpawnProbe]),
         (Probing, ProbeRetryTick) => (Probing, vec![AbortProbeTask, SpawnProbe]),
+
+        // New peer candidates arrived. Restart the probe with the fresh list;
+        // a Direct connection is sticky (we already won), but in any other
+        // state we want to give the new candidates a chance.
+        (Probing, CandidatesUpdated) => (Probing, vec![AbortProbeTask, SpawnProbe]),
+        (RelayWithProbing, CandidatesUpdated) => {
+            (RelayWithProbing, vec![AbortProbeTask, SpawnProbe])
+        }
+        (Relay, CandidatesUpdated) => (RelayWithProbing, vec![SpawnProbe]),
 
         (_, PeerLeft) | (_, Cancelled) => (Done, vec![AbortProbeTask, AbortRelayTask, RemoveRoute]),
 
@@ -403,6 +429,42 @@ mod tests {
             assert_eq!(state, start);
             assert!(effects.is_empty());
         }
+    }
+
+    #[test]
+    fn candidates_updated_from_probing_restarts_probe() {
+        let (state, effects) = transition(State::Probing, Event::CandidatesUpdated, true);
+        assert_eq!(state, State::Probing);
+        assert_eq!(effects, vec![Effect::AbortProbeTask, Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn candidates_updated_from_relay_with_probing_restarts_probe_keeping_relay() {
+        let (state, effects) = transition(State::RelayWithProbing, Event::CandidatesUpdated, true);
+        assert_eq!(state, State::RelayWithProbing);
+        assert_eq!(effects, vec![Effect::AbortProbeTask, Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn candidates_updated_from_relay_promotes_to_relay_with_probing() {
+        let (state, effects) = transition(State::Relay, Event::CandidatesUpdated, true);
+        assert_eq!(state, State::RelayWithProbing);
+        assert_eq!(effects, vec![Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn candidates_updated_in_direct_is_noop() {
+        // Already on a working direct path — new candidates don't disturb it.
+        let (state, effects) = transition(State::Direct, Event::CandidatesUpdated, true);
+        assert_eq!(state, State::Direct);
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn candidates_updated_in_done_is_sticky() {
+        let (state, effects) = transition(State::Done, Event::CandidatesUpdated, true);
+        assert_eq!(state, State::Done);
+        assert!(effects.is_empty());
     }
 
     #[test]

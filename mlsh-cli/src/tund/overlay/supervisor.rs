@@ -5,11 +5,28 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mlsh_protocol::types::PeerInfo;
+use mlsh_protocol::types::{Candidate, PeerInfo};
 use tokio::sync::watch;
 
 use super::peer_table::PeerTable;
 use super::{establish_peer_connection, PeerConnectionContext};
+
+struct ActivePeer {
+    handle: tokio::task::JoinHandle<()>,
+    ip: Ipv4Addr,
+    candidates: Vec<Candidate>,
+}
+
+fn candidates_equal(a: &[Candidate], b: &[Candidate]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    // Order matters here: signal sorts by descending priority before sending,
+    // so two semantically identical updates produce identical sequences.
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| x.kind == y.kind && x.addr == y.addr && x.priority == y.priority)
+}
 
 pub struct ConnectionManagerContext<'a> {
     pub cancel: &'a tokio_util::sync::CancellationToken,
@@ -30,8 +47,10 @@ pub async fn run_connection_manager(
 ) {
     use std::collections::HashMap;
 
-    // Track active peer tasks and their overlay IPs for cleanup
-    let mut active_peers: HashMap<String, (tokio::task::JoinHandle<()>, Ipv4Addr)> = HashMap::new();
+    // Track active peer tasks, their overlay IPs, and the candidate list we
+    // last saw — needed to forward CandidatesUpdated events when signal pushes
+    // a refreshed PeerJoined.
+    let mut active_peers: HashMap<String, ActivePeer> = HashMap::new();
     let mut signal_conn_rx = conn_rx.clone();
     signal_conn_rx.borrow_and_update();
 
@@ -53,9 +72,9 @@ pub async fn run_connection_manager(
             .collect();
 
         for node_id in removed {
-            if let Some((handle, _ip)) = active_peers.remove(&node_id) {
+            if let Some(active) = active_peers.remove(&node_id) {
                 tracing::info!("Peer {} left, aborting connection task", node_id);
-                handle.abort();
+                active.handle.abort();
                 // Don't remove the route here — the quic_server may have
                 // inserted a newer direct route for this peer. Routes are
                 // cleaned up when the actual QUIC connection closes (in
@@ -64,14 +83,34 @@ pub async fn run_connection_manager(
         }
 
         // Clean up finished tasks so they can be retried
-        active_peers.retain(|node_id, (handle, _ip)| {
-            if handle.is_finished() {
+        active_peers.retain(|node_id, active| {
+            if active.handle.is_finished() {
                 tracing::debug!("Connection task for {} finished, will retry", node_id);
                 false
             } else {
                 true
             }
         });
+
+        // Forward refreshed candidate lists to FSMs of already-active peers.
+        // Without this, the second `PeerJoined` (which carries host candidates
+        // arriving after the initial srflx-only join) is silently dropped.
+        for peer in peers.iter() {
+            if peer.node_id == ctx.my_node_id {
+                continue;
+            }
+            if let Some(active) = active_peers.get_mut(&peer.node_id) {
+                if !candidates_equal(&active.candidates, &peer.candidates) {
+                    active.candidates = peer.candidates.clone();
+                    ctx.fsm_registry
+                        .notify(
+                            active.ip,
+                            super::fsm::Event::__CandidatesUpdatedWith(peer.candidates.clone()),
+                        )
+                        .await;
+                }
+            }
+        }
 
         // Find peers that need connections (new or finished tasks to retry)
         for peer in peers.iter() {
@@ -120,7 +159,14 @@ pub async fn run_connection_manager(
                 .await;
             });
 
-            active_peers.insert(peer.node_id.clone(), (handle, peer_ip));
+            active_peers.insert(
+                peer.node_id.clone(),
+                ActivePeer {
+                    handle,
+                    ip: peer_ip,
+                    candidates: peer.candidates.clone(),
+                },
+            );
         }
 
         // Wait for peer list change OR signal reconnection (new connection available)
@@ -134,10 +180,10 @@ pub async fn run_connection_manager(
                 // them with the fresh connection. Routes they installed are
                 // cleaned up as part of their Cancelled transition.
                 tracing::debug!("Signal connection changed, aborting peer tasks");
-                for (node_id, (handle, ip)) in active_peers.drain() {
-                    handle.abort();
-                    ctx.peer_table.remove_route(ip).await;
-                    ctx.fsm_registry.unregister(ip).await;
+                for (node_id, active) in active_peers.drain() {
+                    active.handle.abort();
+                    ctx.peer_table.remove_route(active.ip).await;
+                    ctx.fsm_registry.unregister(active.ip).await;
                     tracing::debug!("Aborted peer task for {node_id}");
                 }
             }
@@ -148,7 +194,7 @@ pub async fn run_connection_manager(
     }
 
     // Clean up all active peer tasks
-    for (_, (handle, _)) in active_peers {
-        handle.abort();
+    for (_, active) in active_peers {
+        active.handle.abort();
     }
 }

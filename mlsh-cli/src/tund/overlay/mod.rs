@@ -12,7 +12,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use mlsh_protocol::types::PeerInfo;
+use mlsh_protocol::types::{Candidate, PeerInfo};
 
 use self::peer_table::PeerTable;
 use self::probe::probe_candidates;
@@ -60,6 +60,10 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
     let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
     ctx.fsm_registry.register(peer_ip, events_tx.clone()).await;
 
+    // Live candidate list — updated in place when the supervisor forwards a
+    // refreshed `PeerJoined`. SpawnProbe reads from this rather than a snapshot
+    // so the next probe wave uses the latest candidates.
+    let mut current_candidates = ctx.peer.candidates.clone();
     let mut pending_direct_conn: Option<quinn::Connection> = None;
     let mut pending_relay_tx: Option<tokio::sync::mpsc::Sender<Vec<u8>>> = None;
 
@@ -93,13 +97,13 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
         for effect in effects_to_run.drain(..) {
             match effect {
                 Effect::SpawnProbe => {
-                    if ctx.peer.candidates.is_empty() {
+                    if current_candidates.is_empty() {
                         let _ = events_tx.send(Event::ProbeFailed);
                         continue;
                     }
                     probe_cancel = tokio_util::sync::CancellationToken::new();
                     let endpoint = ctx.endpoint.clone();
-                    let candidates = ctx.peer.candidates.clone();
+                    let candidates = current_candidates.clone();
                     let fp = ctx.peer.fingerprint.clone();
                     let id_dir = ctx.identity_dir.clone();
                     let ev = events_tx.clone();
@@ -119,7 +123,10 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
                                     peer_ip_copy,
                                     probe.via
                                 );
-                                let _ = ev.send(Event::__ProbeSucceededWith(Box::new(probe.conn)));
+                                let _ = ev.send(Event::__ProbeSucceededWith {
+                                    conn: Box::new(probe.conn),
+                                    learned_prflx: probe.learned_prflx,
+                                });
                             }
                             Err(e) => {
                                 tracing::debug!("Direct to {} failed: {}", peer_node_id, e);
@@ -225,13 +232,51 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
         // Carrier variants hand runtime handles to the driver, then the
         // pure equivalent is passed to `transition`.
         let fsm_event = match event {
-            Event::__ProbeSucceededWith(conn) => {
+            Event::__ProbeSucceededWith {
+                conn,
+                learned_prflx,
+            } => {
                 pending_direct_conn = Some(*conn);
+                if let Some(prflx) = learned_prflx {
+                    if !current_candidates
+                        .iter()
+                        .any(|c| c.addr == prflx.addr && c.kind == prflx.kind)
+                    {
+                        tracing::info!(
+                            "Learned peer-reflexive {} for {} (kept for re-probes)",
+                            prflx.addr,
+                            ctx.peer.node_id
+                        );
+                        current_candidates.push(prflx);
+                    }
+                }
                 Event::ProbeSucceeded
             }
             Event::__RelayReadyWith(tx) => {
                 pending_relay_tx = Some(*tx);
                 Event::RelayReady
+            }
+            Event::__CandidatesUpdatedWith(cands) => {
+                let summary: Vec<String> = cands
+                    .iter()
+                    .map(|c| format!("{}:{}", c.kind, c.addr))
+                    .collect();
+                tracing::info!(
+                    "Candidates updated for {} ({}): [{}]",
+                    ctx.peer.node_id,
+                    peer_ip,
+                    summary.join(", ")
+                );
+                // Preserve any peer-reflexive we've learned locally — signal
+                // doesn't know about it but it may still be reachable.
+                let prflx: Vec<Candidate> = current_candidates
+                    .iter()
+                    .filter(|c| c.kind == "prflx")
+                    .cloned()
+                    .collect();
+                current_candidates = cands;
+                current_candidates.extend(prflx);
+                Event::CandidatesUpdated
             }
             other => other,
         };
