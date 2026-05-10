@@ -2,17 +2,31 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde::Deserialize;
 
 use crate::commands::control_client;
 
-pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
-    let (client, _config) = control_client::for_cluster(cluster_name)?;
+#[derive(Deserialize)]
+struct NodeResponse {
+    id: String,
+    display_name: String,
+    role: String,
+    status: String,
+}
 
-    let nodes = client
-        .list_nodes()
+pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
+    let (http, base_url, _config) = control_client::for_cluster(cluster_name)?;
+
+    let nodes: Vec<NodeResponse> = http
+        .get(format!("{}/api/v1/nodes", base_url))
+        .send()
         .await
         .context("GET /api/v1/nodes failed")?
-        .into_inner();
+        .error_for_status()
+        .context("GET /api/v1/nodes returned error")?
+        .json()
+        .await
+        .context("decode /api/v1/nodes response")?;
 
     if nodes.is_empty() {
         println!("{}", "No nodes in this cluster.".dimmed());

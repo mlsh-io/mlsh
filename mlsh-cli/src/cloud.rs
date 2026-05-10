@@ -9,7 +9,7 @@ const DEFAULT_CLOUD_URL: &str = "https://api.mlsh.io";
 
 pub struct CloudClient {
     base_url: String,
-    agent: ureq::Agent,
+    client: reqwest::Client,
 }
 
 #[derive(Deserialize)]
@@ -46,105 +46,77 @@ impl CloudClient {
             std::env::var("MLSH_CLOUD_URL").unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string());
         Self {
             base_url,
-            agent: ureq::Agent::new_with_defaults(),
+            client: reqwest::Client::new(),
         }
     }
 
     /// Step 1: Request a device code for the OAuth device flow.
-    pub fn request_device_code(&self) -> Result<DeviceCodeResponse> {
-        let resp: DeviceCodeResponse = self
-            .agent
+    pub async fn request_device_code(&self) -> Result<DeviceCodeResponse> {
+        self.client
             .get(format!("{}/auth/device/code", self.base_url))
-            .call()
+            .send()
+            .await
             .context("Failed to request device code")?
-            .body_mut()
-            .read_json()
-            .context("Invalid device code response")?;
-        Ok(resp)
+            .error_for_status()
+            .context("Device code request returned error")?
+            .json()
+            .await
+            .context("Invalid device code response")
     }
 
     /// One-shot poll. Returns:
     /// - `Ok(Some(token))` if mlsh-cloud emitted a token
     /// - `Ok(None)` if authorization is still pending (HTTP 428)
     /// - `Err(_)` for any other failure
-    pub fn poll_device_token_once(&self, device_code: &str) -> Result<Option<TokenResponse>> {
-        let result = self
-            .agent
+    pub async fn poll_device_token_once(&self, device_code: &str) -> Result<Option<TokenResponse>> {
+        let resp = self
+            .client
             .post(format!("{}/auth/device/token", self.base_url))
-            .send_json(serde_json::json!({ "device_code": device_code }));
-        match result {
-            Ok(resp) => {
-                let token: TokenResponse = resp
-                    .into_body()
-                    .read_json()
-                    .context("Invalid token response")?;
-                Ok(Some(token))
-            }
-            Err(ureq::Error::StatusCode(428)) => Ok(None),
-            Err(ureq::Error::StatusCode(code)) => {
-                anyhow::bail!("Device token poll failed (HTTP {})", code)
-            }
-            Err(e) => anyhow::bail!("Device token poll failed: {}", e),
+            .json(&serde_json::json!({ "device_code": device_code }))
+            .send()
+            .await
+            .context("Device token poll failed")?;
+
+        if resp.status().as_u16() == 428 {
+            return Ok(None);
         }
+        if !resp.status().is_success() {
+            anyhow::bail!("Device token poll failed (HTTP {})", resp.status().as_u16());
+        }
+        Ok(Some(resp.json().await.context("Invalid token response")?))
     }
 
-    /// Step 2: Poll for the access token (blocks until authorized or expired).
-    pub fn poll_device_token(
+    /// Step 2: Poll for the access token (loops until authorized or expired).
+    pub async fn poll_device_token(
         &self,
         device_code: &str,
         interval_secs: u64,
     ) -> Result<TokenResponse> {
         let interval = std::time::Duration::from_secs(interval_secs.max(2));
-
         loop {
-            std::thread::sleep(interval);
-
-            let result = self
-                .agent
-                .post(format!("{}/auth/device/token", self.base_url))
-                .send_json(serde_json::json!({ "device_code": device_code }));
-
-            match result {
-                Ok(resp) => {
-                    let token: TokenResponse = resp
-                        .into_body()
-                        .read_json()
-                        .context("Invalid token response")?;
-                    return Ok(token);
-                }
-                Err(ureq::Error::StatusCode(428)) => {
-                    // authorization_pending — keep polling
-                    continue;
-                }
-                Err(ureq::Error::StatusCode(code)) => {
-                    anyhow::bail!("Device token poll failed (HTTP {})", code);
-                }
-                Err(e) => {
-                    anyhow::bail!("Device token poll failed: {}", e);
-                }
+            tokio::time::sleep(interval).await;
+            if let Some(t) = self.poll_device_token_once(device_code).await? {
+                return Ok(t);
             }
         }
     }
 
     /// Step 3: Create a cluster (or get setup token for existing one).
-    pub fn create_cluster(&self, access_token: &str, name: &str) -> Result<ClusterSetup> {
+    pub async fn create_cluster(&self, access_token: &str, name: &str) -> Result<ClusterSetup> {
         let resp = self
-            .agent
+            .client
             .post(format!("{}/me/clusters", self.base_url))
-            .header("Authorization", &format!("Bearer {}", access_token))
-            .send_json(serde_json::json!({ "name": name }))
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({ "name": name }))
+            .send()
+            .await
             .context("Failed to create cluster")?;
 
         let status = resp.status();
-        if status != 201 && status != 200 {
-            let body = resp.into_body().read_to_string().unwrap_or_default();
-            anyhow::bail!("Failed to create cluster ({}): {}", status, body);
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Failed to create cluster ({}): {}", status.as_u16(), body);
         }
-
-        let cluster: ClusterSetup = resp
-            .into_body()
-            .read_json()
-            .context("Invalid cluster response")?;
-        Ok(cluster)
+        resp.json().await.context("Invalid cluster response")
     }
 }

@@ -115,7 +115,7 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
     let cloud = CloudClient::new();
 
     println!("{}", "Authenticating with mlsh.io...".cyan());
-    let device = cloud.request_device_code()?;
+    let device = cloud.request_device_code().await?;
     let prefilled = verification_url_with_code(&device.verification_uri, &device.user_code);
     println!();
     println!("  Open: {}", prefilled.bold());
@@ -123,11 +123,15 @@ pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str
     println!();
     println!("{}", "Waiting for authorization...".dimmed());
 
-    let tokens = cloud.poll_device_token(&device.device_code, device.interval)?;
+    let tokens = cloud
+        .poll_device_token(&device.device_code, device.interval)
+        .await?;
     println!("{}", "Authenticated!".green());
 
     println!("{}", "Creating cluster...".cyan());
-    let cluster = cloud.create_cluster(&tokens.access_token, cluster_name)?;
+    let cluster = cloud
+        .create_cluster(&tokens.access_token, cluster_name)
+        .await?;
     let setup_token = cluster
         .setup_token
         .context("Cloud did not return a setup token")?;

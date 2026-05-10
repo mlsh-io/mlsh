@@ -12,11 +12,13 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         cluster_name.bold()
     );
 
-    let (client, _config) = control_client::for_cluster(cluster_name)?;
-    client
-        .revoke(target_node)
+    let (http, base_url, _config) = control_client::for_cluster(cluster_name)?;
+    http.post(format!("{}/api/v1/nodes/{}/revoke", base_url, target_node))
+        .send()
         .await
-        .context("POST /api/v1/nodes/{node}/revoke failed")?;
+        .context("POST /api/v1/nodes/{node}/revoke failed")?
+        .error_for_status()
+        .context("POST /api/v1/nodes/{node}/revoke returned error")?;
 
     println!(
         "{}",

@@ -14,7 +14,6 @@
 use anyhow::{Context, Result};
 use reqwest::Identity;
 
-use crate::generated::Client;
 use crate::tund::cluster_config::ClusterConfig;
 use crate::tund::tunnel::load_cluster_config;
 
@@ -22,11 +21,12 @@ use crate::tund::tunnel::load_cluster_config;
 /// `crate::control::server::serve` (overridable via `MLSH_CONTROL_BIND`).
 const DEFAULT_CONTROL_PORT: u16 = 8443;
 
-/// Build a fully-configured generated [`Client`] for the named cluster.
+/// Build a fully-configured mTLS [`reqwest::Client`] for the named cluster.
 ///
-/// Returns the client + the resolved `ClusterConfig` (callers commonly need
-/// both — the cluster name to print, the cluster id for diagnostics).
-pub fn for_cluster(cluster_name: &str) -> Result<(Client, ClusterConfig)> {
+/// Returns the client + base URL + the resolved `ClusterConfig` (callers
+/// commonly need all three — the client to call, the URL to format paths
+/// against, and the cluster name/id to print).
+pub fn for_cluster(cluster_name: &str) -> Result<(reqwest::Client, String, ClusterConfig)> {
     let base_dir = crate::config::config_dir()?;
     let config = load_cluster_config(cluster_name, &base_dir)?;
 
@@ -49,7 +49,6 @@ pub fn for_cluster(cluster_name: &str) -> Result<(Client, ClusterConfig)> {
         .context("build reqwest client")?;
 
     let base_url = format!("https://{}:{}", config.name, DEFAULT_CONTROL_PORT);
-    let client = Client::new_with_client(&base_url, http);
 
-    Ok((client, config))
+    Ok((http, base_url, config))
 }

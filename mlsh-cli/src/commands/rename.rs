@@ -2,9 +2,14 @@
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use serde::Serialize;
 
 use crate::commands::control_client;
-use crate::generated::types::SetNameRequest;
+
+#[derive(Serialize)]
+struct SetNameBody<'a> {
+    display_name: &'a str,
+}
 
 pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str) -> Result<()> {
     println!(
@@ -14,16 +19,16 @@ pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str
         cluster_name.bold()
     );
 
-    let (client, _config) = control_client::for_cluster(cluster_name)?;
-    client
-        .set_name(
-            target_node,
-            &SetNameRequest {
-                display_name: new_name.to_string(),
-            },
-        )
+    let (http, base_url, _config) = control_client::for_cluster(cluster_name)?;
+    http.post(format!("{}/api/v1/nodes/{}/name", base_url, target_node))
+        .json(&SetNameBody {
+            display_name: new_name,
+        })
+        .send()
         .await
-        .context("POST /api/v1/nodes/{node}/name failed")?;
+        .context("POST /api/v1/nodes/{node}/name failed")?
+        .error_for_status()
+        .context("POST /api/v1/nodes/{node}/name returned error")?;
 
     println!(
         "{}",

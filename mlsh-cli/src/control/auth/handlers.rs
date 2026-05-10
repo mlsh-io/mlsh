@@ -322,15 +322,11 @@ pub async fn device_start(State(state): State<AuthState>) -> Response {
             .into_response();
     }
     let cloud = crate::cloud::CloudClient::new();
-    let resp = match tokio::task::spawn_blocking(move || cloud.request_device_code()).await {
-        Ok(Ok(d)) => d,
-        Ok(Err(e)) => {
+    let resp = match cloud.request_device_code().await {
+        Ok(d) => d,
+        Err(e) => {
             tracing::warn!(error = %e, "request_device_code failed");
             return (StatusCode::BAD_GATEWAY, "mlsh-cloud unreachable").into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "device-code task panicked");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
     let ticket = uuid::Uuid::new_v4().to_string();
@@ -369,19 +365,13 @@ pub async fn device_poll(
         None => return (StatusCode::GONE, "ticket expired or unknown").into_response(),
     };
     let cloud = crate::cloud::CloudClient::new();
-    let dc = device_code.clone();
-    let token_resp = tokio::task::spawn_blocking(move || cloud.poll_device_token_once(&dc)).await;
-    let token = match token_resp {
-        Ok(Ok(Some(t))) => t,
-        Ok(Ok(None)) => return StatusCode::TOO_EARLY.into_response(),
-        Ok(Err(e)) => {
+    let token = match cloud.poll_device_token_once(&device_code).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return StatusCode::TOO_EARLY.into_response(),
+        Err(e) => {
             tracing::warn!(error = %e, "poll_device_token failed");
             state.oauth.remove_ticket(&body.ticket);
             return (StatusCode::GONE, "device flow failed").into_response();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "device-poll task panicked");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
 
