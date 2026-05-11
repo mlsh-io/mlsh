@@ -18,6 +18,7 @@ use tracing::{debug, info, warn};
 
 use mlsh_protocol::framing;
 use mlsh_protocol::messages::{ServerMessage, StreamMessage};
+use mlsh_protocol::{MIN_PROTOCOL_VERSION, PROTOCOL_VERSION};
 
 use crate::db;
 
@@ -62,9 +63,33 @@ async fn handle_stream(
         StreamMessage::NodeAuth {
             cluster_id,
             public_key,
+            protocol_version,
+            client_version,
         } => {
+            if let Some(resp) = check_protocol_version(protocol_version, &client_version) {
+                warn!(
+                    cluster_id,
+                    client_version = %client_version,
+                    client_protocol = protocol_version,
+                    server_protocol = PROTOCOL_VERSION,
+                    "Rejecting NodeAuth: client protocol too old"
+                );
+                framing::write_msg(&mut send, &resp).await.ok();
+                send.finish().ok();
+                return Ok(());
+            }
             let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            run_node_session(id, &cluster_id, &public_key, send, recv, conn, state).await?;
+            run_node_session(
+                id,
+                &cluster_id,
+                &public_key,
+                &client_version,
+                send,
+                recv,
+                conn,
+                state,
+            )
+            .await?;
         }
         StreamMessage::Adopt {
             cluster_id,
@@ -74,7 +99,21 @@ async fn handle_stream(
             public_key: _,
             expires_at: _,
             admission_cert: _,
+            protocol_version,
+            client_version,
         } => {
+            if let Some(resp) = check_protocol_version(protocol_version, &client_version) {
+                warn!(
+                    cluster_id,
+                    client_version = %client_version,
+                    client_protocol = protocol_version,
+                    server_protocol = PROTOCOL_VERSION,
+                    "Rejecting Adopt: client protocol too old"
+                );
+                framing::write_msg(&mut send, &resp).await.ok();
+                send.finish().ok();
+                return Ok(());
+            }
             let resp = handle_adopt(
                 state,
                 &AdoptRequest {
@@ -82,6 +121,7 @@ async fn handle_stream(
                     pre_auth_token,
                     fingerprint,
                     node_uuid,
+                    client_version,
                 },
             )
             .await;
@@ -157,6 +197,24 @@ async fn handle_stream(
     Ok(())
 }
 
+/// Reject clients that don't speak at least `MIN_PROTOCOL_VERSION`.
+/// Returns `Some(ServerMessage::Error)` to send back when the client is
+/// too old (caller logs and finishes the stream), or `None` to proceed.
+fn check_protocol_version(client_proto: u32, client_version: &str) -> Option<ServerMessage> {
+    if client_proto >= MIN_PROTOCOL_VERSION {
+        return None;
+    }
+    let shown = if client_version.is_empty() {
+        "unknown"
+    } else {
+        client_version
+    };
+    let msg = format!(
+        "version too old, please update mlsh (client {shown} speaks protocol {client_proto}, signal requires >= {MIN_PROTOCOL_VERSION})"
+    );
+    Some(ServerMessage::error("version_too_old", &msg))
+}
+
 // --- Per-node mTLS auth
 
 /// Long-lived session for a node authenticated via TLS client certificate.
@@ -169,6 +227,7 @@ async fn run_node_session(
     id: u64,
     cluster_id: &str,
     public_key: &str,
+    client_version: &str,
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     conn: &quinn::Connection,
@@ -214,7 +273,14 @@ async fn run_node_session(
         zone: state.config.zone.clone(),
     };
     framing::write_msg(&mut send, &reply).await?;
-    info!(id, cluster_id, node_id = %node_id, %overlay_ip, "Node session authenticated");
+    info!(
+        id,
+        cluster_id,
+        node_id = %node_id,
+        %overlay_ip,
+        client_version = %client_version,
+        "Node session authenticated"
+    );
 
     // Register session + push channel
     let (push_tx, mut push_rx) = tokio::sync::mpsc::unbounded_channel::<Arc<ServerMessage>>();
@@ -228,6 +294,7 @@ async fn run_node_session(
                 overlay_ip,
                 connection: conn.clone(),
                 push_tx,
+                client_version: client_version.to_string(),
             },
             id,
         )
@@ -344,6 +411,7 @@ struct AdoptRequest {
     pre_auth_token: String,
     fingerprint: String,
     node_uuid: String,
+    client_version: String,
 }
 
 async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
@@ -351,6 +419,7 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
     let pre_auth_token = &req.pre_auth_token;
     let fingerprint = &req.fingerprint;
     let node_uuid = &req.node_uuid;
+    let client_version = &req.client_version;
     // Two adoption paths:
     // 1. One-time setup code → first node (role: admin), code is burned after use.
     // 2. Sponsor-signed invite → subsequent nodes (role from invite).
@@ -393,7 +462,14 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
 
     let peers = state.sessions.get_peer_list(cluster_id, node_uuid).await;
 
-    info!(cluster_id, node_uuid, %overlay_ip, role, "Node adopted");
+    info!(
+        cluster_id,
+        node_uuid,
+        %overlay_ip,
+        role,
+        client_version = %client_version,
+        "Node adopted"
+    );
 
     ServerMessage::AdoptOk {
         cluster_id: cluster_id.to_string(),

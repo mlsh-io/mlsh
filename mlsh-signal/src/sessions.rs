@@ -23,6 +23,8 @@ struct NodeSession {
     /// Ed25519 public key (base64url, no padding) — provided by the node at auth time.
     /// Stored here so invite verification can access it without a DB round-trip.
     public_key: String,
+    /// Human-readable client release reported at handshake (e.g. `"0.4.2"`).
+    client_version: String,
     session_id: u64,
 }
 
@@ -33,6 +35,7 @@ pub struct NodeSessionInfo {
     pub overlay_ip: std::net::Ipv4Addr,
     pub connection: quinn::Connection,
     pub push_tx: tokio::sync::mpsc::UnboundedSender<Arc<ServerMessage>>,
+    pub client_version: String,
 }
 
 fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
@@ -50,6 +53,7 @@ fn session_to_peer_info(s: &NodeSession) -> PeerInfo {
         candidates,
         public_key: s.public_key.clone(),
         admission_cert: String::new(),
+        client_version: s.client_version.clone(),
     }
 }
 
@@ -70,6 +74,7 @@ impl SessionStore {
         let key = (cluster_id.to_string(), info.node_id.clone());
         let node_id = info.node_id.clone();
         let overlay_ip = info.overlay_ip;
+        let client_version_log = info.client_version.clone();
         let session = NodeSession {
             connection: info.connection,
             push_tx: Some(info.push_tx),
@@ -78,13 +83,20 @@ impl SessionStore {
             overlay_ip: info.overlay_ip,
             host_candidates: Vec::new(),
             public_key: String::new(),
+            client_version: info.client_version,
             session_id,
         };
         if let Some(prev) = self.sessions.write().await.insert(key, session) {
             prev.connection
                 .close(quinn::VarInt::from_u32(0), b"session replaced");
         }
-        tracing::info!(cluster_id, %node_id, %overlay_ip, "Node session registered");
+        tracing::info!(
+            cluster_id,
+            %node_id,
+            %overlay_ip,
+            client_version = %client_version_log,
+            "Node session registered"
+        );
     }
 
     /// Remove a node session. Only removes if session_id matches.
