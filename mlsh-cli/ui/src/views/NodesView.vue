@@ -278,10 +278,10 @@ function formatTtl(seconds: number): string {
           <span class="node-tag">{{ nodeStatus(node) }}</span>
         </div>
       </div>
-      <div class="ip">{{ node.fingerprint.slice(0, 12) }}…</div>
+      <div class="ip">{{ node.overlay_ip || '—' }}</div>
       <div class="role">{{ node.role }}</div>
       <div class="version">{{ node.client_version || '—' }}</div>
-      <div class="ip">{{ node.id.slice(0, 12) }}…</div>
+      <div class="ip">{{ node.id }}</div>
       <div class="row-action">
         <button
           class="row-action-btn"
@@ -468,7 +468,7 @@ function formatTtl(seconds: number): string {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 140px 100px 100px 160px 60px;
+  grid-template-columns: 200px 120px 80px 200px 1fr 60px;
   gap: var(--space-4);
   padding: 14px var(--space-5);
   align-items: center;

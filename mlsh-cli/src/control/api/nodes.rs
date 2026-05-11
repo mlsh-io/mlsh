@@ -47,6 +47,10 @@ pub struct NodeResponse {
     pub online: bool,
     /// Cert fingerprint (cluster-CA-signed).
     pub fingerprint: String,
+    /// Overlay IPv4 assigned by signal. Empty when the node is offline (we
+    /// only see live IPs through the local signal-session peers cache).
+    #[serde(default)]
+    pub overlay_ip: String,
     /// RFC 3339 UTC, last activity stamp. `None` on a fresh registration.
     pub last_seen: Option<String>,
     /// RFC 3339 UTC.
@@ -58,12 +62,13 @@ pub struct NodeResponse {
 }
 
 /// Live-presence snapshot used by the nodes handlers: which UUIDs are
-/// currently online, plus the client version they reported at handshake
-/// (when known).
+/// currently online, plus the client version and overlay IP they reported
+/// at handshake (when known).
 #[derive(Default)]
 struct LivePresence {
     online: HashSet<String>,
     versions: HashMap<String, String>,
+    overlay_ips: HashMap<String, String>,
 }
 
 /// Build a response row, marking online only if the node is `active` AND
@@ -80,6 +85,15 @@ fn build_response(n: NodeRow, presence: &LivePresence) -> NodeResponse {
     } else {
         String::new()
     };
+    let overlay_ip = if online {
+        presence
+            .overlay_ips
+            .get(&n.node_uuid)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     NodeResponse {
         id: n.node_uuid,
         display_name: n.display_name,
@@ -87,6 +101,7 @@ fn build_response(n: NodeRow, presence: &LivePresence) -> NodeResponse {
         status: n.status,
         online,
         fingerprint: n.fingerprint,
+        overlay_ip,
         last_seen: n.last_seen,
         created_at: n.created_at,
         client_version,
@@ -110,16 +125,18 @@ async fn fetch_live_presence(cluster_name: &str, self_uuid: &str) -> LivePresenc
         let mgr = manager.lock().await;
         mgr.signal_session(cluster_name)
     };
-    let peers = match session {
-        Some(s) => s.peers(),
-        None => return LivePresence::default(),
+    let Some(session) = session else {
+        return LivePresence::default();
     };
-    compute_live_presence(&peers, self_uuid)
+    let peers = session.peers();
+    let self_overlay_ip = session.overlay_ip().map(|ip| ip.to_string());
+    compute_live_presence(&peers, self_uuid, self_overlay_ip.as_deref())
 }
 
 fn compute_live_presence(
     peers: &[mlsh_protocol::types::PeerInfo],
     self_uuid: &str,
+    self_overlay_ip: Option<&str>,
 ) -> LivePresence {
     let mut online: HashSet<String> = peers.iter().map(|p| p.node_id.clone()).collect();
     online.insert(self_uuid.to_string());
@@ -129,7 +146,19 @@ fn compute_live_presence(
         .map(|p| (p.node_id.clone(), p.client_version.clone()))
         .collect();
     versions.insert(self_uuid.to_string(), env!("GIT_VERSION").to_string());
-    LivePresence { online, versions }
+    let mut overlay_ips: HashMap<String, String> = peers
+        .iter()
+        .filter(|p| !p.overlay_ip.is_empty())
+        .map(|p| (p.node_id.clone(), p.overlay_ip.clone()))
+        .collect();
+    if let Some(ip) = self_overlay_ip {
+        overlay_ips.insert(self_uuid.to_string(), ip.to_string());
+    }
+    LivePresence {
+        online,
+        versions,
+        overlay_ips,
+    }
 }
 
 // ---------- request bodies ----------
@@ -444,9 +473,13 @@ mod tests {
 
         presence.online.insert("u1".into());
         presence.versions.insert("u1".into(), "0.4.2".into());
+        presence
+            .overlay_ips
+            .insert("u1".into(), "100.64.0.7".into());
         let resp = build_response(row.clone(), &presence);
         assert!(resp.online, "present → online");
         assert_eq!(resp.client_version, "0.4.2");
+        assert_eq!(resp.overlay_ip, "100.64.0.7");
 
         let revoked = NodeRow {
             status: "revoked".into(),
@@ -461,26 +494,35 @@ mod tests {
             resp.client_version, "",
             "offline node has no client_version surfaced"
         );
+        assert_eq!(
+            resp.overlay_ip, "",
+            "offline node has no overlay_ip surfaced"
+        );
     }
 
     #[test]
     fn compute_live_presence_includes_self_and_peers() {
         use mlsh_protocol::types::PeerInfo;
-        let peer = |id: &str, ver: &str| PeerInfo {
+        let peer = |id: &str, ver: &str, ip: &str| PeerInfo {
             node_id: id.into(),
             client_version: ver.into(),
+            overlay_ip: ip.into(),
             ..PeerInfo::default()
         };
 
         // Empty peers + self-uuid → only self is online.
-        let presence = compute_live_presence(&[], "self-u");
+        let presence = compute_live_presence(&[], "self-u", Some("100.64.0.1"));
         assert!(presence.online.contains("self-u"));
         assert_eq!(presence.online.len(), 1);
+        assert_eq!(presence.overlay_ips.get("self-u").unwrap(), "100.64.0.1");
 
         // Peers list never contains self by design (signal scrubs it).
-        // We add it back unconditionally; per-peer versions flow through.
-        let peers = vec![peer("dev-u", "0.4.2"), peer("homelab-u", "")];
-        let presence = compute_live_presence(&peers, "self-u");
+        // We add it back unconditionally; per-peer versions/IPs flow through.
+        let peers = vec![
+            peer("dev-u", "0.4.2", "100.64.0.2"),
+            peer("homelab-u", "", ""),
+        ];
+        let presence = compute_live_presence(&peers, "self-u", Some("100.64.0.1"));
         assert!(presence.online.contains("self-u"));
         assert!(presence.online.contains("dev-u"));
         assert!(presence.online.contains("homelab-u"));
@@ -488,6 +530,13 @@ mod tests {
         assert_eq!(presence.versions.get("dev-u").unwrap(), "0.4.2");
         // homelab reported an empty version → not surfaced.
         assert!(!presence.versions.contains_key("homelab-u"));
+        assert_eq!(presence.overlay_ips.get("self-u").unwrap(), "100.64.0.1");
+        assert_eq!(presence.overlay_ips.get("dev-u").unwrap(), "100.64.0.2");
+        assert!(!presence.overlay_ips.contains_key("homelab-u"));
+
+        // When tund isn't running yet, self has no overlay IP.
+        let presence = compute_live_presence(&[], "self-u", None);
+        assert!(!presence.overlay_ips.contains_key("self-u"));
     }
 
     #[tokio::test]

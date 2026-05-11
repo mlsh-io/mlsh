@@ -15,6 +15,8 @@ export interface NodeInfo {
   online: boolean
   /** Cert fingerprint (cluster-CA-signed). */
   fingerprint: string
+  /** Overlay IPv4 assigned by signal. Empty when the node is offline. */
+  overlay_ip: string
   /** RFC 3339 UTC. */
   last_seen: string | null
   /** RFC 3339 UTC. */
