@@ -37,6 +37,14 @@ pub enum StreamMessage {
         cluster_id: String,
         #[serde(default)]
         public_key: String,
+        /// Wire protocol version the client speaks. Defaults to 0 for
+        /// pre-versioning clients, which the signal will reject.
+        #[serde(default)]
+        protocol_version: u32,
+        /// Human-readable client release (e.g. `"0.4.2"`). Logged by the
+        /// signal and surfaced in the admin UI; never used for compat checks.
+        #[serde(default)]
+        client_version: String,
     },
 
     /// New node onboarding: register with a pre-auth (invite) token.
@@ -53,6 +61,10 @@ pub enum StreamMessage {
         /// Self-signed admission cert (JSON, for root admin setup).
         #[serde(default)]
         admission_cert: String,
+        #[serde(default)]
+        protocol_version: u32,
+        #[serde(default)]
+        client_version: String,
     },
 
     /// List all nodes in the cluster (sent within an authenticated session).
@@ -318,14 +330,20 @@ mod tests {
         let msg = StreamMessage::NodeAuth {
             cluster_id: "cluster-abc".into(),
             public_key: "base64url-key".into(),
+            protocol_version: 1,
+            client_version: "0.4.2".into(),
         };
         match cbor_roundtrip(&msg) {
             StreamMessage::NodeAuth {
                 cluster_id,
                 public_key,
+                protocol_version,
+                client_version,
             } => {
                 assert_eq!(cluster_id, "cluster-abc");
                 assert_eq!(public_key, "base64url-key");
+                assert_eq!(protocol_version, 1);
+                assert_eq!(client_version, "0.4.2");
             }
             other => panic!("expected NodeAuth, got {:?}", other),
         }
@@ -341,6 +359,8 @@ mod tests {
             public_key: "pk-xyz".into(),
             expires_at: 1700000000,
             admission_cert: r#"{"node_id":"n1"}"#.into(),
+            protocol_version: 1,
+            client_version: "0.4.2".into(),
         };
         match cbor_roundtrip(&msg) {
             StreamMessage::Adopt {
@@ -351,6 +371,8 @@ mod tests {
                 public_key,
                 expires_at,
                 admission_cert,
+                protocol_version,
+                client_version,
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(pre_auth_token, "tok-123");
@@ -359,6 +381,8 @@ mod tests {
                 assert_eq!(public_key, "pk-xyz");
                 assert_eq!(expires_at, 1700000000);
                 assert!(admission_cert.contains("node_id"));
+                assert_eq!(protocol_version, 1);
+                assert_eq!(client_version, "0.4.2");
             }
             other => panic!("expected Adopt, got {:?}", other),
         }
@@ -419,7 +443,9 @@ mod tests {
                 }],
                 public_key: "pk".into(),
                 admission_cert: "cert".into(),
+                client_version: "0.4.2".into(),
             }],
+            zone: "mlsh.io".into(),
         };
         match cbor_roundtrip(&msg) {
             ServerMessage::NodeAuthOk {
@@ -427,6 +453,7 @@ mod tests {
                 overlay_ip,
                 overlay_subnet,
                 peers,
+                ..
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(overlay_ip, "100.64.0.1");
@@ -434,6 +461,7 @@ mod tests {
                 assert_eq!(peers.len(), 1);
                 assert_eq!(peers[0].node_id, "n2");
                 assert_eq!(peers[0].candidates.len(), 1);
+                assert_eq!(peers[0].client_version, "0.4.2");
             }
             other => panic!("expected NodeAuthOk, got {:?}", other),
         }
@@ -447,6 +475,7 @@ mod tests {
             overlay_ip: "100.64.0.5".into(),
             overlay_subnet: "100.64.0.0/10".into(),
             peers: vec![],
+            zone: String::new(),
         };
         match cbor_roundtrip(&msg) {
             ServerMessage::AdoptOk {
@@ -455,6 +484,7 @@ mod tests {
                 overlay_ip,
                 overlay_subnet,
                 peers,
+                ..
             } => {
                 assert_eq!(cluster_id, "c1");
                 assert_eq!(node_uuid, "n1");
@@ -476,6 +506,7 @@ mod tests {
                 candidates: vec![],
                 public_key: String::new(),
                 admission_cert: String::new(),
+                client_version: String::new(),
             },
         };
         match cbor_roundtrip(&msg) {
@@ -764,6 +795,8 @@ mod tests {
             public_key: "pk".into(),
             expires_at: 999,
             admission_cert: "cert".into(),
+            protocol_version: 1,
+            client_version: "0.4.2".into(),
         };
         let a = cbor_bytes(&msg);
         let b = cbor_bytes(&msg);
@@ -778,9 +811,7 @@ mod tests {
             node_id: "n1".into(),
             fingerprint: "fp".into(),
             overlay_ip: "100.64.0.1".into(),
-            candidates: vec![],
-            public_key: String::new(),
-            admission_cert: String::new(),
+            ..PeerInfo::default()
         };
         let bytes = cbor_bytes(&peer);
         let decoded: PeerInfo = ciborium::from_reader(&bytes[..]).unwrap();
@@ -788,6 +819,7 @@ mod tests {
         assert!(decoded.candidates.is_empty());
         assert!(decoded.public_key.is_empty());
         assert!(decoded.admission_cert.is_empty());
+        assert!(decoded.client_version.is_empty());
     }
 
     // ===================================================================
@@ -1017,6 +1049,7 @@ mod tests {
         if let Ok(StreamMessage::NodeAuth {
             cluster_id,
             public_key,
+            ..
         }) = result
         {
             assert_eq!(cluster_id, "c1");

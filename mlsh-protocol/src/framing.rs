@@ -188,6 +188,7 @@ mod tests {
             overlay_ip: "100.64.0.1".into(),
             overlay_subnet: "100.64.0.0/10".into(),
             peers: vec![],
+            zone: String::new(),
         };
         write_msg(&mut writer, &server_msg).await.unwrap();
         drop(writer);

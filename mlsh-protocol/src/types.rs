@@ -18,7 +18,7 @@ pub struct Candidate {
 /// Network-level metadata only (identity, addressing, admission). Human-facing
 /// labels (display_name) and cluster role are owned by mlsh-control and pushed
 /// to nodes over the mlsh-control event stream — not by signal.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PeerInfo {
     pub node_id: String,
     pub fingerprint: String,
@@ -32,6 +32,10 @@ pub struct PeerInfo {
     /// Peers verify this locally before accepting the peer.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub admission_cert: String,
+    /// Client release the peer reported at handshake (e.g. `"0.4.2"`).
+    /// Empty when the signal hasn't recorded one yet.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_version: String,
 }
 
 /// Information about a registered node (returned by ListNodes from signal).
