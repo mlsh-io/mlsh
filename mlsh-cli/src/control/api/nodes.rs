@@ -13,7 +13,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::control::auth::{AuthState, Caller};
 use crate::control::nodes::{self, NodeRow};
@@ -51,13 +51,35 @@ pub struct NodeResponse {
     pub last_seen: Option<String>,
     /// RFC 3339 UTC.
     pub created_at: String,
+    /// Client release this node reported at handshake (e.g. `"0.4.2"`).
+    /// Empty when the node is offline or pre-versioning.
+    #[serde(default)]
+    pub client_version: String,
+}
+
+/// Live-presence snapshot used by the nodes handlers: which UUIDs are
+/// currently online, plus the client version they reported at handshake
+/// (when known).
+#[derive(Default)]
+struct LivePresence {
+    online: HashSet<String>,
+    versions: HashMap<String, String>,
 }
 
 /// Build a response row, marking online only if the node is `active` AND
-/// `online_uuids` contains its UUID. The live set is fetched once per
+/// `presence.online` contains its UUID. The live set is fetched once per
 /// request from the local tund manager (which round-trips to signal).
-fn build_response(n: NodeRow, online_uuids: &HashSet<String>) -> NodeResponse {
-    let online = n.status == "active" && online_uuids.contains(&n.node_uuid);
+fn build_response(n: NodeRow, presence: &LivePresence) -> NodeResponse {
+    let online = n.status == "active" && presence.online.contains(&n.node_uuid);
+    let client_version = if online {
+        presence
+            .versions
+            .get(&n.node_uuid)
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     NodeResponse {
         id: n.node_uuid,
         display_name: n.display_name,
@@ -67,21 +89,22 @@ fn build_response(n: NodeRow, online_uuids: &HashSet<String>) -> NodeResponse {
         fingerprint: n.fingerprint,
         last_seen: n.last_seen,
         created_at: n.created_at,
+        client_version,
     }
 }
 
-/// Snapshot the live online set from the daemon's signal-session peers
-/// cache. The cache is `PeerJoined`/`PeerLeft`-driven, so this is the
-/// same source of truth as signal's `online_node_ids` — without a
-/// per-request round-trip to signal.
+/// Snapshot live presence from the daemon's signal-session peers cache.
+/// The cache is `PeerJoined`/`PeerLeft`-driven, so this is the same source
+/// of truth as signal's `online_node_ids` — without a per-request
+/// round-trip to signal.
 ///
-/// `self_uuid` is always inserted: signal's broadcasts exclude the
-/// caller, so the local node never appears in its own peers list — but
-/// the API only runs while the local control daemon is up, so it's
-/// online by construction.
-async fn fetch_online_uuids(cluster_name: &str, self_uuid: &str) -> HashSet<String> {
+/// `self_uuid` is always inserted as online with our own running version:
+/// signal's broadcasts exclude the caller, so the local node never appears
+/// in its own peers list — but the API only runs while the local control
+/// daemon is up, so it's online by construction.
+async fn fetch_live_presence(cluster_name: &str, self_uuid: &str) -> LivePresence {
     let Some(manager) = crate::tund::manager_handle::get() else {
-        return HashSet::new();
+        return LivePresence::default();
     };
     let session = {
         let mgr = manager.lock().await;
@@ -89,18 +112,24 @@ async fn fetch_online_uuids(cluster_name: &str, self_uuid: &str) -> HashSet<Stri
     };
     let peers = match session {
         Some(s) => s.peers(),
-        None => return HashSet::new(),
+        None => return LivePresence::default(),
     };
-    compute_online_set(&peers, self_uuid)
+    compute_live_presence(&peers, self_uuid)
 }
 
-fn compute_online_set(
+fn compute_live_presence(
     peers: &[mlsh_protocol::types::PeerInfo],
     self_uuid: &str,
-) -> HashSet<String> {
-    let mut set: HashSet<String> = peers.iter().map(|p| p.node_id.clone()).collect();
-    set.insert(self_uuid.to_string());
-    set
+) -> LivePresence {
+    let mut online: HashSet<String> = peers.iter().map(|p| p.node_id.clone()).collect();
+    online.insert(self_uuid.to_string());
+    let mut versions: HashMap<String, String> = peers
+        .iter()
+        .filter(|p| !p.client_version.is_empty())
+        .map(|p| (p.node_id.clone(), p.client_version.clone()))
+        .collect();
+    versions.insert(self_uuid.to_string(), env!("GIT_VERSION").to_string());
+    LivePresence { online, versions }
 }
 
 // ---------- request bodies ----------
@@ -132,11 +161,10 @@ pub async fn list_nodes(State(state): State<AuthState>, _caller: Caller) -> Resp
     let cluster = state.cluster.cluster_id.clone();
     match nodes::list(state.store.pool(), &cluster).await {
         Ok(rows) => {
-            let online_uuids =
-                fetch_online_uuids(&state.cluster.name, &state.cluster.node_uuid).await;
+            let presence = fetch_live_presence(&state.cluster.name, &state.cluster.node_uuid).await;
             let out: Vec<NodeResponse> = rows
                 .into_iter()
-                .map(|r| build_response(r, &online_uuids))
+                .map(|r| build_response(r, &presence))
                 .collect();
             Json(out).into_response()
         }
@@ -168,9 +196,8 @@ pub async fn get_node(
     };
     match nodes::find(state.store.pool(), &cluster, &uuid).await {
         Ok(Some(row)) => {
-            let online_uuids =
-                fetch_online_uuids(&state.cluster.name, &state.cluster.node_uuid).await;
-            Json(build_response(row, &online_uuids)).into_response()
+            let presence = fetch_live_presence(&state.cluster.name, &state.cluster.node_uuid).await;
+            Json(build_response(row, &presence)).into_response()
         }
         Ok(None) => not_found(),
         Err(e) => internal_error(e),
@@ -409,53 +436,58 @@ mod tests {
             created_at: "2026-01-01 00:00:00".into(),
         };
 
-        let mut live = HashSet::new();
+        let mut presence = LivePresence::default();
         assert!(
-            !build_response(row.clone(), &live).online,
+            !build_response(row.clone(), &presence).online,
             "absent → offline"
         );
 
-        live.insert("u1".into());
-        assert!(
-            build_response(row.clone(), &live).online,
-            "present → online"
-        );
+        presence.online.insert("u1".into());
+        presence.versions.insert("u1".into(), "0.4.2".into());
+        let resp = build_response(row.clone(), &presence);
+        assert!(resp.online, "present → online");
+        assert_eq!(resp.client_version, "0.4.2");
 
         let revoked = NodeRow {
             status: "revoked".into(),
             ..row
         };
+        let resp = build_response(revoked, &presence);
         assert!(
-            !build_response(revoked, &live).online,
+            !resp.online,
             "revoked node is never online, even with a live session"
+        );
+        assert_eq!(
+            resp.client_version, "",
+            "offline node has no client_version surfaced"
         );
     }
 
     #[test]
-    fn compute_online_set_includes_self_and_peers() {
+    fn compute_live_presence_includes_self_and_peers() {
         use mlsh_protocol::types::PeerInfo;
-        let peer = |id: &str| PeerInfo {
+        let peer = |id: &str, ver: &str| PeerInfo {
             node_id: id.into(),
-            fingerprint: String::new(),
-            overlay_ip: String::new(),
-            candidates: Vec::new(),
-            public_key: String::new(),
-            admission_cert: String::new(),
+            client_version: ver.into(),
+            ..PeerInfo::default()
         };
 
         // Empty peers + self-uuid → only self is online.
-        let set = compute_online_set(&[], "self-u");
-        assert!(set.contains("self-u"));
-        assert_eq!(set.len(), 1);
+        let presence = compute_live_presence(&[], "self-u");
+        assert!(presence.online.contains("self-u"));
+        assert_eq!(presence.online.len(), 1);
 
         // Peers list never contains self by design (signal scrubs it).
-        // We add it back unconditionally.
-        let peers = vec![peer("dev-u"), peer("homelab-u")];
-        let set = compute_online_set(&peers, "self-u");
-        assert!(set.contains("self-u"));
-        assert!(set.contains("dev-u"));
-        assert!(set.contains("homelab-u"));
-        assert_eq!(set.len(), 3);
+        // We add it back unconditionally; per-peer versions flow through.
+        let peers = vec![peer("dev-u", "0.4.2"), peer("homelab-u", "")];
+        let presence = compute_live_presence(&peers, "self-u");
+        assert!(presence.online.contains("self-u"));
+        assert!(presence.online.contains("dev-u"));
+        assert!(presence.online.contains("homelab-u"));
+        assert_eq!(presence.online.len(), 3);
+        assert_eq!(presence.versions.get("dev-u").unwrap(), "0.4.2");
+        // homelab reported an empty version → not surfaced.
+        assert!(!presence.versions.contains_key("homelab-u"));
     }
 
     #[tokio::test]

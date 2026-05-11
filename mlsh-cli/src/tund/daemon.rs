@@ -21,7 +21,12 @@ struct Args {
 pub async fn run() -> Result<()> {
     let args = Args::parse();
     let sock_path = control::socket_path(args.socket.as_deref());
-    tracing::info!("mlshtund starting, socket: {}", sock_path.display());
+    tracing::info!(
+        version = env!("GIT_VERSION"),
+        protocol_version = mlsh_protocol::PROTOCOL_VERSION,
+        socket = %sock_path.display(),
+        "mlshtund starting"
+    );
 
     let manager = Arc::new(Mutex::new(TunnelManager::new()));
     crate::tund::manager_handle::set(manager.clone());

@@ -296,6 +296,8 @@ async fn run_session(
     let auth_msg = StreamMessage::NodeAuth {
         cluster_id: creds.cluster_id.clone(),
         public_key: creds.public_key.clone(),
+        protocol_version: mlsh_protocol::PROTOCOL_VERSION,
+        client_version: env!("GIT_VERSION").to_string(),
     };
     framing::write_msg(&mut send, &auth_msg).await?;
 
@@ -787,9 +789,7 @@ mod tests {
                 node_id: "nas".into(),
                 fingerprint: "abc123".into(),
                 overlay_ip: "100.64.0.1".into(),
-                candidates: vec![],
-                public_key: String::new(),
-                admission_cert: String::new(),
+                ..PeerInfo::default()
             },
         };
         handle_push_message(&msg, &tx, "");
@@ -803,9 +803,7 @@ mod tests {
             node_id: "nas".into(),
             fingerprint: "abc".into(),
             overlay_ip: "100.64.0.1".into(),
-            candidates: vec![],
-            public_key: String::new(),
-            admission_cert: String::new(),
+            ..PeerInfo::default()
         }]));
         let msg = ServerMessage::PeerLeft {
             node_id: "nas".into(),
@@ -821,18 +819,14 @@ mod tests {
             node_id: "nas".into(),
             fingerprint: "old-fp".into(),
             overlay_ip: "100.64.0.1".into(),
-            candidates: vec![],
-            public_key: String::new(),
-            admission_cert: String::new(),
+            ..PeerInfo::default()
         }]));
         let msg = ServerMessage::PeerJoined {
             peer: PeerInfo {
                 node_id: "nas".into(),
                 fingerprint: "new-fp".into(),
                 overlay_ip: "100.64.0.1".into(),
-                candidates: vec![],
-                public_key: String::new(),
-                admission_cert: String::new(),
+                ..PeerInfo::default()
             },
         };
         handle_push_message(&msg, &tx, "");

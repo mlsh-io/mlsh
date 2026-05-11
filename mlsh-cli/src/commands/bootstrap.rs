@@ -70,6 +70,8 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
         public_key,
         expires_at: 0,
         admission_cert: String::new(),
+        protocol_version: mlsh_protocol::PROTOCOL_VERSION,
+        client_version: env!("GIT_VERSION").to_string(),
     };
     framing::write_msg(&mut send, &adopt_msg).await?;
 

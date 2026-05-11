@@ -409,9 +409,7 @@ mod tests {
                 node_id: "pi".into(),
                 fingerprint: "fp".into(),
                 overlay_ip: "100.64.0.2".into(),
-                candidates: vec![],
-                public_key: String::new(),
-                admission_cert: String::new(),
+                ..PeerInfo::default()
             }]))
             .await;
 
@@ -458,9 +456,7 @@ mod tests {
                 node_id: "a3f8b2c1-uuid".into(),
                 fingerprint: "fp".into(),
                 overlay_ip: "100.64.0.5".into(),
-                candidates: vec![],
-                public_key: String::new(),
-                admission_cert: String::new(),
+                ..PeerInfo::default()
             }]))
             .await;
 
@@ -543,17 +539,13 @@ mod tests {
                     node_id: "pi".into(),
                     fingerprint: "fp1".into(),
                     overlay_ip: "100.64.0.2".into(),
-                    candidates: vec![],
-                    public_key: String::new(),
-                    admission_cert: String::new(),
+                    ..PeerInfo::default()
                 },
                 PeerInfo {
                     node_id: "xyz".into(),
                     fingerprint: "fp2".into(),
                     overlay_ip: "100.64.0.3".into(),
-                    candidates: vec![],
-                    public_key: String::new(),
-                    admission_cert: String::new(),
+                    ..PeerInfo::default()
                 },
             ]))
             .await;
@@ -606,9 +598,7 @@ mod tests {
                 node_id: "control-node-uuid".into(),
                 fingerprint: "fp".into(),
                 overlay_ip: "100.64.0.7".into(),
-                candidates: vec![],
-                public_key: String::new(),
-                admission_cert: String::new(),
+                ..PeerInfo::default()
             }]))
             .await;
         let map = DisplayNameMap::new();

@@ -19,6 +19,8 @@ export interface NodeInfo {
   last_seen: string | null
   /** RFC 3339 UTC. */
   created_at: string
+  /** Client release reported at handshake (empty when offline or pre-versioning). */
+  client_version: string
 }
 
 export interface Cluster {

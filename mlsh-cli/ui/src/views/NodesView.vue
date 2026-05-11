@@ -252,6 +252,7 @@ function formatTtl(seconds: number): string {
       <div>Name</div>
       <div>Overlay IP</div>
       <div>Role</div>
+      <div>Version</div>
       <div>Node ID</div>
       <div></div>
     </div>
@@ -279,6 +280,7 @@ function formatTtl(seconds: number): string {
       </div>
       <div class="ip">{{ node.fingerprint.slice(0, 12) }}…</div>
       <div class="role">{{ node.role }}</div>
+      <div class="version">{{ node.client_version || '—' }}</div>
       <div class="ip">{{ node.id.slice(0, 12) }}…</div>
       <div class="row-action">
         <button
@@ -466,7 +468,7 @@ function formatTtl(seconds: number): string {
 }
 .row {
   display: grid;
-  grid-template-columns: 1fr 140px 100px 160px 60px;
+  grid-template-columns: 1fr 140px 100px 100px 160px 60px;
   gap: var(--space-4);
   padding: 14px var(--space-5);
   align-items: center;
@@ -502,6 +504,7 @@ function formatTtl(seconds: number): string {
 .node-tag { font-size: 11px; color: var(--muted-2); font-family: var(--font-mono); }
 .ip { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
 .role { font-size: var(--text-sm); color: var(--muted); text-transform: capitalize; }
+.version { font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
 .cert {
   font-family: var(--font-mono);
   font-size: 12px;
