@@ -87,6 +87,10 @@ pub async fn connect_overlay_direct(
         quinn::IdleTimeout::try_from(Duration::from_secs(30 * 60)).unwrap(),
     ));
     transport.keep_alive_interval(Some(Duration::from_secs(15)));
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
+    transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
+    transport.send_window(64 * 1024 * 1024);
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     client_config.transport_config(Arc::new(transport));
 
     let sni = addr.ip().to_string();
@@ -350,6 +354,10 @@ fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerCo
     transport.keep_alive_interval(Some(std::time::Duration::from_secs(15)));
     transport.max_concurrent_uni_streams(quinn::VarInt::from_u32(128));
     transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(4));
+    transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
+    transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
+    transport.send_window(64 * 1024 * 1024);
+    transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     server_config.transport_config(Arc::new(transport));
 
     Ok(server_config)
