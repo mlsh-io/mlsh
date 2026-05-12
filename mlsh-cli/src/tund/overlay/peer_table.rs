@@ -208,15 +208,12 @@ impl PeerTable {
 
         match route {
             Some(RouteHandle::Direct(conn)) => {
-                if let Ok(mut s) = conn.open_uni().await {
-                    let len = (packet.len() as u32).to_be_bytes();
-                    let _ = s.write_all(&len).await;
-                    let _ = s.write_all(packet).await;
-                    let _ = s.finish();
-                    true
-                } else {
-                    false
-                }
+                // Unreliable QUIC datagram (RFC 9221): no stream open/close
+                // per packet, no head-of-line blocking. TCP carried on top
+                // handles loss. If the peer hasn't advertised a large enough
+                // max_datagram_size, drop and let TCP's PMTUD shrink the MSS.
+                conn.send_datagram(bytes::Bytes::copy_from_slice(packet))
+                    .is_ok()
             }
             Some(RouteHandle::Relay(tx)) => tx.try_send(packet.to_vec()).is_ok(),
             None => false,

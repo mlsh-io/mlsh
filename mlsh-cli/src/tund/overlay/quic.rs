@@ -90,6 +90,8 @@ pub async fn connect_overlay_direct(
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
     transport.send_window(64 * 1024 * 1024);
+    transport.datagram_receive_buffer_size(Some(8 * 1024 * 1024));
+    transport.datagram_send_buffer_size(8 * 1024 * 1024);
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     client_config.transport_config(Arc::new(transport));
 
@@ -221,34 +223,22 @@ async fn accept_loop(
 }
 
 /// Read packets from a peer's QUIC connection and write to the TUN device.
+/// Uses unreliable QUIC datagrams (RFC 9221) — TCP carried on top handles loss.
 pub async fn run_inbound(
     conn: quinn::Connection,
     device: &Arc<tun_rs::AsyncDevice>,
     peer_table: &PeerTable,
 ) {
-    let mut pkt_buf = vec![0u8; 65536];
     loop {
-        let mut stream = match conn.accept_uni().await {
-            Ok(s) => s,
+        let pkt = match conn.read_datagram().await {
+            Ok(b) => b,
             Err(_) => break,
         };
-        let mut len_buf = [0u8; 4];
-        if stream.read_exact(&mut len_buf).await.is_err() {
+        if !peer_table::validate_inbound_packet(&pkt) {
             continue;
         }
-        let plen = u32::from_be_bytes(len_buf) as usize;
-        if !(20..=65536).contains(&plen) {
-            continue;
-        }
-        if stream.read_exact(&mut pkt_buf[..plen]).await.is_err() {
-            continue;
-        }
-        let pkt = &pkt_buf[..plen];
-        if !peer_table::validate_inbound_packet(pkt) {
-            continue;
-        }
-        peer_table.record_rx(plen);
-        let _ = device.send(pkt).await;
+        peer_table.record_rx(pkt.len());
+        let _ = device.send(&pkt).await;
     }
 }
 
@@ -357,6 +347,8 @@ fn build_server_config(cert_der: &[u8], key_pem: &str) -> Result<quinn::ServerCo
     transport.stream_receive_window(quinn::VarInt::from_u32(16 * 1024 * 1024));
     transport.receive_window(quinn::VarInt::from_u32(64 * 1024 * 1024));
     transport.send_window(64 * 1024 * 1024);
+    transport.datagram_receive_buffer_size(Some(8 * 1024 * 1024));
+    transport.datagram_send_buffer_size(8 * 1024 * 1024);
     transport.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
     server_config.transport_config(Arc::new(transport));
 

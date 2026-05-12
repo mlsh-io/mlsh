@@ -72,6 +72,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
 # Base64 encoding for invite payloads
 base64 = "0.22"
+# Zero-copy buffers for QUIC datagrams
+bytes = "1"
 # TLS over relay stream for E2E encryption
 tokio-rustls = "0.26"
 # Self-signed cert bootstrap for ingress TLS termination
