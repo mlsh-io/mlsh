@@ -98,6 +98,7 @@ const settings: NavItem[] = [
 
     <div v-if="session" class="sidebar-footer">
       <button type="button" class="logout-btn" @click="logout">Sign out</button>
+      <span v-if="cluster?.version" class="version-tag">{{ cluster.version }}</span>
     </div>
   </aside>
 </template>
@@ -196,5 +197,12 @@ const settings: NavItem[] = [
   color: var(--text);
   background: var(--surface);
   border-color: var(--gold);
+}
+
+.version-tag {
+  align-self: center;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--muted-2);
 }
 </style>
