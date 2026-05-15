@@ -401,20 +401,33 @@ async fn forward_to_control(
         return Ok(());
     }
 
-    let mut local = tokio::net::UnixStream::connect(socket)
-        .await
-        .context("Failed to connect mlsh-control socket")?;
-    let (mut local_rd, mut local_wr) = local.split();
+    #[cfg(unix)]
+    {
+        let mut local = tokio::net::UnixStream::connect(socket)
+            .await
+            .context("Failed to connect mlsh-control socket")?;
+        let (mut local_rd, mut local_wr) = local.split();
 
-    let to_local = tokio::io::copy(&mut recv, &mut local_wr);
-    let to_remote = tokio::io::copy(&mut local_rd, &mut send);
-    let (r1, r2) = tokio::join!(to_local, to_remote);
-    tracing::debug!(
-        to_local = ?r1.ok(),
-        to_remote = ?r2.ok(),
-        "control inbound splice finished"
-    );
-    Ok(())
+        let to_local = tokio::io::copy(&mut recv, &mut local_wr);
+        let to_remote = tokio::io::copy(&mut local_rd, &mut send);
+        let (r1, r2) = tokio::join!(to_local, to_remote);
+        tracing::debug!(
+            to_local = ?r1.ok(),
+            to_remote = ?r2.ok(),
+            "control inbound splice finished"
+        );
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &mut recv;
+        let resp = mlsh_protocol::control::ControlResponse::error(
+            "not_control",
+            "mlsh-control forwarding is not supported on this platform",
+        );
+        framing::write_msg(&mut send, &resp).await?;
+        Ok(())
+    }
 }
 
 fn build_client_config(creds: &SignalCredentials) -> Result<quinn::ClientConfig> {
