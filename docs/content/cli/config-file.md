@@ -24,25 +24,25 @@ Everything the CLI and daemon need lives under `~/.config/mlsh/` on Linux and ma
 Each `clusters/<name>.toml` is written by `mlsh setup` or `mlsh adopt`. Example:
 
 ```toml
-cluster_name    = "homelab"
-cluster_id      = "018f..."
-node_id         = "01JA..."
-node_name       = "nas"
-role            = "node"
-overlay_ip      = "100.64.0.3"
+[cluster]
+name              = "homelab"
+id                = "9c5e4a1e-..."   # UUID v4
+signal_endpoint   = "signal.example.com:4433"
+signal_fingerprint = "sha256:abc123..."
+zone              = "homelab.example.com"   # public DNS zone, optional
 
-[signal]
-host            = "signal.example.com"
-port            = 4433
-fingerprint     = "sha256:abc123..."
-node_token      = "eyJ..."
+[node_auth]
+node_uuid         = "3a1b7c9e-..."   # UUID v4
+display_name      = "nas"
+fingerprint       = "sha256:def456..."
+roles             = ["node"]          # add "control" on the control-plane node
 
 [overlay]
-subnet          = "100.64.0.0/10"
-mtu             = 1400
+ip                = "100.64.0.3"
+subnet            = "100.64.0.0/10"
 ```
 
-You rarely need to edit this by hand.
+You rarely need to edit this by hand. `mlsh control promote` / `demote` manage the `roles` array in place.
 
 ## Daemon file (optional)
 

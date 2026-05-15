@@ -83,9 +83,18 @@ Prints the state of all active clusters: overlay IP, uptime, peers, and traffic 
 mlsh status
 ```
 
+## `mlsh ui`
+
+Opens the cluster's admin web UI in your default browser. Spawns a localhost proxy that forwards to the control-plane node over the overlay, so the tunnel must be up (`mlsh connect <cluster>`). Available on control-plane builds.
+
+```sh
+mlsh ui <cluster>
+mlsh ui <cluster> --no-open   # print the URL instead of opening the browser
+```
+
 ## `mlsh nodes`
 
-Lists all nodes in a cluster with their online/offline status.
+Lists all nodes in a cluster with their online/offline status, overlay IP, display name, and client version.
 
 ```sh
 mlsh nodes <cluster>
@@ -93,7 +102,7 @@ mlsh nodes <cluster>
 
 ## `mlsh promote`
 
-Changes a node's role in a cluster. Admin-only.
+Changes a node's role in a cluster. Admin-only. The request is routed via the local `mlshtund` socket to the control-plane node.
 
 ```sh
 mlsh promote <cluster> <node> --role admin
@@ -102,7 +111,7 @@ mlsh promote <cluster> <node> --role admin
 | Flag | Description |
 |---|---|
 | `<cluster>` | Cluster name. |
-| `<node>` | Node ID to promote or demote. |
+| `<node>` | Node UUID or current display name. |
 | `--role {admin\|node}` | New role. |
 
 ## `mlsh revoke`
@@ -113,13 +122,17 @@ Removes a node from a cluster. Admin-only. The revoked node can no longer authen
 mlsh revoke <cluster> <node>
 ```
 
+`<node>` is the node UUID or its current display name.
+
 ## `mlsh rename`
 
-Renames a node's display name in a cluster. Admin-only.
+Renames a node's display name in a cluster. Admin-only. Renames propagate to overlay DNS in real time.
 
 ```sh
 mlsh rename <cluster> <node> <new-name>
 ```
+
+`<node>` is the node UUID or its current display name. The new name is sanitized for DNS use; see [DNS resolution](@/networking/dns.md).
 
 ## `mlsh identity-export`
 
@@ -189,5 +202,23 @@ mlsh tunnel status
 | `install` | Install `mlshtund` as a system daemon. `--auto-connect <list>` auto-connects the listed clusters on daemon start. |
 | `uninstall` | Uninstall the daemon. |
 | `status` | Show daemon installation status. |
+
+Persisted clusters are also auto-reconnected when the daemon itself starts — `--auto-connect` is only needed if you want the daemon installed *and* a specific set of clusters connected on boot.
+
+## `mlsh control`
+
+Manages the control-plane role on this node. The control-plane node hosts the admin REST API, the web UI, and the authoritative store of users, nodes, and display names. Exactly one node per cluster carries the `control` role. Available on control-plane builds.
+
+```sh
+mlsh control promote <cluster>
+mlsh control demote  <cluster>
+mlsh control migrate <cluster> <target-node>
+```
+
+| Subcommand | Description |
+|---|---|
+| `promote` | Start `mlsh-control` on this node and add the `control` role to its cluster config. |
+| `demote` | Stop `mlsh-control` and remove the `control` role. |
+| `migrate` | Demote this node and print the manual steps to bring up the target node as the new control node. Peer-to-peer data transfer is not yet automated. |
 
 See [config file](@/cli/config-file.md) for the on-disk format stored in `~/.config/mlsh/`.

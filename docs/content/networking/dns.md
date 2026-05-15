@@ -8,12 +8,12 @@ Each node runs a minimal DNS resolver that answers for names inside its cluster.
 
 ## What it resolves
 
-- `<node-id>.<cluster>` → that node's overlay IP.
+- `<node-uuid>.<cluster>` → that node's overlay IP (`node_uuid` is a UUID v4).
 - `<display-name>.<cluster>` → same overlay IP, using the human-readable name set via `mlsh rename`. The display name is sanitized to a valid DNS label (lowercase, `[a-z0-9-]`, separators become `-`, truncated to 63 chars). Examples: `Nico's Laptop` → `nicos-laptop.homelab`, `RPi 4 Garage` → `rpi-4-garage.homelab`.
-- `<cluster>` alone → the local node's overlay IP.
+- `<cluster>` alone → the **control-plane node** for the cluster (the one that runs the admin REST API and serves the UI). This is the canonical entry point for `mlsh ui` and for any client hitting the admin API over the overlay. When the local node *is* the control node, the resolver returns `127.0.0.1` instead of the overlay IP — macOS' utun does not loop packets back to the originating node, so loopback is the only address that works end-to-end.
 - Anything else is not answered.
 
-Resolution order: node_id first, then sanitized display_name. Renames (`mlsh rename`) propagate in real time — no TTL wait, no daemon restart.
+Resolution order: bare zone (`<cluster>`) → control node; then `node_uuid` match; then sanitized `display_name`. Renames (`mlsh rename`) propagate in real time — no TTL wait, no daemon restart.
 
 TTL is 60 seconds. Lookups hit the in-memory peer table, which the daemon keeps in sync with the signal server.
 
