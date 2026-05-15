@@ -9,7 +9,7 @@ MLSH ships as a single static binary that provides both the client (`mlsh`) and 
 ## Linux
 
 ```sh
-curl -fsSL https://install.mlsh.io | sh
+curl -fsSL https://get.mlsh.io | sh
 ```
 
 The installer detects your architecture (x86_64 / aarch64), downloads the latest release, and symlinks `mlsh` and `mlshtund` into `/usr/local/bin`.
@@ -36,7 +36,7 @@ sudo installer -pkg ~/Downloads/mlsh-vX.Y.Z-macos-universal.pkg -target /
 If you only need the CLI, install it with the one-liner:
 
 ```sh
-curl -fsSL https://install.mlsh.io | sh
+curl -fsSL https://get.mlsh.io | sh
 ```
 
 ## Windows
