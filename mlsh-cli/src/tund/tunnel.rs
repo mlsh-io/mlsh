@@ -102,7 +102,8 @@ impl ManagedTunnel {
         // so slim builds (mlshtund without admin UI) don't link the router.
         let control_task = control_role_active(&config).then(|| spawn_control_task(config.clone()));
 
-        // Build the mlsh-control session and warm it up so AdoptConfirm fires.
+        // Build the mlsh-control session. A supervisor task keeps it alive
+        // for the tunnel's lifetime — see #88.
         let creds = config.signal_credentials()?;
         let control_socket = control_plane_socket_path();
         let control_session =
@@ -121,11 +122,11 @@ impl ManagedTunnel {
             });
         }
 
-        let warmup = control_session.clone();
+        let supervisor_session = control_session.clone();
+        let supervisor_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) = warmup.ensure_connected().await {
-                tracing::debug!(error = %e, "mlsh-control warmup failed (will retry on demand)");
-            }
+            supervisor_session.supervise(supervisor_shutdown).await;
+            tracing::info!("mlsh-control supervisor exited");
         });
 
         let tx_counter = bytes_tx.clone();

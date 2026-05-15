@@ -54,7 +54,7 @@ pub async fn handle_control_connection(conn: quinn::Connection, state: Arc<QuicS
             }
         }
     }
-    debug!(fp = %caller_fp, "control: connection deregistered");
+    info!(fp = %caller_fp, "control: connection deregistered");
 }
 
 async fn accept_loop(
@@ -116,7 +116,15 @@ async fn relay_one_stream(
     };
     let control_conn = match control_conn {
         Some(c) if c.close_reason().is_none() => c,
-        _ => return reject(&mut cli_send, "control_offline", "Control offline").await,
+        _ => {
+            warn!(
+                cluster_id = %caller.cluster_id,
+                caller_node = %caller.node_id,
+                wanted_control_fp = %control.fingerprint,
+                "control: rejecting relay — control node connection not in map"
+            );
+            return reject(&mut cli_send, "control_offline", "Control offline").await;
+        }
     };
 
     let cluster_name = crate::db::get_cluster_name_by_id(&state.db, &caller.cluster_id)

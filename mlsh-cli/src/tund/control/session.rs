@@ -16,11 +16,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use mlsh_protocol::control::ControlEvent;
 use mlsh_protocol::framing;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 
 use crate::tund::control::display_names::DisplayNameMap;
 use crate::tund::signal_session::SignalCredentials;
@@ -29,6 +30,12 @@ use crate::tund::signal_session::SignalCredentials;
 /// small: subscribers that fall behind are signalled via `RecvError::Lagged`
 /// and expected to reseed via `ListNodes`.
 const EVENT_BROADCAST_CAPACITY: usize = 256;
+
+/// Reconnect backoff for the mlsh-control supervisor. Mirrors the values in
+/// `signal_session.rs` so both long-lived QUIC sessions behave alike.
+const RECONNECT_INITIAL: Duration = Duration::from_millis(200);
+const RECONNECT_MAX: Duration = Duration::from_secs(10);
+const RECONNECT_JITTER: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 pub struct ControlSession {
@@ -178,6 +185,76 @@ impl ControlSession {
         let conn = self.ensure_connected().await?;
         call_on(&conn, request_cbor).await
     }
+
+    /// Long-running task that keeps the ALPN `mlsh-control` QUIC session to
+    /// signal alive for the entire tunnel lifetime. Without this a control
+    /// node never re-initiates the connection after it dies — `ensure_connected`
+    /// is only triggered by outbound traffic, and a control node is a receiver
+    /// in steady state. Signal would end up with an empty `control_conns` map
+    /// and reject every relayed `AdoptConfirm` with `control_offline`. See #88.
+    pub async fn supervise(self, mut shutdown_rx: watch::Receiver<bool>) {
+        shutdown_rx.borrow_and_update();
+        let mut error_backoff = RECONNECT_INITIAL;
+
+        loop {
+            let conn = match self.ensure_connected().await {
+                Ok(c) => {
+                    error_backoff = RECONNECT_INITIAL;
+                    c
+                }
+                Err(e) => {
+                    let d = error_backoff;
+                    tracing::warn!(
+                        error = %e,
+                        delay = ?d,
+                        "mlsh-control session connect failed, retrying"
+                    );
+                    error_backoff = error_backoff.saturating_mul(2).min(RECONNECT_MAX);
+                    tokio::select! {
+                        _ = tokio::time::sleep(d) => continue,
+                        _ = shutdown_rx.changed() => {
+                            if *shutdown_rx.borrow() { return; }
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            let reason = tokio::select! {
+                r = conn.closed() => r,
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() {
+                        conn.close(quinn::VarInt::from_u32(0), b"shutdown");
+                        return;
+                    }
+                    continue;
+                }
+            };
+
+            tracing::info!(%reason, "mlsh-control connection lost, reconnecting");
+            // Drop the dead handle so the next ensure_connected dials anew
+            // instead of returning the closed connection.
+            self.inner.lock().await.conn = None;
+
+            let jitter = rand_jitter(RECONNECT_JITTER);
+            tokio::select! {
+                _ = tokio::time::sleep(jitter) => {}
+                _ = shutdown_rx.changed() => {
+                    if *shutdown_rx.borrow() { return; }
+                }
+            }
+        }
+    }
+}
+
+fn rand_jitter(max: Duration) -> Duration {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
+    let factor = 0.5 + (nanos as f64 / u32::MAX as f64) * 0.5;
+    Duration::from_secs_f64(max.as_secs_f64() * factor)
 }
 
 /// Open a `Subscribe` stream on this control connection and forward every
