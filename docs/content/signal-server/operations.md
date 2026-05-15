@@ -26,3 +26,7 @@ podman restart mlsh-signal
 ```
 
 Rolling back to an older image after a migration is **not** supported.
+
+### Protocol compatibility
+
+The signal advertises a `MIN_PROTOCOL_VERSION`: clients older than that are rejected at NodeAuth/Adopt with an explicit error, and their version is logged. Before bumping the signal, check the **Nodes** view in the admin UI for any clients running an older version, and upgrade them first.

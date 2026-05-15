@@ -36,3 +36,7 @@ Revocation invalidates the node's token on the signal server. The node can no lo
 - **Leaked cluster secret**: the secret is only accepted once, so a later leak is harmless.
 - **Compromised admin key**: revoke the node. Future invites signed by that key are rejected because the server checks that the sponsor is still active.
 - **Impersonated signal server**: fingerprint pinning prevents substitution. An attacker would need both the real server's private key and the ability to redirect DNS/UDP.
+
+## Exposing the admin UI on the Internet
+
+By default the [admin UI](@/admin-ui/_index.md) is only reachable over the overlay via `mlsh ui`, so the only path to the login page goes through a machine that already holds a cluster identity. Enabling **Preferences → Expose admin UI** publishes the UI on `<cluster>.<zone>` through the signal's TLS ingress, which means anyone on the Internet can reach the login form. Before flipping that toggle, require strong credentials (password + TOTP or WebAuthn) on every admin account and consider whether overlay-only access is enough for your use case.

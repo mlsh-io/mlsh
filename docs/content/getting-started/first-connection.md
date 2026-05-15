@@ -24,6 +24,8 @@ mlsh setup homelab \
 
 This connects to the signal server, verifies its TLS certificate by fingerprint, registers the node as an admin, and receives an overlay IP. The cluster configuration is written to `~/.config/mlsh/clusters/homelab.toml`. An Ed25519 identity keypair is generated in `~/.config/mlsh/identity/` if one does not already exist.
 
+After the node is registered, `mlsh setup` prompts you to create the **first admin user** for the cluster's control plane (username + password, with optional TOTP afterwards from the admin UI). This user owns the [admin UI](@/admin-ui/_index.md) and can invite further humans.
+
 ## 2. Invite: vouch for a new node
 
 Still on the admin machine:
