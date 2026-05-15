@@ -51,11 +51,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross
-        run: cross build --release -p mlsh-cli --target ${{ matrix.target }}
+        run: cross build --release -p mlsh-cli --features control-plane --target ${{ matrix.target }}
 
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
-        run: cargo build --release -p mlsh-cli --target ${{ matrix.target }}
+        run: cargo build --release -p mlsh-cli --features control-plane --target ${{ matrix.target }}
         env:
           RUSTFLAGS: ${{ matrix.target == 'x86_64-pc-windows-msvc' && '-C target-feature=+crt-static' || '' }}
 
