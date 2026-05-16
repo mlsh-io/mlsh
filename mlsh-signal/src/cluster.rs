@@ -19,6 +19,7 @@ pub struct ClusterCreated {
 pub async fn create_cluster(
     pool: &SqlitePool,
     name: &str,
+    user_id: &str,
     ttl_minutes: u64,
 ) -> Result<ClusterCreated> {
     let (cluster_id, reused) = match db::get_cluster_by_name(pool, name).await? {
@@ -35,7 +36,7 @@ pub async fn create_cluster(
             }
             (id, true)
         }
-        None => (db::create_cluster(pool, name).await?, false),
+        None => (db::create_cluster(pool, name, user_id).await?, false),
     };
 
     let code = generate_human_code(12);

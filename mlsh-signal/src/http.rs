@@ -43,6 +43,7 @@ fn verify_token(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
 #[derive(Deserialize)]
 struct CreateClusterRequest {
     name: String,
+    user_id: String,
     #[serde(default = "default_ttl")]
     ttl_minutes: u64,
 }
@@ -65,7 +66,7 @@ async fn create_cluster(
 ) -> Result<Json<CreateClusterResponse>, StatusCode> {
     verify_token(&headers, &state.api_token)?;
 
-    let result = cluster::create_cluster(&state.pool, &req.name, req.ttl_minutes)
+    let result = cluster::create_cluster(&state.pool, &req.name, &req.user_id, req.ttl_minutes)
         .await
         .map_err(|e| {
             tracing::error!("Failed to create cluster: {}", e);

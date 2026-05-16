@@ -109,6 +109,12 @@ async fn run_server() -> anyhow::Result<()> {
 
     // Start internal HTTP API if cloud integration is configured
     if let Some(ref api_token) = cfg.cloud_api_token {
+        if cfg.cloud_url.is_none() {
+            error!("cloud_api_token is set but cloud_url is missing; signal needs cloud_url to enforce quotas");
+            return Err(anyhow::anyhow!(
+                "cloud_url required when running in managed mode"
+            ));
+        }
         let http_bind: std::net::SocketAddr =
             cfg.http_bind.parse().expect("Invalid http_bind address");
         let http_pool = pool.clone();
@@ -141,6 +147,7 @@ async fn run_server() -> anyhow::Result<()> {
         overlay_subnet,
         metrics,
         control_conns: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        http_client: reqwest::Client::new(),
     });
 
     // Start the public-ingress TCP listener.
@@ -191,7 +198,8 @@ async fn cmd_create_cluster(name: &str, ttl_minutes: u64) -> anyhow::Result<()> 
     let cfg = config::Config::load()?;
     let pool = db::init(&cfg.db_path).await?;
 
-    let result = mlsh_signal::cluster::create_cluster(&pool, name, ttl_minutes).await?;
+    let result =
+        mlsh_signal::cluster::create_cluster(&pool, name, "self-hosted", ttl_minutes).await?;
 
     eprintln!(
         "{}",

@@ -2236,6 +2236,7 @@ dependencies = [
  "mlsh-protocol",
  "quinn",
  "rcgen",
+ "reqwest",
  "ring",
  "rustls",
  "rustls-pemfile",

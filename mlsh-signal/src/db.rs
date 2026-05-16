@@ -73,6 +73,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
         "CREATE TABLE IF NOT EXISTS clusters (
             id         TEXT PRIMARY KEY,
             name       TEXT NOT NULL,
+            user_id    TEXT NOT NULL,
             created_at TEXT NOT NULL
         )",
     )
@@ -125,21 +126,32 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
 // --- Cluster management
 
 /// Create a new cluster. Returns the generated UUID.
-pub async fn create_cluster(pool: &SqlitePool, name: &str) -> Result<String> {
+pub async fn create_cluster(pool: &SqlitePool, name: &str, user_id: &str) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
     let now = time::OffsetDateTime::now_utc()
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_default();
 
-    sqlx::query("INSERT INTO clusters (id, name, created_at) VALUES (?1, ?2, ?3)")
+    sqlx::query("INSERT INTO clusters (id, name, user_id, created_at) VALUES (?1, ?2, ?3, ?4)")
         .bind(&id)
         .bind(name)
+        .bind(user_id)
         .bind(&now)
         .execute(pool)
         .await
         .context("Failed to create cluster (name may already exist)")?;
 
     Ok(id)
+}
+
+/// Look up the owner `user_id` of a cluster by its signal cluster id.
+pub async fn get_cluster_user_id(pool: &SqlitePool, cluster_id: &str) -> Result<Option<String>> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM clusters WHERE id = ?1")
+        .bind(cluster_id)
+        .fetch_optional(pool)
+        .await
+        .context("Failed to look up cluster user_id")?;
+    Ok(row.map(|(uid,)| uid))
 }
 
 /// Delete a cluster and all associated data.
@@ -880,7 +892,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS clusters (
-                id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL)",
+                id TEXT PRIMARY KEY, name TEXT NOT NULL,
+                user_id TEXT NOT NULL, created_at TEXT NOT NULL)",
         )
         .execute(&pool)
         .await

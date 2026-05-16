@@ -22,6 +22,8 @@ pub struct QuicState {
     pub metrics: Arc<crate::metrics::Metrics>,
     /// Active mlsh-control ALPN connections keyed by mTLS fingerprint.
     pub control_conns: Arc<Mutex<HashMap<String, quinn::Connection>>>,
+    /// Outbound HTTP client for cloud calls (quota check).
+    pub http_client: reqwest::Client,
 }
 
 /// QUIC accept loop. Runs until the endpoint is closed or the shutdown receiver fires.

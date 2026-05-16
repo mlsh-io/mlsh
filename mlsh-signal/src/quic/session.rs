@@ -441,6 +441,11 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
         }
     };
 
+    if let Err(reason) = check_quota_with_cloud(state, cluster_id).await {
+        return ServerMessage::error("quota_exceeded", &reason);
+    }
+    // TODO(quota-race): two concurrent adoptions can both pass; atomic increment in DB needed.
+
     let overlay_ip = match db::register_node_full(
         &state.db,
         &db::NodeRegistration {
@@ -479,6 +484,48 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
         peers,
         zone: state.config.zone.clone(),
     }
+}
+
+/// Ask cloud whether this cluster can adopt one more node. Fail-closed: any
+/// HTTP error or `allowed: false` short-circuits the adoption.
+async fn check_quota_with_cloud(state: &QuicState, cluster_id: &str) -> Result<(), String> {
+    let cloud_url = state
+        .config
+        .cloud_url
+        .as_deref()
+        .ok_or_else(|| "cloud_url not configured".to_string())?;
+    let secret = state.config.cloud_api_token.as_deref().unwrap_or("");
+    let url = format!(
+        "{}/internal/clusters/{}/check-adoption",
+        cloud_url, cluster_id
+    );
+
+    #[derive(serde::Deserialize)]
+    struct Resp {
+        allowed: bool,
+        reason: Option<String>,
+    }
+
+    let resp = state
+        .http_client
+        .post(&url)
+        .header("X-Internal-Secret", secret)
+        .send()
+        .await
+        .map_err(|e| format!("cloud unreachable: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("cloud returned {}", resp.status()));
+    }
+
+    let body: Resp = resp
+        .json()
+        .await
+        .map_err(|e| format!("invalid cloud response: {}", e))?;
+    if !body.allowed {
+        return Err(body.reason.unwrap_or_else(|| "quota exceeded".into()));
+    }
+    Ok(())
 }
 
 /// Verify a sponsor-signed invite token.
