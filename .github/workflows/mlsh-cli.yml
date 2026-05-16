@@ -85,6 +85,18 @@ jobs:
         if: matrix.use_cross
         uses: taiki-e/install-action@cross
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build UI
+        shell: bash
+        run: |
+          cd mlsh-cli/ui
+          npm ci
+          npm run build
+
       - name: Build (cross)
         if: matrix.use_cross
         run: cross build --release -p mlsh-cli --target ${{ matrix.target }}
