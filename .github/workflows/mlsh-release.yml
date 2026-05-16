@@ -7,11 +7,35 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
+  # -- Gate: refuse to release a SHA whose CI never went green -------------------
+  ci-gate:
+    name: ci-gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify mlsh-cli.yml succeeded on tagged SHA
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "Checking mlsh-cli workflow status for $SHA"
+          conclusion=$(gh api \
+            "repos/$REPO/actions/workflows/mlsh-cli.yml/runs?head_sha=$SHA&per_page=100" \
+            --jq '[.workflow_runs[] | select(.event != "pull_request")] | sort_by(.run_started_at) | last | .conclusion // "missing"')
+          echo "conclusion=$conclusion"
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::mlsh-cli workflow on $SHA is '$conclusion' (need 'success'). Tag aborted."
+            exit 1
+          fi
+
   # -- Build binaries (cross-platform) -------------------------------------------
   build:
     name: build (${{ matrix.target }})
+    needs: [ci-gate]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -108,6 +132,7 @@ jobs:
   # -- macOS .app bundle (universal) -----------------------------------------------
   app-bundle:
     name: MLSH.app (universal)
+    needs: [ci-gate]
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
