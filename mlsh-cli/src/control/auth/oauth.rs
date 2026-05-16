@@ -15,10 +15,10 @@
 //!    `email`, `exp`), upserts a managed user keyed by `sub`, and issues a
 //!    local session cookie.
 //!
-//! The mlsh-cloud public key is required to validate JWTs. It is loaded from
-//! `MLSH_CLOUD_JWT_PUBKEY_PEM` (PEM-encoded Ed25519 public key). When unset,
-//! managed-mode endpoints respond 503 — we never accept tokens against an
-//! unknown signer.
+//! The mlsh-cloud public key is required to validate JWTs. By default, the
+//! production key is embedded at build time from `mlsh-cloud-pubkey.pem`.
+//! `MLSH_CLOUD_JWT_PUBKEY_PEM` overrides it (used for staging / tests against
+//! a self-hosted mlsh-cloud).
 
 use anyhow::{anyhow, Result};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 const ENV_PUBKEY: &str = "MLSH_CLOUD_JWT_PUBKEY_PEM";
 const ENV_CLOUD_URL: &str = "MLSH_CLOUD_URL";
 const DEFAULT_CLOUD_URL: &str = "https://api.mlsh.io";
+const EMBEDDED_PUBKEY_PEM: &str = include_str!("../../../mlsh-cloud-pubkey.pem");
 const ISSUER: &str = "mlsh-cloud";
 const AUDIENCE: &str = "mlsh-cloud-api";
 
@@ -69,13 +70,14 @@ impl OAuthConfig {
     pub fn from_env() -> Result<Self> {
         let cloud_url =
             std::env::var(ENV_CLOUD_URL).unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string());
-        let decoding_key = match std::env::var(ENV_PUBKEY) {
-            Ok(pem) if !pem.is_empty() => Some(
-                DecodingKey::from_ed_pem(pem.as_bytes())
-                    .map_err(|e| anyhow!("invalid {}: {}", ENV_PUBKEY, e))?,
-            ),
-            _ => None,
+        let pem = match std::env::var(ENV_PUBKEY) {
+            Ok(p) if !p.is_empty() => p,
+            _ => EMBEDDED_PUBKEY_PEM.to_string(),
         };
+        let decoding_key = Some(
+            DecodingKey::from_ed_pem(pem.as_bytes())
+                .map_err(|e| anyhow!("invalid mlsh-cloud public key: {}", e))?,
+        );
         Ok(Self {
             cloud_url,
             decoding_key,

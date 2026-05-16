@@ -36,12 +36,6 @@ pub async fn serve(config: Arc<ClusterConfig>) -> anyhow::Result<()> {
     let mfa_key_path = db::data_dir().join("mfa.key");
     let mfa_key = auth::crypto::load_or_create_key(&mfa_key_path)?;
     let oauth = auth::oauth::OAuthConfig::from_env()?;
-    if !oauth.is_ready() {
-        tracing::info!(
-            "managed-mode OAuth disabled (set {} to enable)",
-            "MLSH_CLOUD_JWT_PUBKEY_PEM"
-        );
-    }
     let webauthn = auth::webauthn::WebauthnConfig::from_env()?;
     if webauthn.is_none() {
         tracing::info!(
