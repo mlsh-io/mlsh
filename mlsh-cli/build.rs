@@ -38,6 +38,12 @@ fn build_ui() {
     println!("cargo:rerun-if-changed=ui/tsconfig.app.json");
     println!("cargo:rerun-if-changed=ui/tsconfig.node.json");
 
+    // If the UI has already been built (e.g. pre-built on host before cross-compilation),
+    // skip the npm steps to avoid requiring npm in the cross-compilation container.
+    if ui_dir.join("dist").join("index.html").exists() {
+        return;
+    }
+
     if !ui_dir.join("node_modules").exists() {
         run("npm", &["ci"], &ui_dir);
     }
