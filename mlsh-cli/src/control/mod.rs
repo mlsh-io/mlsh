@@ -6,6 +6,7 @@ pub mod first_admin;
 pub mod mode;
 pub mod nodes;
 pub mod server;
+#[cfg(unix)]
 pub mod stream;
 pub mod tls;
 
@@ -61,17 +62,22 @@ pub async fn serve(config: Arc<ClusterConfig>) -> anyhow::Result<()> {
         cluster: config.clone(),
     };
 
-    let stream_state = stream::StreamState {
-        pool: state.store.pool().clone(),
-        events: event_hub,
-        control_node_uuid: config.node_uuid.clone(),
-    };
-    let socket_path = stream::default_socket_path();
-    tokio::spawn(async move {
-        if let Err(e) = stream::serve(&socket_path, stream_state).await {
-            tracing::error!(error = %e, "control CBOR socket exited");
-        }
-    });
+    #[cfg(unix)]
+    {
+        let stream_state = stream::StreamState {
+            pool: state.store.pool().clone(),
+            events: event_hub.clone(),
+            control_node_uuid: config.node_uuid.clone(),
+        };
+        let socket_path = stream::default_socket_path();
+        tokio::spawn(async move {
+            if let Err(e) = stream::serve(&socket_path, stream_state).await {
+                tracing::error!(error = %e, "control CBOR socket exited");
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    let _ = event_hub;
 
     resume_expose(&state).await;
 
