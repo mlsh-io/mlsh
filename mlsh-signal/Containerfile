@@ -11,7 +11,7 @@ ARG TARGETPLATFORM
 ARG GIT_VERSION=
 
 # xx-apk installs packages for the *target* arch; we also need host build tools
-RUN apk add --no-cache clang lld musl-dev
+RUN apk add --no-cache clang lld musl-dev ca-certificates
 RUN xx-apk add --no-cache musl-dev gcc
 
 # Install the Rust target for cross-compilation
@@ -40,6 +40,9 @@ RUN touch src/main.rs \
 FROM scratch
 
 COPY --from=builder /mlsh-signal /mlsh-signal
+# Mozilla CA bundle — required for outbound HTTPS (cloud quota checks). rustls
+# via reqwest's platform verifier reads this file at runtime.
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 ENV MLSH_SIGNAL_DB=/var/lib/mlsh-signal/signal.db
 ENV RUST_LOG=mlsh_signal=info
