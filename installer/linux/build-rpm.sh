@@ -13,6 +13,9 @@ BINDIR="${3:?usage: build-rpm.sh <version> <arch> <bindir>}"
 
 # Strip leading 'v' from version
 VERSION="${VERSION#v}"
+# RPM forbids '-' in Version (reserved as Version-Release separator). Translate
+# pre-release suffixes like 0.0.0-ci → 0.0.0_ci so non-tagged CI builds work.
+VERSION="${VERSION//-/_}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUTPUT_DIR="${SCRIPT_DIR}/output"
