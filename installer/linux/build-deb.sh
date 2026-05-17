@@ -32,6 +32,12 @@ cp "$BINDIR/mlsh"    "$ROOT/usr/local/bin/mlsh"
 cp "$BINDIR/mlshtund" "$ROOT/usr/local/bin/mlshtund"
 chmod 755 "$ROOT/usr/local/bin/mlsh" "$ROOT/usr/local/bin/mlshtund"
 
+# systemd unit + mlsh-cloud JWT pubkey
+mkdir -p "$ROOT/lib/systemd/system" "$ROOT/etc/mlsh"
+cp "$SCRIPT_DIR/mlshtund.service"     "$ROOT/lib/systemd/system/mlshtund.service"
+cp "$SCRIPT_DIR/mlsh-cloud-pubkey.pem" "$ROOT/etc/mlsh/mlsh-cloud-pubkey.pem"
+chmod 644 "$ROOT/lib/systemd/system/mlshtund.service" "$ROOT/etc/mlsh/mlsh-cloud-pubkey.pem"
+
 # Control file
 mkdir -p "$ROOT/DEBIAN"
 cat > "$ROOT/DEBIAN/control" <<CTRL
@@ -45,6 +51,25 @@ Homepage: https://mlsh.io
 Section: net
 Priority: optional
 CTRL
+
+cat > "$ROOT/DEBIAN/postinst" <<'POST'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+    systemctl enable --now mlshtund.service || true
+fi
+POST
+chmod 755 "$ROOT/DEBIAN/postinst"
+
+cat > "$ROOT/DEBIAN/prerm" <<'PRERM'
+#!/bin/sh
+set -e
+if [ -d /run/systemd/system ]; then
+    systemctl disable --now mlshtund.service || true
+fi
+PRERM
+chmod 755 "$ROOT/DEBIAN/prerm"
 
 # -- Build .deb ---------------------------------------------------------------
 

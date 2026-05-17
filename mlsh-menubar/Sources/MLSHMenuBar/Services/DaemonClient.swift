@@ -133,7 +133,7 @@ enum DaemonClient {
     }
 
     private static func socketPaths() -> [String] {
-        var paths = ["/var/run/mlshtund.sock"]
+        var paths = ["/var/run/mlsh/mlshtund.sock"]
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         paths.append("\(home)/.config/mlsh/mlshtund.sock")
         return paths

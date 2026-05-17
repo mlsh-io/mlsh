@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 /// Canonical user config directory: ~/.config/mlsh/
@@ -20,9 +22,16 @@ pub fn daemon_state_dir() -> Result<PathBuf> {
     let dir = PathBuf::from("/var/lib/mlsh");
     fs::create_dir_all(&dir).context("Failed to create daemon state directory /var/lib/mlsh")?;
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).ok();
-    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).ok();
     Ok(dir)
+}
+
+/// mlsh-control state subdirectory: /var/lib/mlsh/control/
+/// Hosts the sqlite DB, session/MFA keys, mode + first-admin markers, and the
+/// control-plane Unix socket. All daemon-side state lives under daemon_state_dir(),
+/// so the systemd unit only needs to grant one ReadWritePaths/StateDirectory.
+///
+/// Returns the path without creating it; callers create_dir_all() before writing.
+pub fn control_data_dir() -> PathBuf {
+    PathBuf::from("/var/lib/mlsh/control")
 }

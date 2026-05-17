@@ -147,8 +147,5 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
 }
 
 pub fn data_dir() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("mlsh")
-        .join("control")
+    crate::config::control_data_dir()
 }

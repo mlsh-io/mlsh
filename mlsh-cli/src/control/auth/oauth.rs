@@ -17,8 +17,8 @@
 //!
 //! The mlsh-cloud public key is required to validate JWTs. By default, the
 //! production key is embedded at build time from `mlsh-cloud-pubkey.pem`.
-//! `MLSH_CLOUD_JWT_PUBKEY_PEM` overrides it (used for staging / tests against
-//! a self-hosted mlsh-cloud).
+//! `MLSH_CLOUD_JWT_PUBKEY_PATH` overrides it with a path to a PEM file
+//! (used for staging, key rotation, or tests against a self-hosted mlsh-cloud).
 
 use anyhow::{anyhow, Result};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const ENV_PUBKEY: &str = "MLSH_CLOUD_JWT_PUBKEY_PEM";
+const ENV_PUBKEY_PATH: &str = "MLSH_CLOUD_JWT_PUBKEY_PATH";
 const ENV_CLOUD_URL: &str = "MLSH_CLOUD_URL";
 const DEFAULT_CLOUD_URL: &str = "https://api.mlsh.io";
 const EMBEDDED_PUBKEY_PEM: &str = include_str!("../../../mlsh-cloud-pubkey.pem");
@@ -70,8 +70,9 @@ impl OAuthConfig {
     pub fn from_env() -> Result<Self> {
         let cloud_url =
             std::env::var(ENV_CLOUD_URL).unwrap_or_else(|_| DEFAULT_CLOUD_URL.to_string());
-        let pem = match std::env::var(ENV_PUBKEY) {
-            Ok(p) if !p.is_empty() => p,
+        let pem = match std::env::var(ENV_PUBKEY_PATH) {
+            Ok(path) if !path.is_empty() => std::fs::read_to_string(&path)
+                .map_err(|e| anyhow!("read {} ({}): {}", ENV_PUBKEY_PATH, path, e))?,
             _ => EMBEDDED_PUBKEY_PEM.to_string(),
         };
         let decoding_key = Some(

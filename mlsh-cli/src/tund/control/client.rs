@@ -127,7 +127,7 @@ impl DaemonClient {
 pub fn discover_socket() -> Result<PathBuf> {
     #[cfg(unix)]
     {
-        let system = PathBuf::from("/var/run/mlshtund.sock");
+        let system = PathBuf::from("/var/run/mlsh/mlshtund.sock");
         if system.exists() {
             return Ok(system);
         }

@@ -80,16 +80,13 @@ pub async fn handle_promote(cluster_name: &str) -> Result<()> {
 pub async fn handle_migrate(cluster_name: &str, target: &str) -> Result<()> {
     handle_demote(cluster_name).await?;
 
-    let src = dirs::data_local_dir()
-        .map(|d| d.join("mlsh").join("control"))
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "<data-local-dir>/mlsh/control".to_string());
+    let src = crate::config::control_data_dir().display().to_string();
 
     println!();
     println!("{}", "Next steps on the target node:".cyan().bold());
     println!(
         "  1. {}",
-        format!("scp -r \"{}\" {}:<target-data-dir>/mlsh/", src, target).bold()
+        format!("scp -r \"{}\" {}:{}/", src, target, src).bold()
     );
     println!(
         "  2. {}",

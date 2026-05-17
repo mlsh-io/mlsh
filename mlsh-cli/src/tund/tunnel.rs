@@ -28,11 +28,7 @@ const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Kept here (not in `crate::control`) so tund compiles without the
 /// `control-plane` feature.
 pub(crate) fn control_plane_socket_path() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("mlsh")
-        .join("control")
-        .join("control.sock")
+    crate::config::control_data_dir().join("control.sock")
 }
 
 /// Live status published by the tunnel task and observed by the manager.

@@ -26,6 +26,9 @@ mkdir -p "$PAYLOAD/Applications"
 mkdir -p "$PAYLOAD/usr/local/bin"
 
 cp -R "$APP_PATH" "$PAYLOAD/Applications/MLSH.app"
+mkdir -p "$PAYLOAD/Applications/MLSH.app/Contents/Resources"
+cp "$SCRIPT_DIR/../linux/mlsh-cloud-pubkey.pem" \
+   "$PAYLOAD/Applications/MLSH.app/Contents/Resources/mlsh-cloud-pubkey.pem"
 
 ln -sf /Applications/MLSH.app/Contents/MacOS/mlsh    "$PAYLOAD/usr/local/bin/mlsh"
 ln -sf /Applications/MLSH.app/Contents/MacOS/mlshtund "$PAYLOAD/usr/local/bin/mlshtund"
@@ -97,6 +100,8 @@ cat > "$PLIST" <<EOF
     <dict>
         <key>RUST_LOG</key>
         <string>mlsh_cli=info</string>
+        <key>MLSH_CLOUD_JWT_PUBKEY_PATH</key>
+        <string>/Applications/MLSH.app/Contents/Resources/mlsh-cloud-pubkey.pem</string>
     </dict>
 </dict>
 </plist>

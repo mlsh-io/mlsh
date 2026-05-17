@@ -7,7 +7,7 @@ use tokio::net::{UnixListener, UnixStream};
 
 use super::Transport;
 
-const SYSTEM_SOCKET: &str = "/var/run/mlshtund.sock";
+const SYSTEM_SOCKET: &str = "/var/run/mlsh/mlshtund.sock";
 
 pub struct UnixTransport;
 
