@@ -1,8 +1,11 @@
 {
   "versions": [
     {
-      "version": "v0.1.7",
+      "version": "v0.2.0",
       "latest": true
+    },
+    {
+      "version": "v0.1.7"
     },
     {
       "version": "v0.1.6"
