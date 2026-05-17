@@ -185,7 +185,8 @@ input {
   padding: 8px 10px;
   color: var(--text);
   font: inherit;
-  width: 140px;
+  width: 100%;
+  max-width: 200px;
 }
 .list { list-style: none; padding: 0; margin: var(--space-3) 0 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .list li {

@@ -209,8 +209,10 @@ input:focus {
 }
 .user-code {
   font-family: var(--font-mono);
-  font-size: 22px;
-  letter-spacing: 0.2em;
+  font-size: clamp(1rem, 5vw, 1.375rem);
+  letter-spacing: 0.15em;
+  word-break: break-all;
+  white-space: pre-wrap;
   background: var(--bg);
   border: 1px solid var(--gold);
   border-radius: var(--radius);

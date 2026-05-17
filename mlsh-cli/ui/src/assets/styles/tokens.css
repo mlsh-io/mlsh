@@ -70,6 +70,24 @@
   /* Transitions */
   --transition-fast: 100ms ease;
   --transition: 150ms ease;
+
+  /* Breakpoints (reference values — CSS custom properties cannot be used inside
+   * @media queries themselves, but documenting them here keeps the source of
+   * truth in one place. The same numbers are used in all @media rules. */
+  --bp-sm: 640px;
+  --bp-md: 1024px;
+}
+
+/* Mobile overrides: shrink page paddings and large display sizes. */
+@media (max-width: 640px) {
+  :root,
+  [data-theme="dark"],
+  [data-theme="light"] {
+    --space-8: 16px;
+    --space-12: 16px;
+    --text-2xl: 22px;
+    --text-xl: 18px;
+  }
 }
 
 [data-theme="light"] {

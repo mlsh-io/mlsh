@@ -22,7 +22,12 @@ defineProps<{
   transition: border-color var(--transition-fast), background var(--transition-fast);
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  cursor: pointer;
+}
+@media (max-width: 640px) {
+  .btn { min-height: 40px; padding: var(--space-2) var(--space-4); }
 }
 .btn:hover { border-color: var(--border-hover); }
 

@@ -23,7 +23,7 @@ defineProps<{
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  padding: 18px var(--space-5);
+  padding: clamp(12px, 3vw, 18px) clamp(14px, 3vw, 20px);
 }
 .label {
   font-size: var(--text-xs);
@@ -33,7 +33,7 @@ defineProps<{
   margin-bottom: var(--space-2);
 }
 .value {
-  font-size: 26px;
+  font-size: clamp(1.25rem, 5vw, 1.625rem);
   font-weight: 500;
   letter-spacing: var(--tracking-tight);
 }

@@ -130,6 +130,13 @@ async function toggleExpose(next: boolean) {
   align-items: center;
   border-bottom: 1px solid var(--border);
 }
+@media (max-width: 640px) {
+  .row {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+    padding: var(--space-4);
+  }
+}
 .row:last-child { border-bottom: none; }
 .row-label { font-weight: 500; }
 .row-hint {

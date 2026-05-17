@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, defineComponent, h } from 'vue'
-import { RouterLink } from 'vue-router'
+import { computed, defineComponent, h, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import BrandMark from './BrandMark.vue'
 import { useCluster } from '@/composables/useCluster'
 import { useSession } from '@/composables/useSession'
 import { useNodes } from '@/composables/useNodes'
+import { useDrawer } from '@/composables/useDrawer'
 import { api } from '@/api/client'
 
 async function logout() {
@@ -47,6 +48,9 @@ interface NavItem {
 const { cluster } = useCluster()
 const { session } = useSession()
 const { nodes } = useNodes()
+const { close: closeDrawer } = useDrawer()
+const route = useRoute()
+watch(() => route.fullPath, () => closeDrawer())
 
 const network = computed<NavItem[]>(() => [
   { to: '/nodes', label: 'Nodes', icon: 'nodes', count: nodes.value.length || undefined },
@@ -67,6 +71,7 @@ const settings: NavItem[] = [
     <div class="brand">
       <span class="brand-mark"><BrandMark /></span>
       <span class="brand-name">mlsh</span>
+      <button type="button" class="drawer-close" aria-label="Close navigation" @click="closeDrawer">×</button>
     </div>
 
     <button class="cluster-pill" type="button">
@@ -120,6 +125,20 @@ const settings: NavItem[] = [
 }
 .brand-mark { display: grid; place-items: center; color: var(--gold); }
 .brand-name { font-weight: 600; letter-spacing: var(--tracking-tight); font-size: var(--text-md); }
+.drawer-close {
+  display: none;
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 8px;
+}
+@media (max-width: 640px) {
+  .drawer-close { display: block; }
+}
 
 .cluster-pill {
   padding: 10px 12px;

@@ -95,31 +95,33 @@ onMounted(reload)
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="loading">Loading…</p>
 
-    <table v-else class="users">
-      <thead>
-        <tr>
-          <th>Email</th>
-          <th>Source</th>
-          <th>Status</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="u in users" :key="u.id">
-          <td>{{ u.email }}</td>
-          <td><span class="badge">{{ u.source }}</span></td>
-          <td>
-            <span :class="['badge', u.active ? 'ok' : 'off']">
-              {{ u.active ? 'active' : 'suspended' }}
-            </span>
-          </td>
-          <td class="actions">
-            <Btn @click="toggleActive(u)">{{ u.active ? 'Suspend' : 'Reactivate' }}</Btn>
-            <Btn variant="danger" @click="deleteUser(u)">Delete</Btn>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+    <div v-else class="users-wrap">
+      <table class="users">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th class="col-hide-sm">Source</th>
+            <th>Status</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="u in users" :key="u.id">
+            <td class="email">{{ u.email }}</td>
+            <td class="col-hide-sm"><span class="badge">{{ u.source }}</span></td>
+            <td>
+              <span :class="['badge', u.active ? 'ok' : 'off']">
+                {{ u.active ? 'active' : 'suspended' }}
+              </span>
+            </td>
+            <td class="actions">
+              <Btn @click="toggleActive(u)">{{ u.active ? 'Suspend' : 'Reactivate' }}</Btn>
+              <Btn variant="danger" @click="deleteUser(u)">Delete</Btn>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </template>
 
@@ -145,7 +147,8 @@ h1 { margin: 0; font-size: 22px; }
   padding: 4px 8px;
   color: var(--text);
   font: inherit;
-  width: 100px;
+  width: 100%;
+  max-width: 140px;
 }
 .create-card {
   background: var(--surface);
@@ -190,5 +193,17 @@ table.users th { color: var(--text-dim); font-weight: 500; }
 }
 .badge.ok { color: var(--green); border-color: rgba(74, 222, 128, 0.3); }
 .badge.off { color: var(--red); border-color: rgba(248, 113, 113, 0.3); }
-.actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
+.actions { display: flex; gap: var(--space-2); justify-content: flex-end; flex-wrap: wrap; }
+.users-wrap { container-type: inline-size; overflow-x: auto; }
+.email { word-break: break-word; }
+
+@container (max-width: 640px) {
+  .col-hide-sm { display: none; }
+  table.users th, table.users td { padding: var(--space-2) var(--space-3); }
+  .actions { flex-direction: column; align-items: stretch; }
+}
+@media (max-width: 640px) {
+  .hint { flex-direction: column; align-items: stretch; }
+  .head { flex-direction: column; align-items: stretch; gap: var(--space-3); }
+}
 </style>

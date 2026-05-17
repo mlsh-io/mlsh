@@ -31,6 +31,12 @@ function setRenameInputRef(el: unknown) {
   renameInputRef.value = (el as HTMLInputElement | null) ?? null
 }
 const confirmRevoke = ref<NodeInfo | null>(null)
+const detailNode = ref<NodeInfo | null>(null)
+function openDetail(node: NodeInfo) {
+  if (renamingNodeId.value === node.id) return
+  detailNode.value = node
+}
+function closeDetail() { detailNode.value = null }
 
 function toggleMenu(nodeId: string) {
   openMenuFor.value = openMenuFor.value === nodeId ? null : nodeId
@@ -247,19 +253,28 @@ function formatTtl(seconds: number): string {
     </div>
   </div>
 
+  <div class="table-wrap">
   <div class="table">
     <div class="row head">
       <div>Name</div>
-      <div>Overlay IP</div>
-      <div>Role</div>
-      <div>Version</div>
-      <div>Node ID</div>
+      <div class="col-hide-sm">Overlay IP</div>
+      <div class="col-hide-sm">Role</div>
+      <div class="col-hide-md">Version</div>
+      <div class="col-hide-md">Node ID</div>
       <div></div>
     </div>
     <div v-if="!filtered.length && !loading" class="empty">
       No nodes match this filter.
     </div>
-    <div v-for="node in filtered" :key="node.id" class="row">
+    <div
+      v-for="node in filtered"
+      :key="node.id"
+      class="row"
+      role="button"
+      tabindex="0"
+      @click="openDetail(node)"
+      @keydown.enter="openDetail(node)"
+    >
       <div class="node-name">
         <StatusDot :state="nodeStatus(node)" />
         <div class="node-meta">
@@ -268,6 +283,7 @@ function formatTtl(seconds: number): string {
             :ref="setRenameInputRef"
             v-model="renameDraft"
             class="rename-input"
+            @click.stop
             @keydown.enter.prevent="commitRename(node)"
             @keydown.esc.prevent="cancelRename()"
             @blur="commitRename(node)"
@@ -278,11 +294,11 @@ function formatTtl(seconds: number): string {
           <span class="node-tag">{{ nodeStatus(node) }}</span>
         </div>
       </div>
-      <div class="ip">{{ node.overlay_ip || '—' }}</div>
-      <div class="role">{{ node.role }}</div>
-      <div class="version">{{ node.client_version || '—' }}</div>
-      <div class="ip">{{ node.id }}</div>
-      <div class="row-action">
+      <div class="ip col-hide-sm">{{ node.overlay_ip || '—' }}</div>
+      <div class="role col-hide-sm">{{ node.role }}</div>
+      <div class="version col-hide-md">{{ node.client_version || '—' }}</div>
+      <div class="ip col-hide-md">{{ node.id }}</div>
+      <div class="row-action" @click.stop>
         <button
           class="row-action-btn"
           :disabled="busyNodeId === node.id"
@@ -313,6 +329,46 @@ function formatTtl(seconds: number): string {
       </div>
     </div>
   </div>
+  </div>
+
+  <!-- Node detail slide-in panel -->
+  <transition name="panel">
+    <div
+      v-if="detailNode"
+      class="panel-backdrop"
+      @click.self="closeDetail"
+      @keydown.esc="closeDetail"
+    >
+      <aside class="detail-panel" role="dialog" aria-modal="true">
+        <div class="panel-head">
+          <div class="panel-title">
+            <StatusDot :state="nodeStatus(detailNode)" />
+            <span>{{ detailNode.display_name || detailNode.id.slice(0, 8) }}</span>
+          </div>
+          <button class="panel-close" aria-label="Close" @click="closeDetail">×</button>
+        </div>
+        <dl class="panel-fields">
+          <dt>Status</dt><dd>{{ nodeStatus(detailNode) }}</dd>
+          <dt>Overlay IP</dt><dd class="mono">{{ detailNode.overlay_ip || '—' }}</dd>
+          <dt>Role</dt><dd>{{ detailNode.role }}</dd>
+          <dt>Version</dt><dd class="mono">{{ detailNode.client_version || '—' }}</dd>
+          <dt>Node ID</dt><dd class="mono break">{{ detailNode.id }}</dd>
+        </dl>
+        <div class="panel-actions">
+          <Btn @click="startRename(detailNode); closeDetail()">Rename…</Btn>
+          <Btn
+            v-if="detailNode.role !== 'admin'"
+            @click="onPromote(detailNode, 'admin'); closeDetail()"
+          >Promote to admin</Btn>
+          <Btn
+            v-if="detailNode.role === 'admin'"
+            @click="onPromote(detailNode, 'node'); closeDetail()"
+          >Demote to node</Btn>
+          <Btn variant="danger" @click="askRevoke(detailNode); closeDetail()">Revoke</Btn>
+        </div>
+      </aside>
+    </div>
+  </transition>
 
   <div v-if="actionError" class="action-error">{{ actionError }}</div>
 
@@ -421,7 +477,13 @@ function formatTtl(seconds: number): string {
 .breadcrumb { color: var(--muted); font-size: 13px; }
 .breadcrumb .sep { color: var(--muted-2); margin: 0 var(--space-2); }
 .breadcrumb .current { color: var(--text); }
-.topbar-actions { display: flex; gap: var(--space-2); }
+.topbar-actions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+
+@media (max-width: 640px) {
+  .topbar { flex-direction: column; align-items: stretch; gap: var(--space-3); }
+  .section-header { flex-direction: column; align-items: stretch; gap: var(--space-2); }
+  .filters { flex-wrap: wrap; }
+}
 
 .page-header { margin-bottom: var(--space-8); }
 .page-title {
@@ -434,7 +496,7 @@ function formatTtl(seconds: number): string {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-4);
   margin-bottom: var(--space-8);
 }
@@ -461,6 +523,7 @@ function formatTtl(seconds: number): string {
   background: rgba(201, 169, 97, 0.06);
 }
 
+.table-wrap { container-type: inline-size; }
 .table {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -468,12 +531,27 @@ function formatTtl(seconds: number): string {
 }
 .row {
   display: grid;
-  grid-template-columns: 200px 120px 80px 200px 1fr 60px;
+  grid-template-columns: minmax(160px, 1.4fr) minmax(110px, 1fr) 80px minmax(80px, 1fr) minmax(120px, 1.4fr) 60px;
   gap: var(--space-4);
   padding: 14px var(--space-5);
   align-items: center;
   border-bottom: 1px solid var(--border);
   transition: background var(--transition-fast);
+  cursor: pointer;
+}
+.row.head { cursor: default; }
+.row:focus-visible { outline: 2px solid var(--gold); outline-offset: -2px; }
+
+@container (max-width: 900px) {
+  .row { grid-template-columns: minmax(140px, 1.4fr) minmax(100px, 1fr) 70px 50px; }
+  .col-hide-md { display: none; }
+}
+@container (max-width: 640px) {
+  .row {
+    grid-template-columns: 1fr auto;
+    padding: var(--space-3) var(--space-4);
+  }
+  .col-hide-sm { display: none; }
 }
 .row.head { border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg); }
 .row:last-child {
@@ -600,8 +678,9 @@ function formatTtl(seconds: number): string {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: var(--space-6);
-  min-width: 420px;
-  max-width: 90vw;
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 .modal-title {
@@ -672,4 +751,75 @@ function formatTtl(seconds: number): string {
   white-space: nowrap;
 }
 .copy-btn:hover { color: var(--text); border-color: var(--gold); }
+
+/* Detail slide-in panel */
+.panel-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 90;
+  display: flex;
+  justify-content: flex-end;
+}
+.detail-panel {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  width: min(420px, 100vw);
+  height: 100%;
+  padding: var(--space-5);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.panel-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+.panel-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 22px;
+  cursor: pointer;
+  padding: 0 8px;
+  line-height: 1;
+}
+.panel-close:hover { color: var(--text); }
+.panel-fields {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.panel-fields dt { color: var(--muted-2); }
+.panel-fields dd { margin: 0; color: var(--text); }
+.panel-fields .mono { font-family: var(--font-mono); font-size: 12px; }
+.panel-fields .break { word-break: break-all; }
+.panel-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: auto;
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.panel-enter-active,
+.panel-leave-active { transition: opacity var(--transition); }
+.panel-enter-active .detail-panel,
+.panel-leave-active .detail-panel { transition: transform var(--transition); }
+.panel-enter-from,
+.panel-leave-to { opacity: 0; }
+.panel-enter-from .detail-panel,
+.panel-leave-to .detail-panel { transform: translateX(100%); }
 </style>
