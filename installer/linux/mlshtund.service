@@ -55,7 +55,7 @@ DevicePolicy=closed
 
 # --- Network --------------------------------------------------------------
 # AF_NETLINK: rtnetlink for interface/route management.
-# AF_UNIX: local control socket (/var/run/mlshtund.sock).
+# AF_UNIX: local control socket (/run/mlsh/mlshtund.sock).
 # AF_INET/INET6: signaling, ICE, ACME, overlay UDP.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 

@@ -7,6 +7,11 @@ use tokio::net::{UnixListener, UnixStream};
 
 use super::Transport;
 
+// Linux: /run is the canonical tmpfs runtime dir (systemd RuntimeDirectory=).
+// macOS: /run does not exist; LaunchDaemon writes under /var/run.
+#[cfg(target_os = "linux")]
+const SYSTEM_SOCKET: &str = "/run/mlsh/mlshtund.sock";
+#[cfg(not(target_os = "linux"))]
 const SYSTEM_SOCKET: &str = "/var/run/mlsh/mlshtund.sock";
 
 pub struct UnixTransport;
