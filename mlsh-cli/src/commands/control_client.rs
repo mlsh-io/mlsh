@@ -48,7 +48,10 @@ pub fn for_cluster(cluster_name: &str) -> Result<(reqwest::Client, String, Clust
         .build()
         .context("build reqwest client")?;
 
-    let base_url = format!("https://{}:{}", config.name, DEFAULT_CONTROL_PORT);
+    let base_url = format!(
+        "https://_control._mlsh.{}:{}",
+        config.name, DEFAULT_CONTROL_PORT,
+    );
 
     Ok((http, base_url, config))
 }

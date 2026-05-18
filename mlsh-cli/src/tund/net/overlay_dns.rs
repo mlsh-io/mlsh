@@ -132,22 +132,13 @@ async fn resolve(
 
     let peers = peer_table.known_peers().await;
 
-    // Bare zone → cluster control node. This is the canonical entry point
-    // for the admin REST API and the bundled UI: `<cluster>` (overlay) and
-    // `<cluster>.<public_zone>` (Internet, when exposed) resolve to the
-    // same control node, mirroring each other.
-    //
-    // When the local node *is* the control node, return loopback rather
-    // than its own overlay IP: macOS' utun does not loop packets back to
-    // itself, so a TCP connect to the local overlay IP would time out.
-    // Loopback bypasses the TUN entirely (the control listener binds on
-    // 0.0.0.0:8443 so it accepts both).
-    //
-    // Bootstrap window: while `display_names.control_uuid()` is None
-    // (between tunnel up and the first `ListNodes` seed), fall back to
-    // `my_ip` so the bare zone keeps resolving to *something* — better
-    // than NXDOMAIN that would force a retry loop.
-    if name == zone {
+    // `<zone>` and `_control._mlsh.<zone>` both point to the control node.
+    // The FQDN form is required on Linux (systemd-resolved drops single-label
+    // unicast queries). Loopback when self: macOS' utun doesn't loop packets
+    // back. Bootstrap fallback to `my_ip` avoids NXDOMAIN before the first
+    // `ListNodes` seed.
+    let control_fqdn = format!("_control._mlsh.{}", zone);
+    if name == zone || name == control_fqdn {
         if let Some(uuid) = display_names.control_uuid().await {
             if uuid == my_node_id {
                 return Some(Ipv4Addr::new(127, 0, 0, 1));
