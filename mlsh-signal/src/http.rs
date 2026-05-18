@@ -131,11 +131,9 @@ async fn list_clusters(
 #[derive(Serialize)]
 struct NodeInfo {
     node_id: String,
-    display_name: String,
     fingerprint: String,
     overlay_ip: String,
     role: String,
-    created_at: String,
     online: bool,
 }
 
@@ -146,32 +144,31 @@ async fn list_nodes(
 ) -> Result<Json<Vec<NodeInfo>>, StatusCode> {
     verify_token(&headers, &state.api_token)?;
 
-    let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
-        "SELECT node_id, display_name, fingerprint, overlay_ip, role, created_at FROM nodes WHERE cluster_id = ?1 ORDER BY created_at",
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT node_id, fingerprint, overlay_ip, role FROM nodes WHERE cluster_id = ?1 ORDER BY node_id",
     )
     .bind(&cluster_id)
     .fetch_all(&state.pool)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    .map_err(|e| {
+        tracing::error!(error = %e, cluster_id = %cluster_id, "list_nodes query failed");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let online_nodes = state.sessions.online_node_ids(&cluster_id).await;
 
     let nodes = rows
         .into_iter()
-        .map(
-            |(node_id, display_name, fingerprint, overlay_ip, role, created_at)| {
-                let online = online_nodes.contains(&node_id);
-                NodeInfo {
-                    node_id,
-                    display_name,
-                    fingerprint,
-                    overlay_ip,
-                    role,
-                    created_at,
-                    online,
-                }
-            },
-        )
+        .map(|(node_id, fingerprint, overlay_ip, role)| {
+            let online = online_nodes.contains(&node_id);
+            NodeInfo {
+                node_id,
+                fingerprint,
+                overlay_ip,
+                role,
+                online,
+            }
+        })
         .collect();
 
     Ok(Json(nodes))
