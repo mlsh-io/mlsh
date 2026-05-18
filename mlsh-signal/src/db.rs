@@ -1,6 +1,31 @@
 use anyhow::{Context, Result};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 
+fn now_rfc3339() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default()
+}
+
+fn parse_overlay_ip(s: &str) -> std::net::Ipv4Addr {
+    s.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)
+}
+
+fn row_to_node(row: (String, String, String, String, String)) -> NodeRecord {
+    let (cluster_id, node_id, fingerprint, ip, role) = row;
+    NodeRecord {
+        cluster_id,
+        node_id,
+        fingerprint,
+        overlay_ip: parse_overlay_ip(&ip),
+        role,
+    }
+}
+
+const NODE_COLS: &str = "cluster_id, node_id, fingerprint, overlay_ip, role";
+const INGRESS_COLS: &str =
+    "domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at";
+
 pub async fn init(db_path: &str) -> Result<SqlitePool> {
     if let Some(parent) = std::path::Path::new(db_path).parent() {
         std::fs::create_dir_all(parent)
@@ -128,30 +153,17 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
 /// Create a new cluster. Returns the generated UUID.
 pub async fn create_cluster(pool: &SqlitePool, name: &str, user_id: &str) -> Result<String> {
     let id = uuid::Uuid::new_v4().to_string();
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
 
     sqlx::query("INSERT INTO clusters (id, name, user_id, created_at) VALUES (?1, ?2, ?3, ?4)")
         .bind(&id)
         .bind(name)
         .bind(user_id)
-        .bind(&now)
+        .bind(now_rfc3339())
         .execute(pool)
         .await
         .context("Failed to create cluster (name may already exist)")?;
 
     Ok(id)
-}
-
-/// Look up the owner `user_id` of a cluster by its signal cluster id.
-pub async fn get_cluster_user_id(pool: &SqlitePool, cluster_id: &str) -> Result<Option<String>> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT user_id FROM clusters WHERE id = ?1")
-        .bind(cluster_id)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to look up cluster user_id")?;
-    Ok(row.map(|(uid,)| uid))
 }
 
 /// Delete a cluster and all associated data.
@@ -190,16 +202,6 @@ pub async fn get_cluster_by_name(
             .await
             .context("Failed to lookup cluster")?;
     Ok(row)
-}
-
-/// Check whether a cluster_id exists in the clusters table.
-pub async fn cluster_exists(pool: &SqlitePool, cluster_id: &str) -> Result<bool> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT id FROM clusters WHERE id = ?1")
-        .bind(cluster_id)
-        .fetch_optional(pool)
-        .await
-        .context("Failed to check cluster")?;
-    Ok(row.is_some())
 }
 
 /// Look up a cluster's display name by UUID.
@@ -250,33 +252,18 @@ pub async fn verify_and_burn_setup_code(
     .await
     .context("Failed to verify setup code")?;
 
-    let expires_at = match row {
-        Some((ea,)) => ea,
-        None => return Ok(false),
+    let Some((expires_at,)) = row else {
+        return Ok(false);
     };
 
-    // Check expiry
-    let now = time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default();
-    if now > expires_at {
-        // Expired — burn it anyway
-        sqlx::query("DELETE FROM setup_codes WHERE cluster_id = ?1")
-            .bind(cluster_id)
-            .execute(pool)
-            .await
-            .ok();
-        return Ok(false);
-    }
-
-    // Valid — burn it
+    // Burn the code whether or not it's expired (one-shot semantics).
     sqlx::query("DELETE FROM setup_codes WHERE cluster_id = ?1")
         .bind(cluster_id)
         .execute(pool)
         .await
         .context("Failed to burn setup code")?;
 
-    Ok(true)
+    Ok(now_rfc3339() <= expires_at)
 }
 
 // --- Config key-value store
@@ -371,29 +358,6 @@ pub struct NodeRecord {
     pub role: String,
 }
 
-/// Register a node and allocate an overlay IP. Idempotent: if the node already
-/// exists (by `cluster_id + node_id`), returns the existing IP and updates the
-/// fingerprint if it changed (cert rotation).
-pub async fn register_node(
-    pool: &SqlitePool,
-    cluster_id: &str,
-    node_id: &str,
-    fingerprint: &str,
-    subnet: &OverlaySubnet,
-) -> Result<std::net::Ipv4Addr> {
-    register_node_full(
-        pool,
-        &NodeRegistration {
-            cluster_id,
-            node_id,
-            fingerprint,
-            role: "node",
-        },
-        subnet,
-    )
-    .await
-}
-
 /// Fields for registering a new node.
 pub struct NodeRegistration<'a> {
     pub cluster_id: &'a str,
@@ -460,9 +424,7 @@ pub async fn register_node_full(
 
     let next_ip_u32 = match max_ip_row {
         Some((ip_str,)) => {
-            let ip: std::net::Ipv4Addr = ip_str
-                .parse()
-                .map_err(|e| anyhow::anyhow!("Bad IP in DB: {}", e))?;
+            let ip: std::net::Ipv4Addr = ip_str.parse().context("Bad IP in DB")?;
             u32::from(ip) + 1
         }
         None => subnet.first,
@@ -548,23 +510,15 @@ pub async fn lookup_node_by_fingerprint(
     cluster_id: &str,
     fingerprint: &str,
 ) -> Result<Option<NodeRecord>> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role
-         FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2",
-    )
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(&format!(
+        "SELECT {NODE_COLS} FROM nodes WHERE cluster_id = ?1 AND fingerprint = ?2"
+    ))
     .bind(cluster_id)
     .bind(fingerprint)
     .fetch_optional(pool)
     .await
     .context("Failed to lookup node by fingerprint")?;
-
-    Ok(row.map(|(cid, nid, fp, ip, role)| NodeRecord {
-        cluster_id: cid,
-        node_id: nid,
-        fingerprint: fp,
-        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-        role,
-    }))
+    Ok(row.map(row_to_node))
 }
 
 /// Look up a node by its certificate fingerprint across all clusters.
@@ -573,45 +527,26 @@ pub async fn lookup_node_by_fingerprint_any_cluster(
     pool: &SqlitePool,
     fingerprint: &str,
 ) -> Result<Option<NodeRecord>> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role
-         FROM nodes WHERE fingerprint = ?1",
-    )
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(&format!(
+        "SELECT {NODE_COLS} FROM nodes WHERE fingerprint = ?1"
+    ))
     .bind(fingerprint)
     .fetch_optional(pool)
     .await
     .context("Failed to lookup node by fingerprint")?;
-
-    Ok(row.map(|(cid, nid, fp, ip, role)| NodeRecord {
-        cluster_id: cid,
-        node_id: nid,
-        fingerprint: fp,
-        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-        role,
-    }))
+    Ok(row.map(row_to_node))
 }
 
 /// List all nodes in a cluster.
 pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeRecord>> {
-    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role
-         FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip",
-    )
+    let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(&format!(
+        "SELECT {NODE_COLS} FROM nodes WHERE cluster_id = ?1 ORDER BY overlay_ip"
+    ))
     .bind(cluster_id)
     .fetch_all(pool)
     .await
     .context("Failed to list nodes")?;
-
-    Ok(rows
-        .into_iter()
-        .map(|(cid, nid, fp, ip, role)| NodeRecord {
-            cluster_id: cid,
-            node_id: nid,
-            fingerprint: fp,
-            overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-            role,
-        })
-        .collect())
+    Ok(rows.into_iter().map(row_to_node).collect())
 }
 
 /// Find the cluster's `control` node — the oldest admin (heuristic for V1).
@@ -620,25 +555,16 @@ pub async fn list_nodes(pool: &SqlitePool, cluster_id: &str) -> Result<Vec<NodeR
 /// `mlsh-control` ALPN streams to. Returns `None` if the cluster has no admin
 /// yet.
 pub async fn find_control_node(pool: &SqlitePool, cluster_id: &str) -> Result<Option<NodeRecord>> {
-    let row: Option<(String, String, String, String, String)> = sqlx::query_as(
-        "SELECT cluster_id, node_id, fingerprint, overlay_ip, role
-         FROM nodes
+    let row: Option<(String, String, String, String, String)> = sqlx::query_as(&format!(
+        "SELECT {NODE_COLS} FROM nodes
          WHERE cluster_id = ?1 AND role = 'admin'
-         ORDER BY rowid ASC
-         LIMIT 1",
-    )
+         ORDER BY rowid ASC LIMIT 1"
+    ))
     .bind(cluster_id)
     .fetch_optional(pool)
     .await
     .context("Failed to find control node")?;
-
-    Ok(row.map(|(cid, nid, fp, ip, role)| NodeRecord {
-        cluster_id: cid,
-        node_id: nid,
-        fingerprint: fp,
-        overlay_ip: ip.parse().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED),
-        role,
-    }))
+    Ok(row.map(row_to_node))
 }
 
 pub async fn remove_node(pool: &SqlitePool, cluster_id: &str, node_id: &str) -> Result<bool> {
@@ -776,10 +702,9 @@ pub async fn lookup_ingress_route_by_domain(
     pool: &SqlitePool,
     domain: &str,
 ) -> Result<Option<IngressRouteRecord>> {
-    let row: Option<IngressRouteRow> = sqlx::query_as(
-        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
-             FROM ingress_routes WHERE domain = ?1",
-    )
+    let row: Option<IngressRouteRow> = sqlx::query_as(&format!(
+        "SELECT {INGRESS_COLS} FROM ingress_routes WHERE domain = ?1"
+    ))
     .bind(domain)
     .fetch_optional(pool)
     .await
@@ -792,10 +717,9 @@ pub async fn list_ingress_routes(
     pool: &SqlitePool,
     cluster_id: &str,
 ) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<IngressRouteRow> = sqlx::query_as(
-        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
-             FROM ingress_routes WHERE cluster_id = ?1 ORDER BY domain",
-    )
+    let rows: Vec<IngressRouteRow> = sqlx::query_as(&format!(
+        "SELECT {INGRESS_COLS} FROM ingress_routes WHERE cluster_id = ?1 ORDER BY domain"
+    ))
     .bind(cluster_id)
     .fetch_all(pool)
     .await
@@ -810,10 +734,10 @@ pub async fn list_ingress_routes_for_node(
     cluster_id: &str,
     node_id: &str,
 ) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<IngressRouteRow> = sqlx::query_as(
-        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
-             FROM ingress_routes WHERE cluster_id = ?1 AND node_id = ?2 ORDER BY domain",
-    )
+    let rows: Vec<IngressRouteRow> = sqlx::query_as(&format!(
+        "SELECT {INGRESS_COLS} FROM ingress_routes
+         WHERE cluster_id = ?1 AND node_id = ?2 ORDER BY domain"
+    ))
     .bind(cluster_id)
     .bind(node_id)
     .fetch_all(pool)
@@ -825,13 +749,11 @@ pub async fn list_ingress_routes_for_node(
 /// List every ingress route across all clusters — used by the periodic health
 /// check and DNS zone loader.
 pub async fn list_all_ingress_routes(pool: &SqlitePool) -> Result<Vec<IngressRouteRecord>> {
-    let rows: Vec<IngressRouteRow> = sqlx::query_as(
-        "SELECT domain, cluster_id, node_id, target, mode, public_mode, public_ip, created_at
-             FROM ingress_routes",
-    )
-    .fetch_all(pool)
-    .await
-    .context("Failed to list all ingress routes")?;
+    let rows: Vec<IngressRouteRow> =
+        sqlx::query_as(&format!("SELECT {INGRESS_COLS} FROM ingress_routes"))
+            .fetch_all(pool)
+            .await
+            .context("Failed to list all ingress routes")?;
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
@@ -924,6 +846,27 @@ mod tests {
         OverlaySubnet::parse("100.64.0.0/10").unwrap()
     }
 
+    async fn reg(
+        pool: &SqlitePool,
+        cluster_id: &'static str,
+        node_id: &'static str,
+        fingerprint: &'static str,
+        subnet: &OverlaySubnet,
+    ) -> std::net::Ipv4Addr {
+        register_node_full(
+            pool,
+            &NodeRegistration {
+                cluster_id,
+                node_id,
+                fingerprint,
+                role: "node",
+            },
+            subnet,
+        )
+        .await
+        .unwrap()
+    }
+
     #[test]
     fn parse_default_subnet() {
         let s = OverlaySubnet::parse("100.64.0.0/10").unwrap();
@@ -957,9 +900,7 @@ mod tests {
     async fn register_first_node() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip = register_node(&pool, "c1", "nas", "fp-aaa", &s)
-            .await
-            .unwrap();
+        let ip = reg(&pool, "c1", "nas", "fp-aaa", &s).await;
         assert_eq!(ip, std::net::Ipv4Addr::new(100, 64, 0, 1));
     }
 
@@ -967,15 +908,9 @@ mod tests {
     async fn register_sequential_ips() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip1 = register_node(&pool, "c1", "node-1", "fp-1", &s)
-            .await
-            .unwrap();
-        let ip2 = register_node(&pool, "c1", "node-2", "fp-2", &s)
-            .await
-            .unwrap();
-        let ip3 = register_node(&pool, "c1", "node-3", "fp-3", &s)
-            .await
-            .unwrap();
+        let ip1 = reg(&pool, "c1", "node-1", "fp-1", &s).await;
+        let ip2 = reg(&pool, "c1", "node-2", "fp-2", &s).await;
+        let ip3 = reg(&pool, "c1", "node-3", "fp-3", &s).await;
         assert_eq!(ip1, std::net::Ipv4Addr::new(100, 64, 0, 1));
         assert_eq!(ip2, std::net::Ipv4Addr::new(100, 64, 0, 2));
         assert_eq!(ip3, std::net::Ipv4Addr::new(100, 64, 0, 3));
@@ -985,8 +920,8 @@ mod tests {
     async fn register_idempotent() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip1 = register_node(&pool, "c1", "nas", "fp-1", &s).await.unwrap();
-        let ip2 = register_node(&pool, "c1", "nas", "fp-1", &s).await.unwrap();
+        let ip1 = reg(&pool, "c1", "nas", "fp-1", &s).await;
+        let ip2 = reg(&pool, "c1", "nas", "fp-1", &s).await;
         assert_eq!(ip1, ip2);
     }
 
@@ -994,12 +929,8 @@ mod tests {
     async fn register_updates_fingerprint() {
         let pool = test_pool().await;
         let s = default_subnet();
-        register_node(&pool, "c1", "nas", "fp-old", &s)
-            .await
-            .unwrap();
-        register_node(&pool, "c1", "nas", "fp-new", &s)
-            .await
-            .unwrap();
+        reg(&pool, "c1", "nas", "fp-old", &s).await;
+        reg(&pool, "c1", "nas", "fp-new", &s).await;
         let node = lookup_node_by_fingerprint(&pool, "c1", "fp-new")
             .await
             .unwrap()
@@ -1049,9 +980,7 @@ mod tests {
     async fn lookup_by_fingerprint() {
         let pool = test_pool().await;
         let s = default_subnet();
-        register_node(&pool, "c1", "nas", "fp-abc", &s)
-            .await
-            .unwrap();
+        reg(&pool, "c1", "nas", "fp-abc", &s).await;
         let node = lookup_node_by_fingerprint(&pool, "c1", "fp-abc")
             .await
             .unwrap()
@@ -1067,9 +996,9 @@ mod tests {
     async fn list_and_remove_nodes() {
         let pool = test_pool().await;
         let s = default_subnet();
-        register_node(&pool, "c1", "a", "fp-a", &s).await.unwrap();
-        register_node(&pool, "c1", "b", "fp-b", &s).await.unwrap();
-        register_node(&pool, "c1", "c", "fp-c", &s).await.unwrap();
+        reg(&pool, "c1", "a", "fp-a", &s).await;
+        reg(&pool, "c1", "b", "fp-b", &s).await;
+        reg(&pool, "c1", "c", "fp-c", &s).await;
 
         let nodes = list_nodes(&pool, "c1").await.unwrap();
         assert_eq!(nodes.len(), 3);
@@ -1086,8 +1015,8 @@ mod tests {
     async fn clusters_are_isolated() {
         let pool = test_pool().await;
         let s = default_subnet();
-        let ip1 = register_node(&pool, "c1", "nas", "fp-1", &s).await.unwrap();
-        let ip2 = register_node(&pool, "c2", "nas", "fp-2", &s).await.unwrap();
+        let ip1 = reg(&pool, "c1", "nas", "fp-1", &s).await;
+        let ip2 = reg(&pool, "c2", "nas", "fp-2", &s).await;
         assert_eq!(ip1, std::net::Ipv4Addr::new(100, 64, 0, 1));
         assert_eq!(ip2, std::net::Ipv4Addr::new(100, 64, 0, 1));
         assert!(lookup_node_by_fingerprint(&pool, "c1", "fp-2")
@@ -1100,8 +1029,8 @@ mod tests {
     async fn custom_subnet_allocation() {
         let pool = test_pool().await;
         let s = OverlaySubnet::parse("10.0.10.0/24").unwrap();
-        let ip1 = register_node(&pool, "c1", "a", "fp-a", &s).await.unwrap();
-        let ip2 = register_node(&pool, "c1", "b", "fp-b", &s).await.unwrap();
+        let ip1 = reg(&pool, "c1", "a", "fp-a", &s).await;
+        let ip2 = reg(&pool, "c1", "b", "fp-b", &s).await;
         assert_eq!(ip1, std::net::Ipv4Addr::new(10, 0, 10, 1));
         assert_eq!(ip2, std::net::Ipv4Addr::new(10, 0, 10, 2));
     }

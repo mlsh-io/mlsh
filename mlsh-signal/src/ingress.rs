@@ -83,9 +83,6 @@ async fn handle_connection(
     remote: SocketAddr,
     state: Arc<QuicState>,
 ) -> Result<()> {
-    // Temporary diagnostic.
-    info!(%remote, "Ingress TCP connection accepted");
-
     // 1. Optional PROXY v2 header
     let client_ip = if state.config.ingress_proxy_protocol {
         match tokio::time::timeout(PROXY_V2_DEADLINE, read_proxy_v2_header(&mut socket)).await {
@@ -123,15 +120,6 @@ async fn handle_connection(
             return Ok(());
         }
     };
-    // Temporary diagnostic: log every parsed ClientHello with SNI + whether
-    // the ALPN list advertised acme-tls/1. Helps distinguish "LE never reached
-    // signal" from "ALPN not detected" without turning on full debug logging.
-    info!(
-        %remote,
-        sni = info.sni.as_deref().unwrap_or("-"),
-        acme_tls = info.acme_tls,
-        "Ingress ClientHello"
-    );
     let Some(sni) = info.sni else {
         return Ok(());
     };
@@ -297,22 +285,26 @@ async fn read_proxy_v2_header(socket: &mut TcpStream) -> Result<Option<SocketAdd
         return Ok(None); // ignore UDP / unspec
     }
 
+    Ok(extract_proxy_src(family, &addr_buf))
+}
+
+fn extract_proxy_src(family: u8, buf: &[u8]) -> Option<SocketAddr> {
     match family {
-        1 if addr_buf.len() >= 12 => {
-            let src = std::net::Ipv4Addr::new(addr_buf[0], addr_buf[1], addr_buf[2], addr_buf[3]);
-            let src_port = u16::from_be_bytes([addr_buf[8], addr_buf[9]]);
-            Ok(Some(SocketAddr::new(std::net::IpAddr::V4(src), src_port)))
+        1 if buf.len() >= 12 => {
+            let ip = std::net::Ipv4Addr::new(buf[0], buf[1], buf[2], buf[3]);
+            let port = u16::from_be_bytes([buf[8], buf[9]]);
+            Some(SocketAddr::new(std::net::IpAddr::V4(ip), port))
         }
-        2 if addr_buf.len() >= 36 => {
-            let mut src = [0u8; 16];
-            src.copy_from_slice(&addr_buf[0..16]);
-            let src_port = u16::from_be_bytes([addr_buf[32], addr_buf[33]]);
-            Ok(Some(SocketAddr::new(
-                std::net::IpAddr::V6(std::net::Ipv6Addr::from(src)),
-                src_port,
-            )))
+        2 if buf.len() >= 36 => {
+            let mut octets = [0u8; 16];
+            octets.copy_from_slice(&buf[0..16]);
+            let port = u16::from_be_bytes([buf[32], buf[33]]);
+            Some(SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(octets)),
+                port,
+            ))
         }
-        _ => Ok(None),
+        _ => None,
     }
 }
 

@@ -67,13 +67,7 @@ async fn handle_stream(
             client_version,
         } => {
             if let Some(resp) = check_protocol_version(protocol_version, &client_version) {
-                warn!(
-                    cluster_id,
-                    client_version = %client_version,
-                    client_protocol = protocol_version,
-                    server_protocol = PROTOCOL_VERSION,
-                    "Rejecting NodeAuth: client protocol too old"
-                );
+                log_protocol_reject("NodeAuth", &cluster_id, &client_version, protocol_version);
                 framing::write_msg(&mut send, &resp).await.ok();
                 send.finish().ok();
                 return Ok(());
@@ -103,13 +97,7 @@ async fn handle_stream(
             client_version,
         } => {
             if let Some(resp) = check_protocol_version(protocol_version, &client_version) {
-                warn!(
-                    cluster_id,
-                    client_version = %client_version,
-                    client_protocol = protocol_version,
-                    server_protocol = PROTOCOL_VERSION,
-                    "Rejecting Adopt: client protocol too old"
-                );
+                log_protocol_reject("Adopt", &cluster_id, &client_version, protocol_version);
                 framing::write_msg(&mut send, &resp).await.ok();
                 send.finish().ok();
                 return Ok(());
@@ -170,12 +158,13 @@ async fn handle_stream(
             cert_der,
             key_der,
         } => {
-            let resp = handle_tls_alpn_set(state, conn, &domain, cert_der, key_der).await;
+            let resp =
+                handle_tls_alpn(state, conn, &domain, TlsAlpnOp::Set { cert_der, key_der }).await;
             framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
         StreamMessage::TlsAlpnChallengeClear { domain } => {
-            let resp = handle_tls_alpn_clear(state, conn, &domain).await;
+            let resp = handle_tls_alpn(state, conn, &domain, TlsAlpnOp::Clear).await;
             framing::write_msg(&mut send, &resp).await?;
             send.finish()?;
         }
@@ -346,14 +335,7 @@ async fn run_node_session(
                             StreamMessage::ListNodes => {
                                 let online = state.sessions.online_node_ids(cluster_id).await;
                                 let all_nodes = db::list_nodes(&state.db, cluster_id).await.unwrap_or_default();
-                                let nodes: Vec<mlsh_protocol::types::NodeInfo> = all_nodes.into_iter().map(|n| {
-                                    mlsh_protocol::types::NodeInfo {
-                                        node_id: n.node_id.clone(),
-                                        overlay_ip: n.overlay_ip.to_string(),
-                                        online: online.contains(&n.node_id),
-                                        has_admission_cert: false,
-                                    }
-                                }).collect();
+                                let nodes = build_node_list(all_nodes, &online);
                                 let _ = framing::write_msg(&mut send, &ServerMessage::NodeList { nodes }).await;
                             }
                             _ => {
@@ -692,10 +674,7 @@ async fn handle_expose(
     let cluster_name = match db::get_cluster_name_by_id(&state.db, cluster_id).await {
         Ok(Some(n)) => n,
         Ok(None) => return ServerMessage::error("not_found", "Cluster not found"),
-        Err(e) => {
-            warn!(error = %e, "Failed to look up cluster name");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "Failed to look up cluster name"),
     };
 
     if let Err(reason) = validate_ingress_domain(&state.config.zone, &cluster_name, domain) {
@@ -720,10 +699,7 @@ async fn handle_expose(
     .await
     {
         Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "Failed to insert ingress route");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "Failed to insert ingress route"),
     };
     if !ok {
         return ServerMessage::error(
@@ -760,30 +736,21 @@ async fn handle_unexpose(
 
     let d = domain.to_ascii_lowercase();
 
-    // Ensure caller owns the route (admin override allowed).
     let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
         Ok(Some(r)) => r,
         Ok(None) => return ServerMessage::error("not_found", "Domain not found"),
-        Err(e) => {
-            warn!(error = %e, "DB error looking up ingress route");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "DB error looking up ingress route"),
     };
     if route.cluster_id != cluster_id {
         return ServerMessage::error("not_found", "Domain not found");
     }
     if route.node_id != caller.node_id {
-        // Admin override is owned by mlsh-control; signal only authorises the
-        // owning node here.
         return ServerMessage::error("forbidden", "Only the owning node may unexpose");
     }
 
     let removed = match db::delete_ingress_route(&state.db, cluster_id, &d).await {
         Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "Failed to delete ingress route");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "Failed to delete ingress route"),
     };
     if !removed {
         return ServerMessage::error("not_found", "Domain not found");
@@ -806,32 +773,18 @@ async fn handle_list_nodes(state: &QuicState, conn: &quinn::Connection) -> Serve
     let caller = match db::lookup_node_by_fingerprint_any_cluster(&state.db, &caller_fp).await {
         Ok(Some(n)) => n,
         Ok(None) => return ServerMessage::error("auth_failed", "Unknown fingerprint"),
-        Err(e) => {
-            warn!(error = %e, "Failed to look up caller for list_nodes");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "Failed to look up caller for list_nodes"),
     };
 
     let online = state.sessions.online_node_ids(&caller.cluster_id).await;
     let all_nodes = match db::list_nodes(&state.db, &caller.cluster_id).await {
         Ok(rows) => rows,
-        Err(e) => {
-            warn!(error = %e, "Failed to list nodes");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "Failed to list nodes"),
     };
 
-    let nodes: Vec<mlsh_protocol::types::NodeInfo> = all_nodes
-        .into_iter()
-        .map(|n| mlsh_protocol::types::NodeInfo {
-            node_id: n.node_id.clone(),
-            overlay_ip: n.overlay_ip.to_string(),
-            online: online.contains(&n.node_id),
-            has_admission_cert: false,
-        })
-        .collect();
-
-    ServerMessage::NodeList { nodes }
+    ServerMessage::NodeList {
+        nodes: build_node_list(all_nodes, &online),
+    }
 }
 
 async fn handle_list_exposed(
@@ -862,77 +815,85 @@ async fn handle_list_exposed(
                 .collect();
             ServerMessage::ExposedList { routes }
         }
-        Err(e) => {
-            warn!(error = %e, "Failed to list ingress routes");
-            ServerMessage::error("internal", "Database error")
-        }
+        Err(e) => db_err(e, "Failed to list ingress routes"),
     }
 }
 
-async fn handle_tls_alpn_set(
+enum TlsAlpnOp {
+    Set { cert_der: Vec<u8>, key_der: Vec<u8> },
+    Clear,
+}
+
+async fn handle_tls_alpn(
     state: &QuicState,
     conn: &quinn::Connection,
     domain: &str,
-    cert_der: Vec<u8>,
-    key_der: Vec<u8>,
+    op: TlsAlpnOp,
 ) -> ServerMessage {
     let d = domain.to_ascii_lowercase();
     let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
         Ok(Some(r)) => r,
         Ok(None) => return ServerMessage::error("not_found", "No ingress route for this domain"),
-        Err(e) => {
-            warn!(error = %e, "DB error on TLS-ALPN-01 set");
-            return ServerMessage::error("internal", "Database error");
-        }
+        Err(e) => return db_err(e, "DB error on TLS-ALPN-01 op"),
     };
-
     let caller = match resolve_caller(state, conn, &route.cluster_id).await {
         Ok(n) => n,
         Err(e) => return e,
     };
     if caller.node_id != route.node_id {
-        return ServerMessage::error(
-            "forbidden",
-            "Only the domain owner may publish TLS-ALPN-01 challenges",
-        );
+        let msg = match op {
+            TlsAlpnOp::Set { .. } => "Only the domain owner may publish TLS-ALPN-01 challenges",
+            TlsAlpnOp::Clear => "Only the domain owner may clear TLS-ALPN-01 challenges",
+        };
+        return ServerMessage::error("forbidden", msg);
     }
 
-    if cert_der.is_empty() || key_der.is_empty() {
-        return ServerMessage::error("invalid_request", "cert and key must be non-empty");
+    match op {
+        TlsAlpnOp::Set { cert_der, key_der } => {
+            if cert_der.is_empty() || key_der.is_empty() {
+                return ServerMessage::error("invalid_request", "cert and key must be non-empty");
+            }
+            crate::acme_tls::set(&d, cert_der, key_der);
+        }
+        TlsAlpnOp::Clear => crate::acme_tls::clear(&d),
     }
-
-    crate::acme_tls::set(&d, cert_der, key_der);
     ServerMessage::TlsAlpnChallengeOk { domain: d }
 }
 
-async fn handle_tls_alpn_clear(
-    state: &QuicState,
-    conn: &quinn::Connection,
-    domain: &str,
-) -> ServerMessage {
-    let d = domain.to_ascii_lowercase();
-    let route = match db::lookup_ingress_route_by_domain(&state.db, &d).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return ServerMessage::error("not_found", "No ingress route for this domain"),
-        Err(e) => {
-            warn!(error = %e, "DB error on TLS-ALPN-01 clear");
-            return ServerMessage::error("internal", "Database error");
-        }
-    };
+/// Convert a DB error into a generic `ServerMessage::error("internal", ...)` after logging it.
+fn db_err(e: anyhow::Error, ctx: &str) -> ServerMessage {
+    warn!(error = %e, "{}", ctx);
+    ServerMessage::error("internal", "Database error")
+}
 
-    let caller = match resolve_caller(state, conn, &route.cluster_id).await {
-        Ok(n) => n,
-        Err(e) => return e,
-    };
-    if caller.node_id != route.node_id {
-        return ServerMessage::error(
-            "forbidden",
-            "Only the domain owner may clear TLS-ALPN-01 challenges",
-        );
-    }
+fn build_node_list(
+    rows: Vec<db::NodeRecord>,
+    online: &std::collections::HashSet<String>,
+) -> Vec<mlsh_protocol::types::NodeInfo> {
+    rows.into_iter()
+        .map(|n| mlsh_protocol::types::NodeInfo {
+            online: online.contains(&n.node_id),
+            node_id: n.node_id,
+            overlay_ip: n.overlay_ip.to_string(),
+            has_admission_cert: false,
+        })
+        .collect()
+}
 
-    crate::acme_tls::clear(&d);
-    ServerMessage::TlsAlpnChallengeOk { domain: d }
+fn log_protocol_reject(
+    op: &'static str,
+    cluster_id: &str,
+    client_version: &str,
+    client_protocol: u32,
+) {
+    warn!(
+        cluster_id,
+        client_version,
+        client_protocol,
+        server_protocol = PROTOCOL_VERSION,
+        "Rejecting {}: client protocol too old",
+        op
+    );
 }
 
 /// Extract the SHA-256 fingerprint from the peer's TLS client certificate.
