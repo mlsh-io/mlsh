@@ -12,6 +12,10 @@ struct NodeResponse {
     display_name: String,
     role: String,
     status: String,
+    #[serde(default)]
+    online: bool,
+    #[serde(default)]
+    overlay_ip: String,
 }
 
 pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
@@ -34,15 +38,22 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
     }
 
     println!(
-        "{:<36} {:<8} {:<8} DISPLAY NAME",
-        "NODE UUID", "ROLE", "STATUS"
+        "{:<36} {:<8} {:<12} {:<14} DISPLAY NAME",
+        "NODE UUID", "ROLE", "STATUS", "OVERLAY IP",
     );
 
     for node in &nodes {
-        let status_str = if node.status == "active" {
-            node.status.green().to_string()
-        } else {
+        let status_str = if node.status != "active" {
             node.status.red().to_string()
+        } else if node.online {
+            "online".green().to_string()
+        } else {
+            "offline".dimmed().to_string()
+        };
+        let overlay_ip = if node.overlay_ip.is_empty() {
+            "-".dimmed().to_string()
+        } else {
+            node.overlay_ip.clone()
         };
         let label = if node.display_name.is_empty() {
             &node.id[..node.id.len().min(36)]
@@ -50,19 +61,28 @@ pub async fn handle_nodes(cluster_name: &str) -> Result<()> {
             &node.display_name
         };
         println!(
-            "{:<36} {:<8} {:<8} {}",
+            "{:<36} {:<8} {:<21} {:<23} {}",
             &node.id[..node.id.len().min(36)],
             node.role,
             status_str,
+            overlay_ip,
             label,
         );
     }
 
-    let active = nodes.iter().filter(|n| n.status == "active").count();
+    let online = nodes
+        .iter()
+        .filter(|n| n.status == "active" && n.online)
+        .count();
+    let offline = nodes
+        .iter()
+        .filter(|n| n.status == "active" && !n.online)
+        .count();
     println!(
-        "\n{} node(s), {} active",
+        "\n{} node(s), {} online, {} offline",
         nodes.len(),
-        active.to_string().bold()
+        online.to_string().bold(),
+        offline.to_string().bold(),
     );
 
     Ok(())
