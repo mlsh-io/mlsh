@@ -223,7 +223,7 @@ fn main() {
     let code = match rt.block_on(run_cli()) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {e}");
+            eprintln!("Error: {e:#}");
             1
         }
     };
