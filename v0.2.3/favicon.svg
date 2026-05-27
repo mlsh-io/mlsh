@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="32" height="32" viewBox="0 0 300 300" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M150 30 L46 90 L46 210 L150 270 L254 210 L254 90 Z" fill="#F0B429"/>
+  <path d="M150 62 L74 106 L150 150 L226 106 Z"   fill="rgba(0,0,0,0.12)"/>
+  <path d="M74 106 L74 194 L150 238 L150 150 Z"   fill="rgba(0,0,0,0.20)"/>
+  <path d="M226 106 L150 150 L150 238 L226 194 Z" fill="rgba(0,0,0,0.28)"/>
+  <line x1="150" y1="150" x2="150" y2="238" stroke="#0A0908" stroke-width="4"  opacity="0.25"/>
+  <line x1="74"  y1="194" x2="150" y2="238" stroke="#0A0908" stroke-width="4"  opacity="0.25"/>
+  <line x1="226" y1="194" x2="150" y2="238" stroke="#0A0908" stroke-width="4"  opacity="0.25"/>
+  <line x1="150" y1="62"  x2="74"  y2="106" stroke="#0A0908" stroke-width="4"  opacity="0.25"/>
+  <line x1="150" y1="62"  x2="226" y2="106" stroke="#0A0908" stroke-width="4"  opacity="0.25"/>
+  <line x1="74"  y1="106" x2="74"  y2="194" stroke="#0A0908" stroke-width="18" stroke-linecap="round"/>
+  <line x1="74"  y1="106" x2="150" y2="150" stroke="#0A0908" stroke-width="18" stroke-linecap="round"/>
+  <line x1="226" y1="106" x2="150" y2="150" stroke="#0A0908" stroke-width="18" stroke-linecap="round"/>
+  <line x1="226" y1="106" x2="226" y2="194" stroke="#0A0908" stroke-width="18" stroke-linecap="round"/>
+</svg>
