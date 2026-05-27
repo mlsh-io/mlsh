@@ -190,7 +190,6 @@ async fn session_loop(mut ctx: SessionContext, mut shutdown_rx: watch::Receiver<
     ctx.kick_rx.borrow_and_update();
 
     let mut error_backoff = RECONNECT_INITIAL;
-    let mut consecutive_errors: u32 = 0;
 
     loop {
         let delay = match run_session(&mut ctx, &mut shutdown_rx).await {
@@ -200,7 +199,6 @@ async fn session_loop(mut ctx: SessionContext, mut shutdown_rx: watch::Receiver<
             }
             Ok(false) => {
                 error_backoff = RECONNECT_INITIAL;
-                consecutive_errors = 0;
                 let jitter = rand_jitter(RECONNECT_JITTER);
                 tracing::info!("Signal session closed, reconnecting in {jitter:?}");
                 jitter
@@ -209,13 +207,8 @@ async fn session_loop(mut ctx: SessionContext, mut shutdown_rx: watch::Receiver<
                 let d = error_backoff;
                 tracing::warn!("Signal session error: {e:#}, reconnecting in {d:?}");
                 error_backoff = (error_backoff.saturating_mul(2)).min(RECONNECT_MAX);
-                consecutive_errors = consecutive_errors.saturating_add(1);
-                if consecutive_errors == 3 {
-                    if let Err(e) = crate::tund::overlay::quic::try_migrate(&ctx.endpoint) {
-                        tracing::warn!(
-                            "UDP rebind failed after {consecutive_errors} errors: {e:#}"
-                        );
-                    }
+                if let Err(e) = crate::tund::overlay::quic::try_migrate(&ctx.endpoint) {
+                    tracing::warn!("UDP rebind failed: {e:#}");
                 }
                 d
             }

@@ -40,6 +40,7 @@ const RECONNECT_JITTER: Duration = Duration::from_millis(100);
 #[derive(Clone)]
 pub struct ControlSession {
     inner: Arc<Mutex<Inner>>,
+    endpoint: quinn::Endpoint,
     creds: Arc<SignalCredentials>,
     /// Local human-facing label written to mlsh-control on first AdoptConfirm.
     /// Held here rather than in `SignalCredentials` because signal no longer
@@ -52,7 +53,6 @@ pub struct ControlSession {
 
 struct Inner {
     conn: Option<quinn::Connection>,
-    endpoint: quinn::Endpoint,
     adopt_confirm_done: bool,
     subscribe_running: bool,
     seed_running: bool,
@@ -70,11 +70,11 @@ impl ControlSession {
         Ok(Self {
             inner: Arc::new(Mutex::new(Inner {
                 conn: None,
-                endpoint,
                 adopt_confirm_done: false,
                 subscribe_running: false,
                 seed_running: false,
             })),
+            endpoint,
             creds: Arc::new(creds),
             display_name: Arc::new(display_name),
             control_socket,
@@ -98,15 +98,15 @@ impl ControlSession {
     }
 
     pub async fn ensure_connected(&self) -> Result<quinn::Connection> {
-        let endpoint = {
+        {
             let g = self.inner.lock().await;
             if let Some(c) = &g.conn {
                 if c.close_reason().is_none() {
                     return Ok(c.clone());
                 }
             }
-            g.endpoint.clone()
-        };
+        }
+        let endpoint = self.endpoint.clone();
 
         let client_config = build_client_config(&self.creds)?;
         let addr = resolve_addr(&self.creds.signal_endpoint).await?;
@@ -210,6 +210,9 @@ impl ControlSession {
                         "mlsh-control session connect failed, retrying"
                     );
                     error_backoff = error_backoff.saturating_mul(2).min(RECONNECT_MAX);
+                    if let Err(e) = crate::tund::overlay::quic::try_migrate(&self.endpoint) {
+                        tracing::warn!("UDP rebind failed: {e:#}");
+                    }
                     tokio::select! {
                         _ = tokio::time::sleep(d) => continue,
                         _ = shutdown_rx.changed() => {
