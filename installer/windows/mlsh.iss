@@ -21,9 +21,10 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 ChangesEnvironment=yes
-; Admin is always required: mlshtund runs as a LocalSystem service, and the
-; installer stops / replaces / restarts it. No per-user (non-admin) mode.
+; Admin is required to register mlshtund as a Windows service. Users may still
+; downgrade to a per-user install (without the service) via the elevation dialog.
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
 MinVersion=10.0
 OutputDir=output
 WizardStyle=modern
@@ -50,6 +51,10 @@ Name: "service"; Description: "Run mlshtund as a Windows service (starts at boot
 ; Launch the tray app automatically at login.
 Name: "systrayautostart"; Description: "Start the MLSH tray app at login"; GroupDescription: "Startup:"
 
+[Tasks]
+; Only offered on an admin install; registers + starts the LocalSystem service.
+Name: "service"; Description: "Run mlshtund as a Windows service (starts at boot)"; Check: IsAdminInstallMode
+
 [Icons]
 Name: "{group}\MLSH"; Filename: "{app}\mlsh-systray.exe"
 Name: "{group}\Uninstall mlsh"; Filename: "{uninstallexe}"
@@ -73,23 +78,18 @@ begin
   Result := Pos(';' + Uppercase(InstallDir) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
 end;
 
-// Before files are copied (install or upgrade), free anything that locks the
-// binaries: close the tray app and stop the service. `mlsh tunnel install`
-// (run afterwards, from [Run]) reconfigures and restarts the service with the
-// freshly copied mlshtund.exe.
+// Stop a running mlshtund service before files are copied so its executable
+// and wintun.dll aren't locked during an upgrade. `mlsh tunnel install`
+// (run afterwards) reconfigures and restarts it.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  if (CurStep = ssInstall) then
+  if (CurStep = ssInstall) and IsAdminInstallMode then
   begin
-    // Close a running tray app so its Qt DLLs aren't locked.
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM mlsh-systray.exe /F', '',
-      SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Stop the service (if installed) so mlshtund.exe + wintun.dll are unlocked.
     Exec(ExpandConstant('{sys}\sc.exe'), 'stop mlshtund', '', SW_HIDE,
       ewWaitUntilTerminated, ResultCode);
-    // Give the service a moment to exit and release its files.
+    // Give the service a moment to exit and release the binary.
     Sleep(2000);
   end;
 end;
@@ -97,11 +97,8 @@ end;
 [Run]
 ; Register + start the tunnel service (admin install + task selected).
 Filename: "{app}\mlsh.exe"; Parameters: "tunnel install"; Flags: runhidden waituntilterminated; Tasks: service; StatusMsg: "Installing the mlsh tunnel service..."
-; Launch the tray app after install. runasoriginaluser so it runs as the
-; logged-in user, not the elevated installer account.
-Filename: "{app}\mlsh-systray.exe"; Description: "Launch MLSH"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\mlsh.exe"; Parameters: "--version"; Flags: nowait postinstall skipifsilent runhidden
 
 [UninstallRun]
-; Close the tray app, then stop + remove the service before files are deleted.
-Filename: "{sys}\taskkill.exe"; Parameters: "/IM mlsh-systray.exe /F"; Flags: runhidden; RunOnceId: "StopMlshTray"
+; Stop + remove the service before files are deleted (runs early in uninstall).
 Filename: "{app}\mlsh.exe"; Parameters: "tunnel uninstall"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveMlshService"
