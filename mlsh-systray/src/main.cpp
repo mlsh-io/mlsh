@@ -57,5 +57,13 @@ int main(int argc, char *argv[])
         controller.showWindow();
     });
 
+    // Open the window on a normal launch. Login autostart passes --hidden so the
+    // app starts quietly in the tray.
+    const QStringList args = QCoreApplication::arguments();
+    if (!args.contains(QStringLiteral("--hidden"))
+        && !args.contains(QStringLiteral("--minimized"))) {
+        controller.showWindow();
+    }
+
     return app.exec();
 }
