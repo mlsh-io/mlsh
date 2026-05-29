@@ -48,6 +48,12 @@ set(HEADERS
     src/ui/TrayIcon.h
 )
 
+# Embed the application icon on Windows (Explorer / taskbar / shortcuts).
+if(WIN32)
+    enable_language(RC)
+    list(APPEND SOURCES resources/app.rc)
+endif()
+
 # WIN32 → GUI subsystem, no console window.
 qt_add_executable(mlsh-systray WIN32 ${SOURCES} ${HEADERS})
 

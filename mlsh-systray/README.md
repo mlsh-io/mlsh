@@ -51,6 +51,21 @@ windeployqt --no-translations mlsh-systray/build/mlsh-systray.exe
 
 Then copy `mlsh.exe` and `mlshtund.exe` next to `mlsh-systray.exe`.
 
+## Packaging
+
+CI builds the app with the Qt MinGW kit, runs `windeployqt`, and the result is
+bundled into the existing Windows installer (`installer/windows/mlsh.iss`)
+alongside `mlsh.exe`/`mlshtund.exe`. The installer adds a Start Menu shortcut,
+an optional login autostart, and can launch the tray app on finish. See the
+`windows-systray` job in `.github/workflows/mlsh-{cli,release}.yml`.
+
+The embedded executable icon lives in `resources/app.ico` (built into the exe
+via `resources/app.rc`). Regenerate it after changing the logo:
+
+```powershell
+pwsh -File resources/generate-icon.ps1
+```
+
 ## Modules
 
 - `ipc/` — protocol (JSON) + `DaemonClient` (named-pipe IPC, 4-byte big-endian framing).
@@ -63,6 +78,8 @@ Then copy `mlsh.exe` and `mlshtund.exe` next to `mlsh-systray.exe`.
 ## Linux port (later)
 
 Platform-specific bits are isolated behind `#ifdef`:
+
 - `DaemonClient::defaultEndpoints()` already returns Unix socket paths off-Windows.
 - `ServiceController` is a stub off-Windows (systemd integration TBD).
+
 The protocol, models, and UI are platform-agnostic.
