@@ -43,10 +43,7 @@ impl Transport for WindowsTransport {
 
     async fn bind(path: &Path) -> Result<Self::Listener> {
         let pipe_name = path_to_pipe_name(path);
-        let next = ServerOptions::new()
-            .first_pipe_instance(true)
-            .create(&pipe_name)
-            .with_context(|| format!("Failed to create named pipe {}", pipe_name))?;
+        let next = create_pipe_instance(&pipe_name, true)?;
         Ok(PipeListener { pipe_name, next })
     }
 
@@ -56,9 +53,7 @@ impl Transport for WindowsTransport {
             .connect()
             .await
             .context("Named pipe connect failed")?;
-        let new_next = ServerOptions::new()
-            .create(&listener.pipe_name)
-            .with_context(|| format!("Failed to create named pipe {}", listener.pipe_name))?;
+        let new_next = create_pipe_instance(&listener.pipe_name, false)?;
         let connected = std::mem::replace(&mut listener.next, new_next);
         Ok(NamedPipeServerOrClient::Server(connected))
     }
@@ -73,6 +68,67 @@ impl Transport for WindowsTransport {
 
     fn cleanup(_path: &Path) {
         // Named pipes are cleaned up automatically when the last handle drops.
+    }
+}
+
+/// Create a named-pipe server instance.
+///
+/// For the system control pipe (the daemon running as a LocalSystem service)
+/// the default DACL only grants non-elevated users read access, so the desktop
+/// GUI/CLI — which open the pipe for read+write — get ACCESS_DENIED. Attach an
+/// explicit DACL that keeps SYSTEM/Administrators in full control but also
+/// grants authenticated users read+write. The per-user pipe needs no custom SD
+/// (its creator already has full access).
+fn create_pipe_instance(pipe_name: &str, first: bool) -> Result<NamedPipeServer> {
+    let mut opts = ServerOptions::new();
+    opts.first_pipe_instance(first);
+
+    if pipe_name != SYSTEM_PIPE {
+        return opts
+            .create(pipe_name)
+            .with_context(|| format!("Failed to create named pipe {}", pipe_name));
+    }
+
+    use std::ffi::{c_void, OsStr};
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+    // SYSTEM (SY) + Administrators (BA): full control. Authenticated users (AU):
+    // generic read + write, enough for a client to open and use the pipe.
+    let sddl: Vec<u16> = OsStr::new("D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;AU)")
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            1, // SDDL_REVISION_1
+            &mut psd,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            anyhow::bail!(
+                "Failed to build pipe security descriptor: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+
+        let mut sa = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: psd,
+            bInheritHandle: 0,
+        };
+
+        let result = opts
+            .create_with_security_attributes_raw(pipe_name, &mut sa as *mut _ as *mut c_void);
+
+        LocalFree(psd as _);
+
+        result.with_context(|| format!("Failed to create named pipe {}", pipe_name))
     }
 }
 

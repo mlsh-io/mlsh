@@ -128,10 +128,13 @@ core-foundation-sys = "0.8"
 [target.'cfg(windows)'.dependencies]
 # Native Windows Service (SCM) integration for mlshtund
 windows-service = "0.7"
-# Process-token elevation detection (LocalSystem / elevated terminal)
+# Process-token elevation detection (LocalSystem / elevated terminal) and
+# named-pipe security descriptors (grant the desktop user access to the
+# system control pipe).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_System_Threading",
 ] }
 
