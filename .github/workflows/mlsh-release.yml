@@ -279,6 +279,12 @@ jobs:
           arch: win64_mingw
           tools: 'tools_mingw1310'
           cache: true
+          # Qt 6.11+ changed its repo folder layout; aqtinstall 3.3.0 (latest
+          # PyPI) can't read it -> "Failed to locate XML data for Qt 6.11.1".
+          # Fixed by miurahr/aqtinstall#1000, merged to master but unreleased.
+          # aqtsource runs `pip install "<value>"`, so pin to that commit
+          # until a >3.3.0 release ships.
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@8c3695d4a4e1ceabf6a74dc6c79681656dc6b74b'
 
       - name: Build (CMake + MinGW)
         shell: pwsh
