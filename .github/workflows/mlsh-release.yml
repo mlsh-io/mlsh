@@ -262,10 +262,52 @@ jobs:
           name: mlsh-rpm-${{ matrix.arch }}
           path: installer/linux/output/*.rpm
 
+  # -- Windows tray app (Qt6 / MinGW) --------------------------------------------
+  windows-systray:
+    name: windows-systray
+    needs: [ci-gate]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt (MinGW)
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.11.1'
+          host: windows
+          target: desktop
+          arch: win64_mingw
+          tools: 'tools_mingw1310'
+          cache: true
+
+      - name: Build (CMake + MinGW)
+        shell: pwsh
+        run: |
+          $gcc = Get-ChildItem "$env:IQTA_TOOLS" -Recurse -Filter gcc.exe | Select-Object -First 1
+          $env:Path = "$($gcc.Directory.FullName);$env:Path"
+          cmake -S mlsh-systray -B mlsh-systray/build -G "MinGW Makefiles" `
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$env:QT_ROOT_DIR"
+          cmake --build mlsh-systray/build -j
+
+      - name: Deploy (windeployqt)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force installer/windows/systray | Out-Null
+          Copy-Item mlsh-systray/build/mlsh-systray.exe installer/windows/systray/
+          & "$env:QT_ROOT_DIR\bin\windeployqt.exe" --release --no-translations `
+            --no-system-d3d-compiler --no-opengl-sw --compiler-runtime `
+            installer/windows/systray/mlsh-systray.exe
+
+      - name: Upload systray artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlsh-systray-windows
+          path: installer/windows/systray
+
   # -- Windows Installer (Inno Setup) ---------------------------------------------
   windows-installer:
     name: windows-installer
-    needs: [build]
+    needs: [build, windows-systray]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -282,6 +324,12 @@ jobs:
           mkdir -p installer/windows/bin
           cd artifacts
           7z e mlsh-cli-x86_64-pc-windows-msvc.zip -o../installer/windows/bin -y -r
+
+      - name: Download tray app
+        uses: actions/download-artifact@v4
+        with:
+          name: mlsh-systray-windows
+          path: installer/windows/systray
 
       - name: Build installer
         shell: cmd

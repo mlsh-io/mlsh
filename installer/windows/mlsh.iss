@@ -29,28 +29,43 @@ MinVersion=10.0
 OutputDir=output
 WizardStyle=modern
 DisableProgramGroupPage=yes
+; Branding icon (MLSH hexagon), shared with the tray app's embedded icon.
+SetupIconFile=..\..\mlsh-systray\resources\app.ico
+UninstallDisplayIcon={app}\mlsh-systray.exe
 
 [Files]
 Source: "bin\mlsh.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\mlshtund.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\wintun.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "bin\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "wintun-LICENSE.txt"; Flags: ignoreversion
+; MLSH tray app + its Qt runtime, deployed by windeployqt in CI into systray\.
+; The whole tree lands in {app} so mlsh-systray.exe sits next to mlsh.exe.
+Source: "systray\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Qt LGPLv3 compliance: ship Qt's license text + an attribution/relink notice.
+Source: "..\..\mlsh-systray\licenses\Qt-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\..\mlsh-systray\licenses\Qt-NOTICE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+
+[Tasks]
+; Registers + starts the LocalSystem service.
+Name: "service"; Description: "Run mlshtund as a Windows service (starts at boot)"
+; Launch the tray app automatically at login.
+Name: "systrayautostart"; Description: "Start the MLSH tray app at login"; GroupDescription: "Startup:"
 
 [Tasks]
 ; Only offered on an admin install; registers + starts the LocalSystem service.
 Name: "service"; Description: "Run mlshtund as a Windows service (starts at boot)"; Check: IsAdminInstallMode
 
 [Icons]
-Name: "{group}\mlsh"; Filename: "{app}\mlsh.exe"
+Name: "{group}\MLSH"; Filename: "{app}\mlsh-systray.exe"
 Name: "{group}\Uninstall mlsh"; Filename: "{uninstallexe}"
+; Autostart for all users; --hidden so login startup stays quietly in the tray.
+Name: "{commonstartup}\MLSH"; Filename: "{app}\mlsh-systray.exe"; Parameters: "--hidden"; Tasks: systrayautostart
 
 [Registry]
-; Add to user PATH (non-admin) or system PATH (admin)
-Root: HKCU; Subkey: "Environment"; ValueType: expandsz; ValueName: "Path"; \
-  ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}') and not IsAdminInstallMode
+; Add the install dir to the system PATH.
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
   ValueType: expandsz; ValueName: "Path"; \
-  ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}') and IsAdminInstallMode
+  ValueData: "{olddata};{app}"; Check: NeedsAddPath('{app}')
 
 [Code]
 function NeedsAddPath(Param: string): Boolean;
@@ -59,10 +74,7 @@ var
   InstallDir: string;
 begin
   InstallDir := ExpandConstant(Param);
-  if IsAdminInstallMode then
-    RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath)
-  else
-    RegQueryStringValue(HKCU, 'Environment', 'Path', OrigPath);
+  RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OrigPath);
   Result := Pos(';' + Uppercase(InstallDir) + ';', ';' + Uppercase(OrigPath) + ';') = 0;
 end;
 
