@@ -70,6 +70,8 @@ local-ip-address = "0.6"
 # Logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "tracing-log"] }
+# File logging for the Windows service (no console attached)
+tracing-appender = "0.2"
 # Base64 encoding for invite payloads
 base64 = "0.22"
 # Zero-copy buffers for QUIC datagrams
@@ -122,6 +124,16 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 system-configuration-sys = "0.6"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+# Native Windows Service (SCM) integration for mlshtund
+windows-service = "0.7"
+# Process-token elevation detection (LocalSystem / elevated terminal)
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempfile = "3"

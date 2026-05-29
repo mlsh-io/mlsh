@@ -18,9 +18,30 @@ struct Args {
     socket: Option<String>,
 }
 
+/// Foreground entry point: parse args and drive shutdown from OS signals
+/// (SIGTERM / Ctrl-C). Used when `mlshtund` runs in a console.
 pub async fn run() -> Result<()> {
     let args = Args::parse();
-    let sock_path = control::socket_path(args.socket.as_deref());
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        tracing::info!("Shutdown signal received");
+        let _ = shutdown_tx.send(true);
+    });
+
+    run_with_shutdown(args.socket, shutdown_rx).await
+}
+
+/// Core daemon loop with a caller-supplied shutdown channel.
+///
+/// The foreground path wires `shutdown_rx` to OS signals; the Windows service
+/// path wires it to the SCM "Stop" control event.
+pub async fn run_with_shutdown(
+    socket: Option<String>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Result<()> {
+    let sock_path = control::socket_path(socket.as_deref());
     tracing::info!(
         version = env!("GIT_VERSION"),
         protocol_version = mlsh_protocol::PROTOCOL_VERSION,
@@ -30,7 +51,6 @@ pub async fn run() -> Result<()> {
 
     let manager = Arc::new(Mutex::new(TunnelManager::new()));
     crate::tund::manager_handle::set(manager.clone());
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Reconnect clusters persisted to the daemon state dir so users don't
     // have to re-run `mlsh connect` after every daemon restart / reboot.
@@ -40,12 +60,6 @@ pub async fn run() -> Result<()> {
     // `{domain}.meta.json`. Without this, certs issued before the daemon
     // restart would silently expire.
     acme::resume_on_startup(manager.clone());
-
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        tracing::info!("Shutdown signal received");
-        let _ = shutdown_tx.send(true);
-    });
 
     let result = control::run(&sock_path, manager.clone(), shutdown_rx).await;
     manager.lock().await.shutdown_all().await;

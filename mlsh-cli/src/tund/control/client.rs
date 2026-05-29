@@ -3,7 +3,9 @@
 //! Connects to the `mlshtund` control endpoint (Unix socket on Unix,
 //! named pipe on Windows) and exchanges JSON requests/responses.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(windows))]
+use std::path::PathBuf;
 
 use anyhow::Result;
 
@@ -24,8 +26,24 @@ impl DaemonClient {
 
     /// Connect to the daemon, auto-discovering the endpoint.
     pub async fn connect_default() -> Result<Self> {
-        let path = discover_socket()?;
-        Self::connect(&path).await
+        // On Windows the daemon usually runs as a LocalSystem service bound to
+        // the system pipe `\\.\pipe\mlshtund`. Try that first, then fall back to
+        // a per-user daemon pipe. Pipes aren't filesystem entries, so we probe
+        // by attempting to connect.
+        #[cfg(windows)]
+        {
+            let system = ActiveTransport::endpoint_default(true);
+            if let Ok(client) = Self::connect(&system).await {
+                return Ok(client);
+            }
+            let user = ActiveTransport::endpoint_default(false);
+            return Self::connect(&user).await;
+        }
+        #[cfg(not(windows))]
+        {
+            let path = discover_socket()?;
+            Self::connect(&path).await
+        }
     }
 
     /// Send a request and receive the response.
@@ -118,12 +136,11 @@ impl DaemonClient {
     }
 }
 
-/// Discover the daemon endpoint.
+/// Discover the daemon endpoint on Unix.
 ///
-/// On Unix: checks the system socket, then the user socket.
-/// On Windows: named pipes aren't filesystem entries, so we return the most
-/// likely candidate and let the `connect` call surface a clear error if
-/// nothing is listening.
+/// Checks the system socket, then the user socket. (On Windows, named pipes
+/// aren't filesystem entries, so `connect_default` probes them directly.)
+#[cfg(not(windows))]
 pub fn discover_socket() -> Result<PathBuf> {
     #[cfg(unix)]
     {
@@ -148,10 +165,6 @@ pub fn discover_socket() -> Result<PathBuf> {
              Start it with: sudo mlshtund\n  \
              Or install as service: sudo mlsh tunnel install"
         )
-    }
-    #[cfg(windows)]
-    {
-        Ok(ActiveTransport::endpoint_default(false))
     }
     #[cfg(not(any(unix, windows)))]
     {

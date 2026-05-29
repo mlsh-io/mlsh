@@ -34,9 +34,14 @@ fn is_privileged() -> bool {
     {
         unsafe { libc::geteuid() == 0 }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // TODO: detect Windows service / elevated token when service install lands.
+        // LocalSystem (the service account) and an elevated terminal both have
+        // an elevated token, so they bind the system pipe `\\.\pipe\mlshtund`.
+        crate::tund::service_windows::is_elevated()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
         false
     }
 }
