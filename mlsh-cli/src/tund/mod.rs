@@ -12,6 +12,8 @@ pub mod ingress;
 pub mod manager_handle;
 pub mod net;
 pub mod overlay;
+#[cfg(windows)]
+pub mod service_windows;
 pub mod signal_session;
 pub mod transport;
 pub mod tunnel;

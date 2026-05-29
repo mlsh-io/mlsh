@@ -43,7 +43,21 @@ curl -fsSL https://get.mlsh.io | sh
 
 Download `mlsh-vX.Y.Z-windows-amd64-setup.exe` from the [GitHub Releases](https://github.com/mlsh-io/mlsh/releases) page and double-click it. The Inno Setup wizard guides you through installation and adds `mlsh` and `mlshtund` to your `PATH`.
 
+The installer requires administrator rights (accept the UAC prompt) so it can register **mlshtund** as a Windows service. The service runs as `LocalSystem`, starts at boot, and automatically reconnects every cluster you have connected at least once. Service state and logs live under `%ProgramData%\mlsh` (logs at `%ProgramData%\mlsh\logs\mlshtund.log`).
+
 The installer is not yet signed, so Windows SmartScreen will warn on first launch. Click **More info → Run anyway** to proceed.
+
+### Managing the service
+
+Run these from an **elevated** terminal (Run as administrator):
+
+```sh
+mlsh tunnel status      # show whether the service is installed and running
+mlsh tunnel install     # register + start the service (done by the installer)
+mlsh tunnel uninstall   # stop + remove the service
+```
+
+You can also inspect it with `sc query mlshtund` or via **services.msc**. Day-to-day commands like `mlsh connect <cluster>` talk to the running service and do not need elevation.
 
 ## Verify the install
 

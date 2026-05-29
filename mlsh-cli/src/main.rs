@@ -277,6 +277,22 @@ where
 }
 
 fn run_tund() {
+    // When launched by the Windows SCM (`mlshtund.exe --service`), hand control
+    // to the service dispatcher, which sets up its own runtime + file logging.
+    #[cfg(windows)]
+    {
+        if std::env::args().any(|a| a == "--service") {
+            let code = match mlsh_cli::tund::service_windows::run() {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("Service error: {e:#}");
+                    1
+                }
+            };
+            std::process::exit(code);
+        }
+    }
+
     run_daemon(mlsh_cli::tund::daemon::run);
 }
 
