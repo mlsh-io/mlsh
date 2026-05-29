@@ -123,8 +123,8 @@ fn create_pipe_instance(pipe_name: &str, first: bool) -> Result<NamedPipeServer>
             bInheritHandle: 0,
         };
 
-        let result = opts
-            .create_with_security_attributes_raw(pipe_name, &mut sa as *mut _ as *mut c_void);
+        let result =
+            opts.create_with_security_attributes_raw(pipe_name, &mut sa as *mut _ as *mut c_void);
 
         LocalFree(psd as _);
 

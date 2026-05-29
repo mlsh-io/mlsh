@@ -384,7 +384,10 @@ fn install_daemon() -> Result<()> {
     println!("The service runs at boot (LocalSystem) and reconnects every cluster you");
     println!("have connected at least once. Use 'mlsh connect <cluster>' to add one.");
     println!("To check:     {}", "mlsh tunnel status".bold());
-    println!("To uninstall: {}", "mlsh tunnel uninstall (elevated)".bold());
+    println!(
+        "To uninstall: {}",
+        "mlsh tunnel uninstall (elevated)".bold()
+    );
 
     Ok(())
 }
