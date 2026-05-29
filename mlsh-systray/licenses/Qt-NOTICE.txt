@@ -1,0 +1,31 @@
+MLSH for Windows — Third-Party Notices
+======================================
+
+Qt
+--
+This application (mlsh-systray) uses the Qt framework (Qt 6) under the terms of
+the GNU Lesser General Public License, version 3 (LGPLv3).
+Qt is Copyright (C) The Qt Company Ltd and other contributors.
+
+The Qt libraries are used via dynamic linking. The Qt runtime shipped alongside
+mlsh-systray.exe — Qt6Core.dll, Qt6Gui.dll, Qt6Widgets.dll, Qt6Network.dll, and
+the plugin DLLs in the platforms\, styles\, tls\, imageformats\, iconengines\,
+networkinformation\ and generic\ folders — are separate, replaceable components.
+
+In accordance with the LGPLv3 you may:
+  - obtain the complete corresponding source code of the Qt version used here, and
+  - replace these Qt DLLs with your own compatible build of Qt.
+
+Resources:
+  - Qt source code:    https://download.qt.io/archive/qt/6.11/
+  - Qt licensing info: https://www.qt.io/licensing/
+  - Full license text: Qt-LICENSE.txt in this folder (GPLv3 + LGPLv3).
+
+To relink against a modified Qt, build Qt 6.11 for Windows (MinGW x86_64) and
+replace the Qt6*.dll files (and, if needed, the plugin DLLs) installed next to
+mlsh-systray.exe.
+
+wintun
+------
+This application bundles Wintun (wintun.dll), Copyright (C) WireGuard LLC.
+See wintun-LICENSE.txt in this folder.

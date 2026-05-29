@@ -44,6 +44,9 @@ Source: "bin\LICENSE.txt"; DestDir: "{app}\licenses"; DestName: "wintun-LICENSE.
 ; MLSH tray app + its Qt runtime, deployed by windeployqt in CI into systray\.
 ; The whole tree lands in {app} so mlsh-systray.exe sits next to mlsh.exe.
 Source: "systray\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Qt LGPLv3 compliance: ship Qt's license text + an attribution/relink notice.
+Source: "..\..\mlsh-systray\licenses\Qt-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "..\..\mlsh-systray\licenses\Qt-NOTICE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Tasks]
 ; Only offered on an admin install; registers + starts the LocalSystem service.

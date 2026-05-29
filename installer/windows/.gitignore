@@ -1,0 +1,4 @@
+# Installer build inputs/outputs (staged by CI or local build scripts).
+/bin/
+/systray/
+/output/
