@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="600" height="200" viewBox="0 0 600 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="gm" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="2.5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Icône : scale 0.6 → 300×300 devient 180×180, décalée de 10px -->
+  <g transform="translate(10, 10) scale(0.6)">
+    <path d="M150 30 L46 90 L46 210 L150 270 L254 210 L254 90 Z"
+      stroke="#F0B429" stroke-width="2.5" fill="none"/>
+    <path d="M150 62 L74 106 L150 150 L226 106 Z"   fill="rgba(240,180,41,0.15)"/>
+    <path d="M74 106 L74 194 L150 238 L150 150 Z"   fill="rgba(240,180,41,0.09)"/>
+    <path d="M226 106 L150 150 L150 238 L226 194 Z" fill="rgba(240,180,41,0.04)"/>
+    <line x1="150" y1="150" x2="150" y2="238" stroke="#F0B429" stroke-width="1.5" opacity="0.25"/>
+    <line x1="74"  y1="194" x2="150" y2="238" stroke="#F0B429" stroke-width="1.5" opacity="0.25"/>
+    <line x1="226" y1="194" x2="150" y2="238" stroke="#F0B429" stroke-width="1.5" opacity="0.25"/>
+    <line x1="150" y1="62"  x2="74"  y2="106" stroke="#F0B429" stroke-width="1.5" opacity="0.25"/>
+    <line x1="150" y1="62"  x2="226" y2="106" stroke="#F0B429" stroke-width="1.5" opacity="0.25"/>
+    <g filter="url(#gm)">
+      <line x1="74"  y1="106" x2="74"  y2="194" stroke="#F0B429" stroke-width="2" stroke-linecap="round"/>
+      <line x1="74"  y1="106" x2="150" y2="150" stroke="#F0B429" stroke-width="2" stroke-linecap="round"/>
+      <line x1="226" y1="106" x2="150" y2="150" stroke="#F0B429" stroke-width="2" stroke-linecap="round"/>
+      <line x1="226" y1="106" x2="226" y2="194" stroke="#F0B429" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <!-- Séparateur -->
+  <line x1="212" y1="38" x2="212" y2="162" stroke="#F0B429" stroke-width="0.75" opacity="0.18"/>
+
+  <!-- Wordmark ML en blanc cassé, SH en ambre — paths directs pour compat PNG -->
+  <text x="230" y="130"
+    font-family="'Syne', 'Arial Black', sans-serif"
+    font-weight="800"
+    font-size="86"
+    fill="#EDE8DC"
+    letter-spacing="-3">ML</text>
+  <text x="382" y="130"
+    font-family="'Syne', 'Arial Black', sans-serif"
+    font-weight="800"
+    font-size="86"
+    fill="#F0B429"
+    filter="url(#gm)"
+    letter-spacing="-3">SH</text>
+
+  <!-- Tagline mono -->
+  <text x="231" y="158"
+    font-family="'IBM Plex Mono', 'Courier New', monospace"
+    font-size="12"
+    letter-spacing="2.5"
+    fill="#F0B429"
+    opacity="0.38">SOVEREIGN INFRASTRUCTURE</text>
+</svg>
