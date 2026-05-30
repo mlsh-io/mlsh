@@ -7,9 +7,9 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use super::bootstrap::{self, BootstrapInput};
-use crate::output;
 #[cfg(feature = "control-plane")]
 use crate::control::{write_first_admin, write_mode_init, FirstAdmin, Mode};
+use crate::output;
 
 const DEFAULT_SIGNAL_PORT: u16 = 4433;
 
