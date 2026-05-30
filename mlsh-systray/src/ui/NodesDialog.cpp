@@ -2,8 +2,11 @@
 
 #include "config/ClusterDiscovery.h"
 #include "model/AppState.h"
+#include "ui/IconFactory.h"
+#include "ui/Theme.h"
 
 #include <QDialogButtonBox>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QInputDialog>
@@ -12,6 +15,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QStyle>
 #include <QTableWidget>
 #include <QVBoxLayout>
 
@@ -32,12 +36,21 @@ NodesDialog::NodesDialog(AppState *state, const QString &cluster, QWidget *paren
     m_table = new QTableWidget(0, 5);
     m_table->setHorizontalHeaderLabels(
         {tr("Name"), tr("Role"), tr("Status"), tr("Overlay IP"), tr("Online")});
-    m_table->horizontalHeader()->setStretchLastSection(true);
+    m_table->horizontalHeader()->setStretchLastSection(false);
     m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_table->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_table->setSelectionMode(QAbstractItemView::SingleSelection);
     m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_table->setAlternatingRowColors(true);
+    m_table->setShowGrid(false);
     m_table->verticalHeader()->setVisible(false);
+    m_table->verticalHeader()->setDefaultSectionSize(30);
+    m_table->horizontalHeader()->setHighlightSections(false);
+    m_table->setStyleSheet(QStringLiteral(
+        "QHeaderView::section { font-weight: 600; padding: 4px; border: none; "
+        "border-bottom: 1px solid palette(midlight); background: transparent; }"
+        "QTableWidget { border: 1px solid palette(midlight); }"));
     outer->addWidget(m_table, 1);
 
     auto *actions = new QHBoxLayout;
@@ -45,6 +58,9 @@ NodesDialog::NodesDialog(AppState *state, const QString &cluster, QWidget *paren
         m_rename = new QPushButton(tr("Rename…"));
         m_role = new QPushButton(tr("Promote/Demote"));
         m_revoke = new QPushButton(tr("Revoke…"));
+        m_rename->setIcon(style()->standardIcon(QStyle::SP_FileDialogDetailedView));
+        m_role->setIcon(style()->standardIcon(QStyle::SP_ArrowUp));
+        m_revoke->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
         actions->addWidget(m_rename);
         actions->addWidget(m_role);
         actions->addWidget(m_revoke);
@@ -58,6 +74,7 @@ NodesDialog::NodesDialog(AppState *state, const QString &cluster, QWidget *paren
     }
     actions->addStretch();
     m_refresh = new QPushButton(tr("Refresh"));
+    m_refresh->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
     actions->addWidget(m_refresh);
     outer->addLayout(actions);
 
@@ -112,17 +129,53 @@ void NodesDialog::populate(const QList<NodeInfo> &nodes)
     m_table->setRowCount(nodes.size());
     for (int i = 0; i < nodes.size(); ++i) {
         const NodeInfo &n = nodes.at(i);
-        auto set = [this, i](int col, const QString &text) {
-            m_table->setItem(i, col, new QTableWidgetItem(text));
-        };
+
+        // Name — bold for the local node.
         QString name = n.displayName.isEmpty() ? n.uuid : n.displayName;
         if (n.uuid == m_selfUuid)
-            name += tr(" (this node)");
-        set(0, name);
-        set(1, n.role);
-        set(2, n.status);
-        set(3, n.overlayIp);
-        set(4, n.online ? tr("●") : tr("○"));
+            name += tr("  (this node)");
+        auto *nameItem = new QTableWidgetItem(name);
+        if (n.uuid == m_selfUuid) {
+            QFont f = nameItem->font();
+            f.setBold(true);
+            nameItem->setFont(f);
+        }
+        m_table->setItem(i, 0, nameItem);
+
+        // Role — admin in accent + bold.
+        auto *roleItem = new QTableWidgetItem(n.role);
+        if (n.role == QStringLiteral("admin")) {
+            roleItem->setForeground(Theme::Colors::accent());
+            QFont f = roleItem->font();
+            f.setBold(true);
+            roleItem->setFont(f);
+        } else {
+            roleItem->setForeground(Theme::Colors::disconnected());
+        }
+        m_table->setItem(i, 1, roleItem);
+
+        // Status — active green, anything else (revoked…) red.
+        auto *statusItem = new QTableWidgetItem(n.status);
+        statusItem->setForeground(n.status == QStringLiteral("active") ? Theme::Colors::online()
+                                                                       : Theme::Colors::revoked());
+        m_table->setItem(i, 2, statusItem);
+
+        // Overlay IP.
+        m_table->setItem(
+            i, 3,
+            new QTableWidgetItem(n.overlayIp.isEmpty() ? QStringLiteral("—") : n.overlayIp));
+
+        // Online — centered colored dot.
+        auto *cell = new QWidget;
+        auto *cl = new QHBoxLayout(cell);
+        cl->setContentsMargins(0, 0, 0, 0);
+        cl->setAlignment(Qt::AlignCenter);
+        auto *dot = new QLabel;
+        dot->setPixmap(IconFactory::statusDot(
+            n.online ? Theme::Colors::online() : Theme::Colors::offline(), 11));
+        dot->setToolTip(n.online ? tr("online") : tr("offline"));
+        cl->addWidget(dot);
+        m_table->setCellWidget(i, 4, cell);
     }
     updateButtons();
 }

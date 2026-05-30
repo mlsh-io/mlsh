@@ -7,6 +7,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -92,8 +93,11 @@ TunnelRow::TunnelRow(const mlsh::TunnelStatus &tunnel, bool busy, QWidget *paren
     // Traffic.
     if (tunnel.bytesTx > 0 || tunnel.bytesRx > 0) {
         auto *traffic = new QLabel(
-            QStringLiteral("↑ %1   ↓ %2")
-                .arg(formatBytes(tunnel.bytesTx), formatBytes(tunnel.bytesRx)));
+            QStringLiteral("<span style='color:%1'>&#8593; %2</span>"
+                           "&nbsp;&nbsp;<span style='color:%3'>&#8595; %4</span>")
+                .arg(Theme::Colors::txArrow().name(), formatBytes(tunnel.bytesTx),
+                     Theme::Colors::rxArrow().name(), formatBytes(tunnel.bytesRx)));
+        traffic->setTextFormat(Qt::RichText);
         QFont tf = traffic->font();
         tf.setPointSizeF(tf.pointSizeF() - 1);
         traffic->setFont(tf);
@@ -122,7 +126,11 @@ TunnelRow::TunnelRow(const mlsh::TunnelStatus &tunnel, bool busy, QWidget *paren
     row->addWidget(menuBtn, 0, Qt::AlignTop);
 
     // Disconnect button.
-    auto *btn = new QPushButton(busy ? tr("…") : tr("✕"));
+    auto *btn = new QPushButton;
+    if (busy)
+        btn->setText(tr("…"));
+    else
+        btn->setIcon(style()->standardIcon(QStyle::SP_DialogCloseButton));
     btn->setToolTip(tr("Disconnect"));
     btn->setFixedSize(28, 24);
     btn->setEnabled(!busy);

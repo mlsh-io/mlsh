@@ -19,8 +19,12 @@ inline QColor connected() { return QColor(0x34, 0xC7, 0x59); }   // green
 inline QColor partial() { return QColor(0xFF, 0x9F, 0x0A); }     // orange
 inline QColor disconnected() { return QColor(0x8E, 0x8E, 0x93); } // gray
 inline QColor daemonDown() { return QColor(0xFF, 0x3B, 0x30); }  // red
+inline QColor accent() { return QColor(0x0A, 0x84, 0xFF); }      // blue
 inline QColor txArrow() { return QColor(0x34, 0xC7, 0x59); }
 inline QColor rxArrow() { return QColor(0x0A, 0x84, 0xFF); }
+inline QColor online() { return QColor(0x34, 0xC7, 0x59); }      // green
+inline QColor offline() { return QColor(0x8E, 0x8E, 0x93); }     // gray
+inline QColor revoked() { return QColor(0xFF, 0x3B, 0x30); }     // red
 } // namespace Colors
 
 } // namespace Theme
