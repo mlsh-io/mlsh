@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cli/CliRunner.h"
 #include "ipc/Protocol.h"
 #include "model/TunnelStatus.h"
 #include "service/ServiceController.h"
@@ -45,6 +46,7 @@ public:
     QString statusText() const;
     QString appVersion() const { return m_appVersion; }
     bool isClusterBusy(const QString &cluster) const { return m_busyClusters.contains(cluster); }
+    bool isClusterAdmin(const QString &cluster) const;
 
     ServiceController::State serviceState() const { return m_serviceState; }
 
@@ -56,6 +58,22 @@ public:
     void disconnectCluster(const QString &cluster);
     void refreshNow();           // poll status immediately
     void refreshServiceState();  // re-query the Windows service
+
+    // --- Tunnel lifecycle / admin (shell out to mlsh --json) ---
+    using CliCb = std::function<void(const CliRunner::Result &)>;
+
+    /// Run `mlsh --json <args>`; `cb` receives the parsed result (may be null).
+    void runCli(const QStringList &args, CliCb cb, const QByteArray &stdinData = {});
+
+    void adoptTunnel(const QString &url, const QString &name, CliCb cb = {});
+    void createSelfHosted(const QString &cluster, const QString &signalHost,
+                          const QString &token, const QString &name, CliCb cb = {});
+    void inviteCluster(const QString &cluster, const QString &role, int ttl, CliCb cb);
+    void removeTunnel(const QString &cluster, CliCb cb = {});
+    void listNodes(const QString &cluster, CliCb cb);
+    void renameNode(const QString &cluster, const QString &uuid, const QString &name, CliCb cb);
+    void promoteNode(const QString &cluster, const QString &uuid, const QString &role, CliCb cb);
+    void revokeNode(const QString &cluster, const QString &uuid, CliCb cb);
 
 signals:
     void changed();                  // any state changed; redraw UI

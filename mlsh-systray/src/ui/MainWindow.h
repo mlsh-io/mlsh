@@ -21,12 +21,20 @@ public:
 protected:
     void closeEvent(QCloseEvent *event) override;
 
+public slots:
+    void openAdopt();
+    void openCreate();
+
 private:
     void buildUi();
     void rebuildTunnels();
     void rebuildClusters();
     void updateServicePanel();
     void onCopyIp(const QString &ip);
+    void showClusterMenu(const QString &cluster, bool active);
+    void openInvite(const QString &cluster);
+    void openNodes(const QString &cluster);
+    void removeCluster(const QString &cluster);
 
     AppState *m_state = nullptr;
 

@@ -48,6 +48,11 @@ void TrayIcon::rebuildMenu()
 
     QAction *open = m_menu->addAction(tr("Open MLSH"));
     connect(open, &QAction::triggered, this, &TrayIcon::showWindowRequested);
+
+    QAction *adopt = m_menu->addAction(tr("Adopt a tunnel…"));
+    connect(adopt, &QAction::triggered, this, &TrayIcon::adoptRequested);
+    QAction *create = m_menu->addAction(tr("New tunnel…"));
+    connect(create, &QAction::triggered, this, &TrayIcon::createRequested);
     m_menu->addSeparator();
 
     // Connected tunnels → disconnect.

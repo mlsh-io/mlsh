@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QRegularExpression>
 
 namespace ClusterDiscovery {
 
@@ -57,6 +58,65 @@ bool readConnectMaterial(const QString &cluster,
     return readFile(clusterFile, configToml, error)
         && readFile(certFile, certPem, error)
         && readFile(keyFile, keyPem, error);
+}
+
+static QString clusterTomlPath(const QString &cluster)
+{
+    return QDir(configDir()).filePath(QStringLiteral("clusters/%1.toml").arg(cluster));
+}
+
+static QString readClusterToml(const QString &cluster)
+{
+    QString toml, err;
+    if (!readFile(clusterTomlPath(cluster), toml, err))
+        return {};
+    return toml;
+}
+
+QStringList clusterRoles(const QString &cluster)
+{
+    const QString toml = readClusterToml(cluster);
+    if (toml.isEmpty())
+        return {};
+
+    // roles = ["node", "admin", "control"]   (only present under [node_auth])
+    static const QRegularExpression rolesRe(QStringLiteral("roles\\s*=\\s*\\[([^\\]]*)\\]"));
+    const QRegularExpressionMatch m = rolesRe.match(toml);
+    if (!m.hasMatch())
+        return {};
+
+    QStringList roles;
+    static const QRegularExpression strRe(QStringLiteral("\"([^\"]+)\""));
+    auto it = strRe.globalMatch(m.captured(1));
+    while (it.hasNext())
+        roles << it.next().captured(1);
+    return roles;
+}
+
+bool isClusterAdmin(const QString &cluster)
+{
+    return clusterRoles(cluster).contains(QStringLiteral("admin"));
+}
+
+QString clusterNodeUuid(const QString &cluster)
+{
+    const QString toml = readClusterToml(cluster);
+    static const QRegularExpression re(QStringLiteral("node_uuid\\s*=\\s*\"([^\"]+)\""));
+    const QRegularExpressionMatch m = re.match(toml);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+bool removeClusterConfig(const QString &cluster, QString &error)
+{
+    const QString path = clusterTomlPath(cluster);
+    QFile f(path);
+    if (!f.exists())
+        return true; // already gone
+    if (!f.remove()) {
+        error = QStringLiteral("Cannot delete %1: %2").arg(path, f.errorString());
+        return false;
+    }
+    return true;
 }
 
 } // namespace ClusterDiscovery
