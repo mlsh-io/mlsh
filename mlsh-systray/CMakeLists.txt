@@ -62,7 +62,7 @@ endif()
 # WIN32 → GUI subsystem, no console window.
 qt_add_executable(mlsh-systray WIN32 ${SOURCES} ${HEADERS})
 
-target_include_directories(mlsh-systray PRIVATE src)
+target_include_directories(mlsh-systray PRIVATE src third_party)
 
 target_link_libraries(mlsh-systray PRIVATE
     Qt6::Core

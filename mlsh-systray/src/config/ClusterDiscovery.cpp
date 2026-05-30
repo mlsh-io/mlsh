@@ -2,7 +2,13 @@
 
 #include <QDir>
 #include <QFile>
-#include <QRegularExpression>
+
+// toml++ is header-only and uses exceptions by default; keep them on so a
+// malformed file throws toml::parse_error (caught below) rather than UB.
+#include <tomlplusplus/toml.hpp>
+
+#include <optional>
+#include <string>
 
 namespace ClusterDiscovery {
 
@@ -65,31 +71,34 @@ static QString clusterTomlPath(const QString &cluster)
     return QDir(configDir()).filePath(QStringLiteral("clusters/%1.toml").arg(cluster));
 }
 
-static QString readClusterToml(const QString &cluster)
+/// Parse a cluster's TOML into a toml++ table. Reads via QFile (UTF-8) rather
+/// than toml::parse_file() so non-ASCII paths (e.g. a username) work on Windows.
+/// Returns nullopt if the file is missing or malformed.
+static std::optional<toml::table> parseClusterToml(const QString &cluster)
 {
-    QString toml, err;
-    if (!readFile(clusterTomlPath(cluster), toml, err))
-        return {};
-    return toml;
+    QString content, err;
+    if (!readFile(clusterTomlPath(cluster), content, err))
+        return std::nullopt;
+    try {
+        return toml::parse(content.toStdString());
+    } catch (const toml::parse_error &) {
+        return std::nullopt;
+    }
 }
 
 QStringList clusterRoles(const QString &cluster)
 {
-    const QString toml = readClusterToml(cluster);
-    if (toml.isEmpty())
-        return {};
-
-    // roles = ["node", "admin", "control"]   (only present under [node_auth])
-    static const QRegularExpression rolesRe(QStringLiteral("roles\\s*=\\s*\\[([^\\]]*)\\]"));
-    const QRegularExpressionMatch m = rolesRe.match(toml);
-    if (!m.hasMatch())
+    const auto tbl = parseClusterToml(cluster);
+    if (!tbl)
         return {};
 
     QStringList roles;
-    static const QRegularExpression strRe(QStringLiteral("\"([^\"]+)\""));
-    auto it = strRe.globalMatch(m.captured(1));
-    while (it.hasNext())
-        roles << it.next().captured(1);
+    if (const toml::array *arr = (*tbl)["node_auth"]["roles"].as_array()) {
+        for (const toml::node &el : *arr) {
+            if (const auto s = el.value<std::string>())
+                roles << QString::fromStdString(*s);
+        }
+    }
     return roles;
 }
 
@@ -100,10 +109,15 @@ bool isClusterAdmin(const QString &cluster)
 
 QString clusterNodeUuid(const QString &cluster)
 {
-    const QString toml = readClusterToml(cluster);
-    static const QRegularExpression re(QStringLiteral("node_uuid\\s*=\\s*\"([^\"]+)\""));
-    const QRegularExpressionMatch m = re.match(toml);
-    return m.hasMatch() ? m.captured(1) : QString();
+    const auto tbl = parseClusterToml(cluster);
+    if (!tbl)
+        return {};
+
+    // New files store `node_uuid`; older ones used `node_id`.
+    auto v = (*tbl)["node_auth"]["node_uuid"].value<std::string>();
+    if (!v)
+        v = (*tbl)["node_auth"]["node_id"].value<std::string>();
+    return v ? QString::fromStdString(*v) : QString();
 }
 
 bool removeClusterConfig(const QString &cluster, QString &error)
