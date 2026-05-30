@@ -6,6 +6,8 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use crate::output;
+
 /// Export the node identity (cert + key PEM) to stdout.
 pub async fn handle_export() -> Result<()> {
     let config_dir = crate::config::config_dir()?;
@@ -27,14 +29,27 @@ pub async fn handle_export() -> Result<()> {
         &mlsh_crypto::identity::pem_to_der_pub(&cert_pem).map_err(|e| anyhow::anyhow!("{}", e))?,
     );
 
-    eprintln!("{}", "Identity exported".green().bold());
-    eprintln!("  Fingerprint: {}", &fingerprint[..16]);
-    eprintln!("  Store this output securely — it contains your private key.");
-    eprintln!();
+    // In JSON mode the PEM blocks are returned as fields of the result
+    // object (raw stdout PEM would otherwise break the single-document
+    // contract). In human mode they stream to stdout as before, with the
+    // banner on stderr so the output stays pipe-friendly.
+    output::emit(
+        &serde_json::json!({
+            "fingerprint": &fingerprint,
+            "key_pem": &key_pem,
+            "cert_pem": &cert_pem,
+        }),
+        || {
+            eprintln!("{}", "Identity exported".green().bold());
+            eprintln!("  Fingerprint: {}", &fingerprint[..16]);
+            eprintln!("  Store this output securely — it contains your private key.");
+            eprintln!();
 
-    // Output to stdout so it can be piped to a file
-    print!("{}", key_pem);
-    print!("{}", cert_pem);
+            // Output to stdout so it can be piped to a file
+            print!("{}", key_pem);
+            print!("{}", cert_pem);
+        },
+    );
 
     Ok(())
 }
@@ -135,9 +150,17 @@ pub async fn handle_import(file: Option<&str>) -> Result<()> {
     }
     std::fs::write(&cert_path, &cert_pem)?;
 
-    println!("{}", "Identity imported".green().bold());
-    println!("  Fingerprint: {}...", &fingerprint[..16]);
-    println!("  Location:    {}", identity_dir.display());
+    output::emit(
+        &serde_json::json!({
+            "fingerprint": &fingerprint,
+            "location": identity_dir.display().to_string(),
+        }),
+        || {
+            println!("{}", "Identity imported".green().bold());
+            println!("  Fingerprint: {}...", &fingerprint[..16]);
+            println!("  Location:    {}", identity_dir.display());
+        },
+    );
 
     Ok(())
 }

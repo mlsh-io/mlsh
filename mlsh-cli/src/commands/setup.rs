@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use super::bootstrap::{self, BootstrapInput};
+use crate::output;
 #[cfg(feature = "control-plane")]
 use crate::control::{write_first_admin, write_mode_init, FirstAdmin, Mode};
 
@@ -30,9 +31,9 @@ async fn handle_setup_inner(
 ) -> Result<()> {
     let (setup_code, cluster_id, signal_fingerprint) = parse_setup_token(token)?;
 
-    println!("{}", "MLSH Cluster Setup".cyan().bold());
-    println!("  Cluster: {}", cluster_name);
-    println!("  Signal:  {}", signal_host);
+    crate::step!("{}", "MLSH Cluster Setup".cyan().bold());
+    crate::step!("  Cluster: {}", cluster_name);
+    crate::step!("  Signal:  {}", signal_host);
 
     // ADR-032 §2: declare the cluster mode so the control plane and UI render
     // the right login flow. ADR-032 §3: self-hosted prompts for an admin
@@ -74,32 +75,43 @@ async fn handle_setup_inner(
     })
     .await?;
 
-    println!();
-    println!("{}", "Setup completed!".green().bold());
-    println!("  Cluster:    {}", cluster_name);
-    println!("  Node:       {} (node + admin + control)", display_name);
-    println!("  Node ID:    {}", node_id);
-    println!("  Overlay IP: {}", out.overlay_ip);
-    println!();
-    println!("{}", "Next steps:".cyan().bold());
-    println!(
-        "  1. Connect: {}",
-        format!("mlsh connect {}", cluster_name).bold()
-    );
-    println!("     Starts the tunnel and the admin UI on https://localhost:8443.");
-    println!(
-        "  2. Invite:  {}",
-        format!("mlsh invite {} --ttl 3600", cluster_name).bold()
-    );
-    println!();
-    println!(
-        "{}",
-        format!(
-            "Warning: \"{}\" has only 1 admin. If you lose this machine, you lose \
-             admin access forever. Run `mlsh invite {} --role admin` to add a backup admin.",
-            cluster_name, cluster_name
-        )
-        .yellow()
+    output::emit(
+        &serde_json::json!({
+            "cluster": cluster_name,
+            "node": &display_name,
+            "node_id": &node_id,
+            "overlay_ip": &out.overlay_ip,
+            "roles": ["node", "admin", "control"],
+        }),
+        || {
+            println!();
+            println!("{}", "Setup completed!".green().bold());
+            println!("  Cluster:    {}", cluster_name);
+            println!("  Node:       {} (node + admin + control)", display_name);
+            println!("  Node ID:    {}", node_id);
+            println!("  Overlay IP: {}", out.overlay_ip);
+            println!();
+            println!("{}", "Next steps:".cyan().bold());
+            println!(
+                "  1. Connect: {}",
+                format!("mlsh connect {}", cluster_name).bold()
+            );
+            println!("     Starts the tunnel and the admin UI on https://localhost:8443.");
+            println!(
+                "  2. Invite:  {}",
+                format!("mlsh invite {} --ttl 3600", cluster_name).bold()
+            );
+            println!();
+            println!(
+                "{}",
+                format!(
+                    "Warning: \"{}\" has only 1 admin. If you lose this machine, you lose \
+                     admin access forever. Run `mlsh invite {} --role admin` to add a backup admin.",
+                    cluster_name, cluster_name
+                )
+                .yellow()
+            );
+        },
     );
     Ok(())
 }
@@ -109,26 +121,26 @@ async fn handle_setup_inner(
 pub async fn handle_managed_setup(cluster_name: &str, name_override: Option<&str>) -> Result<()> {
     use crate::cloud::CloudClient;
 
-    println!("{}", "MLSH Managed Setup".cyan().bold());
-    println!("  Cluster: {}", cluster_name);
+    crate::step!("{}", "MLSH Managed Setup".cyan().bold());
+    crate::step!("  Cluster: {}", cluster_name);
 
     let cloud = CloudClient::new();
 
-    println!("{}", "Authenticating with mlsh.io...".cyan());
+    crate::step!("{}", "Authenticating with mlsh.io...".cyan());
     let device = cloud.request_device_code().await?;
     let prefilled = verification_url_with_code(&device.verification_uri, &device.user_code);
-    println!();
-    println!("  Open: {}", prefilled.bold());
-    println!("  Code: {}", device.user_code.bold());
-    println!();
-    println!("{}", "Waiting for authorization...".dimmed());
+    crate::step!("");
+    crate::step!("  Open: {}", prefilled.bold());
+    crate::step!("  Code: {}", device.user_code.bold());
+    crate::step!("");
+    crate::step!("{}", "Waiting for authorization...".dimmed());
 
     let tokens = cloud
         .poll_device_token(&device.device_code, device.interval)
         .await?;
-    println!("{}", "Authenticated!".green());
+    crate::step!("{}", "Authenticated!".green());
 
-    println!("{}", "Creating cluster...".cyan());
+    crate::step!("{}", "Creating cluster...".cyan());
     let cluster = cloud
         .create_cluster(&tokens.access_token, cluster_name)
         .await?;

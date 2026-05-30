@@ -17,24 +17,47 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use crate::output;
 use crate::tund::control::{client::DaemonClient, protocol::DaemonResponse};
 
 const CONTROL_ROLE: &str = "control";
 
 pub async fn handle_demote(cluster_name: &str) -> Result<()> {
+    let removed = demote(cluster_name).await?;
+
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "control": false }),
+        || {
+            if removed {
+                println!(
+                    "{}",
+                    format!("Control role removed from '{}'.", cluster_name).green()
+                );
+            } else {
+                println!(
+                    "{}",
+                    format!(
+                        "'{}' does not hold the control role; nothing to do.",
+                        cluster_name
+                    )
+                    .yellow()
+                );
+            }
+        },
+    );
+    Ok(())
+}
+
+/// Strip the `control` role and stop the running child. Returns `true` if
+/// the role was present and removed, `false` if there was nothing to do.
+/// Does not emit a result — callers (`handle_demote`, `handle_migrate`) own
+/// the output so only one JSON document is produced.
+async fn demote(cluster_name: &str) -> Result<bool> {
     let cluster_file = cluster_config_path(cluster_name)?;
     let mut roles = read_roles(&cluster_file)?;
 
     if !roles.iter().any(|r| r == CONTROL_ROLE) {
-        println!(
-            "{}",
-            format!(
-                "'{}' does not hold the control role; nothing to do.",
-                cluster_name
-            )
-            .yellow()
-        );
-        return Ok(());
+        return Ok(false);
     }
 
     // Stop the running child first so the port is freed before we mutate
@@ -45,12 +68,7 @@ pub async fn handle_demote(cluster_name: &str) -> Result<()> {
 
     roles.retain(|r| r != CONTROL_ROLE);
     write_roles(&cluster_file, &roles)?;
-
-    println!(
-        "{}",
-        format!("Control role removed from '{}'.", cluster_name).green()
-    );
-    Ok(())
+    Ok(true)
 }
 
 pub async fn handle_promote(cluster_name: &str) -> Result<()> {
@@ -70,27 +88,35 @@ pub async fn handle_promote(cluster_name: &str) -> Result<()> {
     let resp = client.control_start(cluster_name).await?;
     log_daemon_response(&resp)?;
 
-    println!(
-        "{}",
-        format!("'{}' now holds the control role.", cluster_name).green()
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "control": true }),
+        || {
+            println!(
+                "{}",
+                format!("'{}' now holds the control role.", cluster_name).green()
+            )
+        },
     );
     Ok(())
 }
 
 pub async fn handle_migrate(cluster_name: &str, target: &str) -> Result<()> {
-    handle_demote(cluster_name).await?;
+    demote(cluster_name).await?;
 
     let src = crate::config::control_data_dir().display().to_string();
+    let steps = [
+        format!("scp -r \"{}\" {}:{}/", src, target, src),
+        format!("mlsh control promote {}", cluster_name),
+    ];
 
-    println!();
-    println!("{}", "Next steps on the target node:".cyan().bold());
-    println!(
-        "  1. {}",
-        format!("scp -r \"{}\" {}:{}/", src, target, src).bold()
-    );
-    println!(
-        "  2. {}",
-        format!("mlsh control promote {}", cluster_name).bold()
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "node": target, "steps": steps }),
+        || {
+            println!();
+            println!("{}", "Next steps on the target node:".cyan().bold());
+            println!("  1. {}", steps[0].as_str().bold());
+            println!("  2. {}", steps[1].as_str().bold());
+        },
     );
 
     Ok(())
@@ -187,7 +213,7 @@ fn log_daemon_response(resp: &DaemonResponse) -> Result<()> {
     match resp {
         DaemonResponse::Ok { message } => {
             if let Some(m) = message {
-                println!("  {}", m.dimmed());
+                crate::step!("  {}", m.dimmed());
             }
             Ok(())
         }
