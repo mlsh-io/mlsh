@@ -25,6 +25,7 @@
 #include <QMessageBox>
 #include <QScrollArea>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -123,6 +124,10 @@ void MainWindow::buildUi()
     m_btnUninstall = new QPushButton(tr("Uninstall"));
     m_btnStart = new QPushButton(tr("Start"));
     m_btnStop = new QPushButton(tr("Stop"));
+    m_btnInstall->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    m_btnUninstall->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
+    m_btnStart->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
+    m_btnStop->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     svcBtns->addWidget(m_btnInstall);
     svcBtns->addWidget(m_btnUninstall);
     svcBtns->addWidget(m_btnStart);
@@ -133,8 +138,10 @@ void MainWindow::buildUi()
 
     // --- Action bar: adopt / create tunnel ---
     auto *actionBar = new QHBoxLayout;
-    auto *btnAdopt = new QPushButton(tr("+ Adopt…"));
-    auto *btnCreate = new QPushButton(tr("+ New tunnel…"));
+    auto *btnAdopt = new QPushButton(tr("Adopt…"));
+    auto *btnCreate = new QPushButton(tr("New tunnel…"));
+    btnAdopt->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
+    btnCreate->setIcon(IconFactory::plusIcon(Theme::Colors::connected()));
     connect(btnAdopt, &QPushButton::clicked, this, &MainWindow::openAdopt);
     connect(btnCreate, &QPushButton::clicked, this, &MainWindow::openCreate);
     actionBar->addWidget(btnAdopt);
@@ -200,6 +207,7 @@ void MainWindow::buildUi()
     footer->addStretch();
 
     m_updateButton = new QPushButton;
+    m_updateButton->setIcon(style()->standardIcon(QStyle::SP_ArrowDown));
     m_updateButton->setVisible(false);
     connect(m_updateButton, &QPushButton::clicked, this, [this]() {
         const auto rel = m_state->update();
@@ -210,6 +218,7 @@ void MainWindow::buildUi()
     footer->addWidget(m_updateButton);
 
     auto *openConfig = new QPushButton(tr("Open config folder"));
+    openConfig->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
     connect(openConfig, &QPushButton::clicked, this, []() {
         QDesktopServices::openUrl(QUrl::fromLocalFile(ClusterDiscovery::configDir()));
     });
@@ -309,6 +318,8 @@ void MainWindow::rebuildClusters()
 
         const bool busy = m_state->isClusterBusy(cluster);
         auto *btn = new QPushButton(busy ? tr("Connecting…") : tr("Connect"));
+        if (!busy)
+            btn->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
         btn->setEnabled(!busy);
         connect(btn, &QPushButton::clicked, m_state,
                 [this, cluster]() { m_state->connectCluster(cluster); });

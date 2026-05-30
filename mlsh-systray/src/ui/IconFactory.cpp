@@ -120,4 +120,27 @@ QPixmap statusDot(const QColor &color, int size)
     return pm;
 }
 
+QIcon dotIcon(const QColor &color, int size)
+{
+    return QIcon(statusDot(color, size));
+}
+
+QIcon plusIcon(const QColor &color)
+{
+    const int s = 32;
+    QPixmap pm(s, s);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(color);
+    pen.setWidthF(s * 0.14);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    const qreal m = s * 0.24;
+    p.drawLine(QPointF(s / 2.0, m), QPointF(s / 2.0, s - m));
+    p.drawLine(QPointF(m, s / 2.0), QPointF(s - m, s / 2.0));
+    p.end();
+    return QIcon(pm);
+}
+
 } // namespace IconFactory

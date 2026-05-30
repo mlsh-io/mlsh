@@ -15,4 +15,10 @@ QIcon trayIcon(AppState::OverallState state);
 QIcon appIcon();
 QPixmap statusDot(const QColor &color, int size);
 
+/// A filled dot QIcon (for table cells, etc.).
+QIcon dotIcon(const QColor &color, int size = 12);
+
+/// A "+" glyph icon in the given color (for "add/new" buttons).
+QIcon plusIcon(const QColor &color);
+
 } // namespace IconFactory
