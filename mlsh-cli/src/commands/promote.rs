@@ -5,6 +5,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::commands::control_client;
+use crate::output;
 
 #[derive(Serialize)]
 struct SetRoleBody<'a> {
@@ -21,7 +22,7 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
     } else {
         "Demoting"
     };
-    println!("{} node {} to {}...", action, target_node.bold(), role);
+    crate::step!("{} node {} to {}...", action, target_node.bold(), role);
 
     let (http, base_url, _config) = control_client::for_cluster(cluster_name)?;
     http.post(format!("{}/api/v1/nodes/{}/role", base_url, target_node))
@@ -37,9 +38,14 @@ pub async fn handle_promote(cluster_name: &str, target_node: &str, role: &str) -
     } else {
         "demoted to node"
     };
-    println!(
-        "{}",
-        format!("Node '{}' {}.", target_node, done).green().bold()
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "node": target_node, "role": role }),
+        || {
+            println!(
+                "{}",
+                format!("Node '{}' {}.", target_node, done).green().bold()
+            )
+        },
     );
     Ok(())
 }

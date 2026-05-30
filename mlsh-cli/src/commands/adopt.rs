@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use super::bootstrap::{self, BootstrapInput};
+use crate::output;
 
 /// Default QUIC port for `mlsh://` URLs (same as HTTPS).
 const DEFAULT_SIGNAL_PORT: u16 = 443;
@@ -11,8 +12,8 @@ const DEFAULT_SIGNAL_PORT: u16 = 443;
 pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> {
     let (signal_host, payload) = parse_adopt_url(url)?;
 
-    println!("{}", "Joining cluster via QUIC...".cyan().bold());
-    println!("  Signal: {}", signal_host);
+    crate::step!("{}", "Joining cluster via QUIC...".cyan().bold());
+    crate::step!("  Signal: {}", signal_host);
 
     let invite = mlsh_crypto::invite::decode_invite_payload(&payload)
         .map_err(|e| anyhow::anyhow!("Invalid invite: {}", e))?;
@@ -44,15 +45,24 @@ pub async fn handle_adopt(url: &str, name_override: Option<&str>) -> Result<()> 
     })
     .await?;
 
-    println!();
-    println!("{}", "Cluster joined successfully!".green().bold());
-    println!("  Cluster:  {}", invite.cluster_name);
-    println!("  Overlay:  {}", out.overlay_ip);
-    println!("  Identity: {}", out.identity_dir.display());
-    println!();
-    println!(
-        "Connect with: {}",
-        format!("mlsh connect {}", invite.cluster_name).bold()
+    output::emit(
+        &serde_json::json!({
+            "cluster": &invite.cluster_name,
+            "overlay_ip": &out.overlay_ip,
+            "identity_dir": out.identity_dir.display().to_string(),
+        }),
+        || {
+            println!();
+            println!("{}", "Cluster joined successfully!".green().bold());
+            println!("  Cluster:  {}", invite.cluster_name);
+            println!("  Overlay:  {}", out.overlay_ip);
+            println!("  Identity: {}", out.identity_dir.display());
+            println!();
+            println!(
+                "Connect with: {}",
+                format!("mlsh connect {}", invite.cluster_name).bold()
+            );
+        },
     );
     Ok(())
 }

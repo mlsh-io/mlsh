@@ -4,9 +4,10 @@ use anyhow::{Context, Result};
 use colored::Colorize;
 
 use crate::commands::control_client;
+use crate::output;
 
 pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> {
-    println!(
+    crate::step!(
         "Revoking node {} from cluster {}...",
         target_node.bold(),
         cluster_name.bold()
@@ -20,9 +21,14 @@ pub async fn handle_revoke(cluster_name: &str, target_node: &str) -> Result<()> 
         .error_for_status()
         .context("POST /api/v1/nodes/{node}/revoke returned error")?;
 
-    println!(
-        "{}",
-        format!("Node '{}' revoked.", target_node).green().bold()
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "node": target_node }),
+        || {
+            println!(
+                "{}",
+                format!("Node '{}' revoked.", target_node).green().bold()
+            )
+        },
     );
     Ok(())
 }

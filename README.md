@@ -145,6 +145,22 @@ mlsh status
 
 This shows each connected cluster with its state, overlay IP, uptime, and traffic counters.
 
+### JSON output
+
+Every command accepts a global `--json` flag that replaces the human-readable text with a single JSON document on stdout, for use in scripts and GUI tools. The flag can go before or after the subcommand (`mlsh --json status` and `mlsh status --json` are equivalent).
+
+The output uses a consistent envelope:
+
+```
+$ mlsh status --json
+{"ok":true,"data":{"tunnels":[{"cluster":"homelab","state":"connected","transport":"mesh","overlay_ip":"100.64.0.2","uptime_secs":2715,"bytes_tx":7166,"bytes_rx":9164}]}}
+
+$ mlsh nodes homelab --json   # on a failure
+{"ok":false,"error":"Cluster 'homelab' not found. ..."}
+```
+
+On success the result is under `data`; on failure `ok` is `false`, the message is under `error`, and the process exits non-zero. In JSON mode, progress and hint lines are written to stderr so stdout stays a single parseable document. One limitation: argument-parsing errors (unknown flag/subcommand, `--help`, `--version`) are handled by the argument parser before `--json` takes effect, so those messages are plain text on stderr, not JSON.
+
 ## Sponsorship and adoption
 
 mlsh does not use a shared secret for ongoing cluster membership. The cluster secret is only used once, during the initial setup of the first admin node. After that, new nodes join through sponsorship.

@@ -5,6 +5,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::commands::control_client;
+use crate::output;
 
 #[derive(Serialize)]
 struct SetNameBody<'a> {
@@ -12,7 +13,7 @@ struct SetNameBody<'a> {
 }
 
 pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str) -> Result<()> {
-    println!(
+    crate::step!(
         "Renaming node {} to {} in cluster {}...",
         target_node.bold(),
         new_name.bold(),
@@ -30,11 +31,16 @@ pub async fn handle_rename(cluster_name: &str, target_node: &str, new_name: &str
         .error_for_status()
         .context("POST /api/v1/nodes/{node}/name returned error")?;
 
-    println!(
-        "{}",
-        format!("Node '{}' renamed to '{}'.", target_node, new_name)
-            .green()
-            .bold()
+    output::emit(
+        &serde_json::json!({ "cluster": cluster_name, "node": target_node, "name": new_name }),
+        || {
+            println!(
+                "{}",
+                format!("Node '{}' renamed to '{}'.", target_node, new_name)
+                    .green()
+                    .bold()
+            )
+        },
     );
     Ok(())
 }
