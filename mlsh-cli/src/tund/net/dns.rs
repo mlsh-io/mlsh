@@ -3,6 +3,9 @@
 //! - macOS: publishes `State:/Network/Service/mlsh-<uuid>/DNS` via SCDynamicStore
 //!   (split DNS + search domain, same mechanism as Tailscale).
 //! - Linux: configures systemd-resolved via D-Bus (`org.freedesktop.resolve1`).
+//! - Windows: adds NRPT (Name Resolution Policy Table) rules via the DnsClient
+//!   PowerShell cmdlets for the cluster zone, plus a connection-specific suffix
+//!   on the wintun interface for bare-name resolution.
 //!
 //! TODO: fallback chain for Linux systems without systemd-resolved:
 //! - NetworkManager D-Bus API (org.freedesktop.NetworkManager) for NM-managed systems
@@ -32,12 +35,19 @@ fn validate_cluster_name(cluster: &str) -> Result<()> {
 ///
 /// - macOS: SCDynamicStore session publishing split DNS + search domain.
 /// - Linux: D-Bus call to systemd-resolved (`SetLinkDNS` + `SetLinkDomains`).
+/// - Windows: NRPT rules for the cluster zone (the resolver must be on port 53,
+///   which the caller already provides on `overlay_ip`) + a connection-specific
+///   DNS suffix on the wintun interface (addressed by `tun_index`).
+///
+/// `tun_name` is used on macOS; `tun_index` (the OS interface index) on Windows.
+/// Each caller passes both — the unused one is ignored on a given platform.
 pub fn install_resolver(
     cluster: &str,
     #[allow(unused)] ip: &str,
     #[allow(unused)] port: u16,
     #[allow(unused)] node_uuid: &str,
     #[allow(unused)] tun_name: &str,
+    #[allow(unused)] tun_index: u32,
 ) -> Result<()> {
     validate_cluster_name(cluster)?;
 
@@ -63,7 +73,12 @@ pub fn install_resolver(
         resolved::install(cluster, ip)?;
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        windows::install(cluster, ip, tun_index)?;
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         tracing::warn!("DNS resolver setup not supported on this platform");
     }
@@ -92,6 +107,11 @@ pub fn remove_resolver(cluster: &str) {
         if let Err(e) = resolved::remove() {
             tracing::warn!("Failed to revert resolved link: {}", e);
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows::remove(cluster);
     }
 }
 
@@ -333,6 +353,85 @@ mod resolved {
 
         result?;
         tracing::info!("Removed DNS resolver for mlsh0");
+        Ok(())
+    }
+}
+
+// --- Windows NRPT integration
+
+#[cfg(target_os = "windows")]
+mod windows {
+    use anyhow::Result;
+    use std::process::Command;
+
+    /// Tag stored in the NRPT rule `Comment` field. Lets us find and remove
+    /// EXACTLY the rules we created — for this cluster — even after an unclean
+    /// shutdown, without touching any rule we don't own.
+    fn comment_tag(cluster: &str) -> String {
+        format!("mlsh:{cluster}")
+    }
+
+    /// Configure split DNS for the cluster zone via NRPT.
+    ///
+    /// NRPT can only target port 53 and refuses loopback, so the resolver must
+    /// be reachable on `overlay_ip:53` (the caller already binds it there on
+    /// Windows). Two namespaces are covered: `.<cluster>` (suffix match for
+    /// `nas.homelab`, `<uuid>.homelab`, …) and `<cluster>` (exact FQDN, for the
+    /// bare cluster name → control node).
+    ///
+    /// `cluster` is validated `[a-zA-Z0-9_-]` upstream and `ip` comes from our
+    /// own `SocketAddr`, so neither can break out of the single-quoted strings.
+    pub fn install(cluster: &str, ip: &str, tun_index: u32) -> Result<()> {
+        let comment = comment_tag(cluster);
+
+        // Idempotent (like `netsh add route`): purge any stale mlsh rules for
+        // this cluster first, then add a fresh one.
+        remove_rules(&comment);
+
+        run_ps(&format!(
+            "Add-DnsClientNrptRule -Namespace '.{cluster}','{cluster}' \
+             -NameServers '{ip}' -Comment '{comment}'"
+        ))?;
+
+        // Best-effort: connection-specific suffix so bare names (`ssh nas`)
+        // resolve as `nas.<cluster>`. Removed automatically when the wintun
+        // interface disappears on tunnel teardown.
+        if tun_index != 0 {
+            if let Err(e) = run_ps(&format!(
+                "Set-DnsClient -InterfaceIndex {tun_index} -ConnectionSpecificSuffix '{cluster}'"
+            )) {
+                tracing::warn!("Failed to set DNS suffix on if{}: {}", tun_index, e);
+            }
+        }
+
+        tracing::info!("Installed DNS resolver: NRPT .{cluster} → {ip} (if {tun_index})");
+        Ok(())
+    }
+
+    /// Remove the NRPT rules we created for this cluster. The connection-specific
+    /// suffix is left to disappear with the interface.
+    pub fn remove(cluster: &str) {
+        remove_rules(&comment_tag(cluster));
+        tracing::info!("Removed DNS resolver for zone {cluster}");
+    }
+
+    fn remove_rules(comment: &str) {
+        let _ = run_ps(&format!(
+            "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{comment}' }} \
+             | Remove-DnsClientNrptRule -Force"
+        ));
+    }
+
+    fn run_ps(script: &str) -> Result<()> {
+        let out = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .output()?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "powershell: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
         Ok(())
     }
 }

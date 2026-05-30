@@ -412,6 +412,7 @@ async fn tunnel_task(
         dns_bind.port(),
         &config.node_uuid,
         &tun_name,
+        tun_index,
     ) {
         tracing::warn!("DNS setup failed: {}", e);
     }
