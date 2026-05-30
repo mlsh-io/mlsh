@@ -50,8 +50,10 @@ pub struct PeerTable {
     inner: Arc<RwLock<PeerTableInner>>,
     /// Shared RX byte counter (incremented when writing to TUN).
     pub bytes_rx: Arc<AtomicU64>,
-    /// TUN device name for OS-level /32 route management.
+    /// TUN device name for OS-level /32 route management (Linux/macOS).
     tun_name: Arc<String>,
+    /// TUN interface index for OS-level /32 route management (Windows).
+    tun_index: u32,
 }
 
 struct PeerTableInner {
@@ -70,11 +72,14 @@ impl Default for PeerTable {
 
 impl PeerTable {
     pub fn new() -> Self {
-        Self::with_tun_name(String::new())
+        Self::with_tun(String::new(), 0)
     }
 
     /// Create a PeerTable bound to a specific TUN device for OS route management.
-    pub fn with_tun_name(tun_name: String) -> Self {
+    ///
+    /// `tun_name` is used for routing on Linux/macOS; `tun_index` (the OS
+    /// interface index) is used on Windows.
+    pub fn with_tun(tun_name: String, tun_index: u32) -> Self {
         Self {
             inner: Arc::new(RwLock::new(PeerTableInner {
                 known_peers: Arc::new(Vec::new()),
@@ -82,6 +87,7 @@ impl PeerTable {
             })),
             bytes_rx: Arc::new(AtomicU64::new(0)),
             tun_name: Arc::new(tun_name),
+            tun_index,
         }
     }
 
@@ -119,7 +125,7 @@ impl PeerTable {
             .routes
             .insert(ip, PeerRoute::Direct(conn));
         if is_new && !self.tun_name.is_empty() {
-            crate::tund::net::routes::add_peer_route(ip, &self.tun_name);
+            crate::tund::net::routes::add_peer_route(ip, &self.tun_name, self.tun_index);
         }
     }
 
@@ -132,7 +138,7 @@ impl PeerTable {
             .routes
             .insert(ip, PeerRoute::Relay(tx));
         if is_new && !self.tun_name.is_empty() {
-            crate::tund::net::routes::add_peer_route(ip, &self.tun_name);
+            crate::tund::net::routes::add_peer_route(ip, &self.tun_name, self.tun_index);
         }
     }
 
@@ -140,7 +146,7 @@ impl PeerTable {
     pub async fn remove_route(&self, ip: Ipv4Addr) {
         let removed = self.inner.write().await.routes.remove(&ip).is_some();
         if removed && !self.tun_name.is_empty() {
-            crate::tund::net::routes::remove_peer_route(ip);
+            crate::tund::net::routes::remove_peer_route(ip, self.tun_index);
         }
     }
 
@@ -152,7 +158,7 @@ impl PeerTable {
             inner.routes.remove(&ip);
             drop(inner);
             if !self.tun_name.is_empty() {
-                crate::tund::net::routes::remove_peer_route(ip);
+                crate::tund::net::routes::remove_peer_route(ip, self.tun_index);
             }
             true
         } else {

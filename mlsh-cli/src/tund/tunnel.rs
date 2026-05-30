@@ -373,11 +373,28 @@ async fn tunnel_task(
             tracing::warn!("Could not get TUN device name: {}", e);
             #[cfg(target_os = "linux")]
             let fallback = "mlsh0".to_string();
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            let fallback = "utun".to_string();
+            // On Windows routing is keyed by interface index, not name, so the
+            // name is only a label here — avoid the misleading macOS "utun".
+            #[cfg(target_os = "windows")]
+            let fallback = "mlsh0".to_string();
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             let fallback = "utun".to_string();
             fallback
         }
     };
+
+    // Interface index for OS-level route management. Only needed on Windows,
+    // where `netsh` addresses the wintun adapter reliably by index rather than
+    // by its (localized, space-prone) name. Other platforms route by name.
+    #[cfg(target_os = "windows")]
+    let tun_index = device.if_index().unwrap_or_else(|e| {
+        tracing::warn!("Could not get TUN interface index: {}", e);
+        0
+    });
+    #[cfg(not(target_os = "windows"))]
+    let tun_index = 0u32;
 
     // DNS bind address: macOS uses localhost:53535, Linux uses overlay_ip:53.
     // macOS: packets to TUN IP aren't delivered to local listeners.
@@ -395,12 +412,13 @@ async fn tunnel_task(
         dns_bind.port(),
         &config.node_uuid,
         &tun_name,
+        tun_index,
     ) {
         tracing::warn!("DNS setup failed: {}", e);
     }
 
     // Shared routing table — used by TUN outbound, quic_server, relay_handler, and DNS.
-    let mut peer_table = PeerTable::with_tun_name(tun_name);
+    let mut peer_table = PeerTable::with_tun(tun_name, tun_index);
     peer_table.bytes_rx = bytes_rx.clone();
 
     // Cancellation token — cancelled on shutdown to stop all spawned tasks and release resources.

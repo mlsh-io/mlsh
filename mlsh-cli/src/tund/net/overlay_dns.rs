@@ -39,7 +39,34 @@ pub async fn run(
     // Mark current value as seen to avoid missing a shutdown set before we start
     shutdown.borrow_and_update();
 
-    let socket = UdpSocket::bind(config.bind_addr).await?;
+    // Bind the resolver socket. On Windows the wintun interface assigns its
+    // overlay IP asynchronously (a brief duplicate-address-detection window),
+    // so binding to `overlay_ip:53` right after device creation fails with
+    // AddrNotAvailable (os error 10049). Retry until the address is ready.
+    // Binding to 0.0.0.0 instead is not an option: it collides with other
+    // port-53 listeners on the host and would break the reply source address.
+    let socket = {
+        let mut attempt = 0u32;
+        loop {
+            match UdpSocket::bind(config.bind_addr).await {
+                Ok(s) => break s,
+                Err(e) if e.kind() == std::io::ErrorKind::AddrNotAvailable && attempt < 200 => {
+                    if attempt == 0 {
+                        tracing::info!(
+                            "Overlay DNS: {} not yet bindable, waiting for interface…",
+                            config.bind_addr
+                        );
+                    }
+                    attempt += 1;
+                    tokio::select! {
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(300)) => {}
+                        _ = shutdown.changed() => return Ok(()),
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    };
     tracing::info!(
         "Overlay DNS listening on {} for zone '{}'",
         config.bind_addr,

@@ -26,13 +26,13 @@ ssh nas          # OS appends .homelab → nas.homelab → 100.64.0.5
 ping pi          # same
 ```
 
-Works on macOS (via `/etc/resolver/<cluster>`) and Linux with systemd-resolved. On platforms without search-domain support, use the fully-qualified form.
+Works on macOS (via `/etc/resolver/<cluster>`), Linux with systemd-resolved, and Windows (a connection-specific DNS suffix on the tunnel interface). On platforms without search-domain support, use the fully-qualified form.
 
 ## Listen address
 
 - **Linux**: port `53` on the overlay IP.
 - **macOS**: port `53535` on localhost (macOS reserves port 53 for `mDNSResponder`).
-- **Windows**: port `53535` on localhost (Windows DNS client quirks).
+- **Windows**: port `53` on the overlay IP (NRPT can only target port 53 and refuses loopback addresses).
 
 ## Split DNS integration
 
@@ -41,4 +41,4 @@ Only queries that match the cluster zone are routed to the MLSH resolver; everyt
 - **macOS**: the daemon drops a file in `/etc/resolver/<cluster>` pointing at `127.0.0.1:53535`. `mDNSResponder` picks it up automatically.
 - **Linux (systemd-resolved)**: the daemon configures `mlsh0` via D-Bus, registering the cluster zone as both a routing target and a search domain (`routing_only=false`) so bare names are appended with `.<cluster>`.
 - **Linux (non-systemd)**: fall back to editing `/etc/resolv.conf` or running a local resolver like `dnsmasq` that forwards the cluster zone to the MLSH resolver.
-- **Windows**: `NRPT` (Name Resolution Policy Table) entries are added for the cluster zone.
+- **Windows**: `NRPT` (Name Resolution Policy Table) rules are added for the cluster zone via the DnsClient cmdlets — namespaces `.<cluster>` (subdomains) and `<cluster>` (the bare zone) point at the overlay resolver on `overlay-ip:53`. A connection-specific DNS suffix is also set on the tunnel interface so bare names resolve. Rules are tagged in their `Comment` field (`mlsh:<cluster>`) and removed on disconnect.
