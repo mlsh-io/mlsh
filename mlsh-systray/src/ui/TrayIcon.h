@@ -19,6 +19,8 @@ public:
 
 signals:
     void showWindowRequested();
+    void adoptRequested();
+    void createRequested();
     void quitRequested();
 
 private:

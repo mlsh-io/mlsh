@@ -16,4 +16,5 @@ public:
 signals:
     void disconnectRequested(const QString &cluster);
     void copyIpRequested(const QString &ip);
+    void menuRequested(const QString &cluster);
 };

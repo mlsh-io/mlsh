@@ -14,6 +14,14 @@ App::App(QObject *parent)
     m_tray = new TrayIcon(m_state, this);
 
     connect(m_tray, &TrayIcon::showWindowRequested, this, &App::showWindow);
+    connect(m_tray, &TrayIcon::adoptRequested, this, [this]() {
+        showWindow();
+        m_window->openAdopt();
+    });
+    connect(m_tray, &TrayIcon::createRequested, this, [this]() {
+        showWindow();
+        m_window->openCreate();
+    });
     connect(m_tray, &TrayIcon::quitRequested, qApp, &QApplication::quit);
 
     m_tray->show();

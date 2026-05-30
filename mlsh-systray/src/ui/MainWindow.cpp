@@ -3,19 +3,26 @@
 #include "config/ClusterDiscovery.h"
 #include "model/AppState.h"
 #include "service/ServiceController.h"
+#include "ui/AdoptDialog.h"
+#include "ui/CreateTunnelDialog.h"
 #include "ui/IconFactory.h"
+#include "ui/InviteDialog.h"
+#include "ui/NodesDialog.h"
 #include "ui/Theme.h"
 #include "ui/TunnelRow.h"
 
 #include <QApplication>
 #include <QClipboard>
 #include <QCloseEvent>
+#include <QCursor>
 #include <QDesktopServices>
 #include <QFrame>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QMenu>
+#include <QMessageBox>
 #include <QScrollArea>
 #include <QStatusBar>
 #include <QTimer>
@@ -123,6 +130,17 @@ void MainWindow::buildUi()
     svcBtns->addStretch();
     svc->addLayout(svcBtns);
     outer->addWidget(svcBox);
+
+    // --- Action bar: adopt / create tunnel ---
+    auto *actionBar = new QHBoxLayout;
+    auto *btnAdopt = new QPushButton(tr("+ Adopt…"));
+    auto *btnCreate = new QPushButton(tr("+ New tunnel…"));
+    connect(btnAdopt, &QPushButton::clicked, this, &MainWindow::openAdopt);
+    connect(btnCreate, &QPushButton::clicked, this, &MainWindow::openCreate);
+    actionBar->addWidget(btnAdopt);
+    actionBar->addWidget(btnCreate);
+    actionBar->addStretch();
+    outer->addLayout(actionBar);
 
     auto runService = [this](bool (*action)(QString *)) {
         QString err;
@@ -268,6 +286,8 @@ void MainWindow::rebuildTunnels()
         connect(rowWidget, &TunnelRow::disconnectRequested, m_state,
                 &AppState::disconnectCluster);
         connect(rowWidget, &TunnelRow::copyIpRequested, this, &MainWindow::onCopyIp);
+        connect(rowWidget, &TunnelRow::menuRequested, this,
+                [this](const QString &c) { showClusterMenu(c, true); });
         m_tunnelsLayout->addWidget(rowWidget);
     }
 }
@@ -293,6 +313,14 @@ void MainWindow::rebuildClusters()
         connect(btn, &QPushButton::clicked, m_state,
                 [this, cluster]() { m_state->connectCluster(cluster); });
         h->addWidget(btn);
+
+        auto *menuBtn = new QPushButton(tr("⋯"));
+        menuBtn->setFixedSize(28, 24);
+        menuBtn->setToolTip(tr("More actions"));
+        connect(menuBtn, &QPushButton::clicked, this,
+                [this, cluster]() { showClusterMenu(cluster, false); });
+        h->addWidget(menuBtn);
+
         m_clustersLayout->addWidget(row);
     }
 }
@@ -301,6 +329,62 @@ void MainWindow::onCopyIp(const QString &ip)
 {
     QApplication::clipboard()->setText(ip);
     statusBar()->showMessage(tr("Copied %1").arg(ip), 1500);
+}
+
+void MainWindow::showClusterMenu(const QString &cluster, bool active)
+{
+    QMenu menu(this);
+
+    QAction *nodes = menu.addAction(tr("Nodes…"));
+    nodes->setEnabled(active); // needs a connected tunnel to reach the control plane
+    connect(nodes, &QAction::triggered, this, [this, cluster]() { openNodes(cluster); });
+
+    if (m_state->isClusterAdmin(cluster)) {
+        QAction *invite = menu.addAction(tr("Invite…"));
+        connect(invite, &QAction::triggered, this, [this, cluster]() { openInvite(cluster); });
+    }
+
+    menu.addSeparator();
+    QAction *remove = menu.addAction(tr("Remove…"));
+    connect(remove, &QAction::triggered, this, [this, cluster]() { removeCluster(cluster); });
+
+    menu.exec(QCursor::pos());
+}
+
+void MainWindow::openAdopt()
+{
+    AdoptDialog dlg(m_state, this);
+    dlg.exec();
+}
+
+void MainWindow::openCreate()
+{
+    CreateTunnelDialog dlg(m_state, this);
+    dlg.exec();
+}
+
+void MainWindow::openInvite(const QString &cluster)
+{
+    InviteDialog dlg(m_state, cluster, this);
+    dlg.exec();
+}
+
+void MainWindow::openNodes(const QString &cluster)
+{
+    NodesDialog dlg(m_state, cluster, this);
+    dlg.exec();
+}
+
+void MainWindow::removeCluster(const QString &cluster)
+{
+    if (QMessageBox::question(
+            this, tr("Remove tunnel"),
+            tr("Remove '%1'? This disconnects it and deletes its local config.\n"
+               "(The node stays registered in the cluster unless revoked by an admin.)")
+                .arg(cluster))
+        != QMessageBox::Yes)
+        return;
+    m_state->removeTunnel(cluster);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
