@@ -18,6 +18,7 @@ qt_standard_project_setup()
 set(SOURCES
     src/main.cpp
     src/App.cpp
+    src/cli/CliRunner.cpp
     src/ipc/Protocol.cpp
     src/ipc/DaemonClient.cpp
     src/model/AppState.cpp
@@ -29,6 +30,10 @@ set(SOURCES
     src/ui/TunnelRow.cpp
     src/ui/MainWindow.cpp
     src/ui/TrayIcon.cpp
+    src/ui/AdoptDialog.cpp
+    src/ui/InviteDialog.cpp
+    src/ui/NodesDialog.cpp
+    src/ui/CreateTunnelDialog.cpp
 )
 
 set(HEADERS

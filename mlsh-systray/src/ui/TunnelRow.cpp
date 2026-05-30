@@ -111,12 +111,21 @@ TunnelRow::TunnelRow(const mlsh::TunnelStatus &tunnel, bool busy, QWidget *paren
 
     row->addLayout(col, 1);
 
+    const QString cluster = tunnel.cluster;
+
+    // "⋯" menu button (invite / nodes / remove — built by MainWindow).
+    auto *menuBtn = new QPushButton(tr("⋯"));
+    menuBtn->setToolTip(tr("More actions"));
+    menuBtn->setFixedSize(28, 24);
+    connect(menuBtn, &QPushButton::clicked, this,
+            [this, cluster]() { emit menuRequested(cluster); });
+    row->addWidget(menuBtn, 0, Qt::AlignTop);
+
     // Disconnect button.
     auto *btn = new QPushButton(busy ? tr("…") : tr("✕"));
     btn->setToolTip(tr("Disconnect"));
     btn->setFixedSize(28, 24);
     btn->setEnabled(!busy);
-    const QString cluster = tunnel.cluster;
     connect(btn, &QPushButton::clicked, this,
             [this, cluster]() { emit disconnectRequested(cluster); });
     row->addWidget(btn, 0, Qt::AlignTop);

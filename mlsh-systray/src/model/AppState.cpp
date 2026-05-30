@@ -239,3 +239,125 @@ void AppState::onClientFailed(const QString &err)
         h(false, mlsh::DaemonResponse{}, err);
     pump();
 }
+
+// --- Tunnel lifecycle / admin -----------------------------------------------
+
+bool AppState::isClusterAdmin(const QString &cluster) const
+{
+    return ClusterDiscovery::isClusterAdmin(cluster);
+}
+
+void AppState::runCli(const QStringList &args, CliCb cb, const QByteArray &stdinData)
+{
+    auto *runner = new CliRunner(this);
+    connect(runner, &CliRunner::jsonFinished, this,
+            [cb](const CliRunner::Result &r) {
+                if (cb)
+                    cb(r);
+            });
+    runner->runJson(args, stdinData);
+}
+
+void AppState::adoptTunnel(const QString &url, const QString &name, CliCb cb)
+{
+    QStringList args{QStringLiteral("adopt"), url};
+    if (!name.isEmpty())
+        args << QStringLiteral("--name") << name;
+    runCli(args, [this, cb](const CliRunner::Result &r) {
+        emit message(r.ok ? tr("Tunnel adopted")
+                          : (r.error.isEmpty() ? tr("Adopt failed") : r.error));
+        refreshNow();
+        if (cb)
+            cb(r);
+    });
+}
+
+void AppState::createSelfHosted(const QString &cluster, const QString &signalHost,
+                                const QString &token, const QString &name, CliCb cb)
+{
+    QStringList args{QStringLiteral("setup"), cluster,
+                     QStringLiteral("--signal-host"), signalHost,
+                     QStringLiteral("--token"), token};
+    if (!name.isEmpty())
+        args << QStringLiteral("--name") << name;
+    // Empty stdin line skips the optional first-admin prompt (control-plane builds).
+    runCli(
+        args,
+        [this, cb, cluster](const CliRunner::Result &r) {
+            emit message(r.ok ? tr("Tunnel '%1' created").arg(cluster)
+                              : (r.error.isEmpty() ? tr("Setup failed") : r.error));
+            refreshNow();
+            if (cb)
+                cb(r);
+        },
+        QByteArrayLiteral("\n"));
+}
+
+void AppState::inviteCluster(const QString &cluster, const QString &role, int ttl, CliCb cb)
+{
+    const QStringList args{QStringLiteral("invite"), cluster,
+                           QStringLiteral("--role"), role,
+                           QStringLiteral("--ttl"), QString::number(ttl)};
+    runCli(args, [this, cb](const CliRunner::Result &r) {
+        if (!r.ok)
+            emit message(r.error.isEmpty() ? tr("Invite failed") : r.error);
+        if (cb)
+            cb(r);
+    });
+}
+
+void AppState::removeTunnel(const QString &cluster, CliCb cb)
+{
+    // Disconnect via the daemon (best effort), then delete the local config.
+    enqueue(mlsh::buildDisconnectRequest(cluster),
+            [this, cluster, cb](bool, const mlsh::DaemonResponse &, const QString &) {
+                QString err;
+                const bool ok = ClusterDiscovery::removeClusterConfig(cluster, err);
+                emit message(ok ? tr("Tunnel '%1' removed").arg(cluster) : err);
+                refreshNow();
+                if (cb) {
+                    CliRunner::Result r;
+                    r.ok = ok;
+                    r.error = err;
+                    cb(r);
+                }
+            });
+}
+
+void AppState::listNodes(const QString &cluster, CliCb cb)
+{
+    runCli({QStringLiteral("nodes"), cluster}, std::move(cb));
+}
+
+void AppState::renameNode(const QString &cluster, const QString &uuid, const QString &name, CliCb cb)
+{
+    runCli({QStringLiteral("rename"), cluster, uuid, name},
+           [this, cb](const CliRunner::Result &r) {
+               if (!r.ok)
+                   emit message(r.error.isEmpty() ? tr("Rename failed") : r.error);
+               if (cb)
+                   cb(r);
+           });
+}
+
+void AppState::promoteNode(const QString &cluster, const QString &uuid, const QString &role, CliCb cb)
+{
+    runCli({QStringLiteral("promote"), cluster, uuid, QStringLiteral("--role"), role},
+           [this, cb](const CliRunner::Result &r) {
+               if (!r.ok)
+                   emit message(r.error.isEmpty() ? tr("Role change failed") : r.error);
+               if (cb)
+                   cb(r);
+           });
+}
+
+void AppState::revokeNode(const QString &cluster, const QString &uuid, CliCb cb)
+{
+    runCli({QStringLiteral("revoke"), cluster, uuid},
+           [this, cb](const CliRunner::Result &r) {
+               if (!r.ok)
+                   emit message(r.error.isEmpty() ? tr("Revoke failed") : r.error);
+               if (cb)
+                   cb(r);
+           });
+}
