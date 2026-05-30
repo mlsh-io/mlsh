@@ -107,13 +107,19 @@ fn install_daemon() -> Result<()> {
         anyhow::bail!("launchctl load failed: {}", stderr);
     }
 
-    println!("{}", "mlshtund daemon installed!".green().bold());
-    println!("  Plist: {}", PLIST_PATH);
-    println!("  Logs:  {}/mlshtund.log", log_dir);
-    println!();
-    println!("The daemon runs at boot and reconnects every cluster you have");
-    println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
-    println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
+    let logs = format!("{}/mlshtund.log", log_dir);
+    crate::output::emit(
+        &serde_json::json!({ "installed": true, "plist": PLIST_PATH, "logs": &logs }),
+        || {
+            println!("{}", "mlshtund daemon installed!".green().bold());
+            println!("  Plist: {}", PLIST_PATH);
+            println!("  Logs:  {}", logs);
+            println!();
+            println!("The daemon runs at boot and reconnects every cluster you have");
+            println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
+            println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
+        },
+    );
 
     Ok(())
 }
@@ -137,7 +143,9 @@ fn uninstall_daemon() -> Result<()> {
 
     std::fs::remove_file(PLIST_PATH).context("Failed to remove plist file")?;
 
-    println!("{}", "Tunnel daemon uninstalled.".green().bold());
+    crate::output::emit(&serde_json::json!({ "uninstalled": true }), || {
+        println!("{}", "Tunnel daemon uninstalled.".green().bold());
+    });
     Ok(())
 }
 
@@ -145,7 +153,9 @@ fn uninstall_daemon() -> Result<()> {
 fn daemon_status() -> Result<()> {
     let plist_path = std::path::Path::new(PLIST_PATH);
     if !plist_path.exists() {
-        println!("{}", "Daemon not installed.".yellow());
+        crate::output::emit(&serde_json::json!({ "installed": false }), || {
+            println!("{}", "Daemon not installed.".yellow());
+        });
         return Ok(());
     }
 
@@ -156,25 +166,50 @@ fn daemon_status() -> Result<()> {
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        println!("{}", "Daemon installed and registered.".green().bold());
-        // Parse PID from launchctl output
+        // Parse PID/status from launchctl output.
+        let mut pid: Option<String> = None;
+        let mut status: Option<String> = None;
         for line in stdout.lines() {
             if line.contains("PID") || line.starts_with('{') {
                 continue;
             }
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 3 {
-                let pid = parts[0];
-                let status = parts[1];
-                println!("  PID:    {}", if pid == "-" { "not running" } else { pid });
-                println!("  Status: {}", status);
+                pid = Some(if parts[0] == "-" {
+                    "not running".to_string()
+                } else {
+                    parts[0].to_string()
+                });
+                status = Some(parts[1].to_string());
             }
         }
+        crate::output::emit(
+            &serde_json::json!({
+                "installed": true,
+                "loaded": true,
+                "pid": &pid,
+                "status": &status,
+            }),
+            || {
+                println!("{}", "Daemon installed and registered.".green().bold());
+                if let Some(ref p) = pid {
+                    println!("  PID:    {}", p);
+                }
+                if let Some(ref s) = status {
+                    println!("  Status: {}", s);
+                }
+            },
+        );
     } else {
-        println!("{}", "Daemon installed but not loaded.".yellow());
-        println!(
-            "  Load with: {}",
-            format!("sudo launchctl load {}", PLIST_PATH).bold()
+        crate::output::emit(
+            &serde_json::json!({ "installed": true, "loaded": false }),
+            || {
+                println!("{}", "Daemon installed but not loaded.".yellow());
+                println!(
+                    "  Load with: {}",
+                    format!("sudo launchctl load {}", PLIST_PATH).bold()
+                );
+            },
         );
     }
 
@@ -235,13 +270,18 @@ WantedBy=multi-user.target
         eprintln!("Warning: systemctl enable: {}", stderr);
     }
 
-    println!("{}", "mlshtund daemon installed!".green().bold());
-    println!("  Unit: {}", SERVICE_PATH);
-    println!();
-    println!("The daemon runs at boot and reconnects every cluster you have");
-    println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
-    println!("To check: {}", "systemctl status mlshtund".bold());
-    println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
+    crate::output::emit(
+        &serde_json::json!({ "installed": true, "unit": SERVICE_PATH }),
+        || {
+            println!("{}", "mlshtund daemon installed!".green().bold());
+            println!("  Unit: {}", SERVICE_PATH);
+            println!();
+            println!("The daemon runs at boot and reconnects every cluster you have");
+            println!("connected at least once. Use 'mlsh connect <cluster>' to add one.");
+            println!("To check: {}", "systemctl status mlshtund".bold());
+            println!("To uninstall: {}", "sudo mlsh tunnel uninstall".bold());
+        },
+    );
 
     Ok(())
 }
@@ -263,7 +303,9 @@ fn uninstall_daemon() -> Result<()> {
         .args(["daemon-reload"])
         .output();
 
-    println!("{}", "mlshtund daemon uninstalled.".green().bold());
+    crate::output::emit(&serde_json::json!({ "uninstalled": true }), || {
+        println!("{}", "mlshtund daemon uninstalled.".green().bold());
+    });
     Ok(())
 }
 
@@ -271,7 +313,9 @@ fn uninstall_daemon() -> Result<()> {
 fn daemon_status() -> Result<()> {
     let service_path = std::path::Path::new(SERVICE_PATH);
     if !service_path.exists() {
-        println!("{}", "Daemon not installed.".yellow());
+        crate::output::emit(&serde_json::json!({ "installed": false }), || {
+            println!("{}", "Daemon not installed.".yellow());
+        });
         return Ok(());
     }
 
@@ -280,8 +324,11 @@ fn daemon_status() -> Result<()> {
         .output()
         .context("Failed to run systemctl status")?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    println!("{}", stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    crate::output::emit(
+        &serde_json::json!({ "installed": true, "systemctl": &stdout }),
+        || println!("{}", stdout),
+    );
 
     Ok(())
 }
@@ -372,21 +419,30 @@ fn install_daemon() -> Result<()> {
             .context("Service installed but failed to start")?;
     }
 
-    println!("{}", "mlshtund service installed!".green().bold());
-    println!("  Service: {} ({})", SERVICE_NAME, SERVICE_DISPLAY_NAME);
-    println!(
-        "  Logs:    {}",
-        crate::tund::service_windows::log_dir()
-            .join("mlshtund.log")
-            .display()
-    );
-    println!();
-    println!("The service runs at boot (LocalSystem) and reconnects every cluster you");
-    println!("have connected at least once. Use 'mlsh connect <cluster>' to add one.");
-    println!("To check:     {}", "mlsh tunnel status".bold());
-    println!(
-        "To uninstall: {}",
-        "mlsh tunnel uninstall (elevated)".bold()
+    let logs = crate::tund::service_windows::log_dir()
+        .join("mlshtund.log")
+        .display()
+        .to_string();
+    crate::output::emit(
+        &serde_json::json!({
+            "installed": true,
+            "service": SERVICE_NAME,
+            "display_name": SERVICE_DISPLAY_NAME,
+            "logs": &logs,
+        }),
+        || {
+            println!("{}", "mlshtund service installed!".green().bold());
+            println!("  Service: {} ({})", SERVICE_NAME, SERVICE_DISPLAY_NAME);
+            println!("  Logs:    {}", logs);
+            println!();
+            println!("The service runs at boot (LocalSystem) and reconnects every cluster you");
+            println!("have connected at least once. Use 'mlsh connect <cluster>' to add one.");
+            println!("To check:     {}", "mlsh tunnel status".bold());
+            println!(
+                "To uninstall: {}",
+                "mlsh tunnel uninstall (elevated)".bold()
+            );
+        },
     );
 
     Ok(())
@@ -465,7 +521,9 @@ fn uninstall_daemon() -> Result<()> {
         .delete()
         .context("Failed to delete mlshtund service")?;
 
-    println!("{}", "mlshtund service uninstalled.".green().bold());
+    crate::output::emit(&serde_json::json!({ "uninstalled": true }), || {
+        println!("{}", "mlshtund service uninstalled.".green().bold());
+    });
     Ok(())
 }
 
@@ -482,11 +540,13 @@ fn daemon_status() -> Result<()> {
     let service = match manager.open_service(SERVICE_NAME, ServiceAccess::QUERY_STATUS) {
         Ok(s) => s,
         Err(_) => {
-            println!("{}", "Service not installed.".yellow());
-            println!(
-                "  Install with (elevated): {}",
-                "mlsh tunnel install".bold()
-            );
+            crate::output::emit(&serde_json::json!({ "installed": false }), || {
+                println!("{}", "Service not installed.".yellow());
+                println!(
+                    "  Install with (elevated): {}",
+                    "mlsh tunnel install".bold()
+                );
+            });
             return Ok(());
         }
     };
@@ -495,13 +555,18 @@ fn daemon_status() -> Result<()> {
         .query_status()
         .context("Failed to query service status")?;
 
-    println!("{}", "mlshtund service installed.".green().bold());
-    println!("  State: {:?}", status.current_state);
-    println!(
-        "  Logs:  {}",
-        crate::tund::service_windows::log_dir()
-            .join("mlshtund.log")
-            .display()
+    let logs = crate::tund::service_windows::log_dir()
+        .join("mlshtund.log")
+        .display()
+        .to_string();
+    let state = format!("{:?}", status.current_state);
+    crate::output::emit(
+        &serde_json::json!({ "installed": true, "state": &state, "logs": &logs }),
+        || {
+            println!("{}", "mlshtund service installed.".green().bold());
+            println!("  State: {}", state);
+            println!("  Logs:  {}", logs);
+        },
     );
     Ok(())
 }

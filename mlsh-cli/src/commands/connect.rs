@@ -6,6 +6,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use crate::output;
 use crate::tund::control::client::DaemonClient;
 use crate::tund::control::protocol::{DaemonResponse, TunnelState};
 
@@ -40,18 +41,16 @@ pub async fn handle_connect(name: &str, foreground: bool) -> Result<()> {
         .connect_cluster(&cluster_name, &config_toml, &cert_pem, &key_pem)
         .await?;
 
-    match resp {
-        DaemonResponse::Ok { message } => {
-            let msg = message.unwrap_or_else(|| "Connected".into());
-            println!("{}", msg.green().bold());
-        }
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code);
-        }
-        _ => {
-            anyhow::bail!("Unexpected daemon response");
-        }
-    }
+    let msg = match resp {
+        DaemonResponse::Ok { message } => message.unwrap_or_else(|| "Connected".into()),
+        DaemonResponse::Error { code, message } => anyhow::bail!("{} ({})", message, code),
+        _ => anyhow::bail!("Unexpected daemon response"),
+    };
+
+    output::emit(
+        &serde_json::json!({ "cluster": &cluster_name, "message": &msg }),
+        || println!("{}", msg.green().bold()),
+    );
 
     Ok(())
 }
@@ -62,18 +61,16 @@ pub async fn handle_disconnect(name: &str) -> Result<()> {
     let mut client = DaemonClient::connect_default().await?;
     let resp = client.disconnect_cluster(&cluster_name).await?;
 
-    match resp {
-        DaemonResponse::Ok { message } => {
-            let msg = message.unwrap_or_else(|| "Disconnected".into());
-            println!("{}", msg.green().bold());
-        }
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code);
-        }
-        _ => {
-            anyhow::bail!("Unexpected daemon response");
-        }
-    }
+    let msg = match resp {
+        DaemonResponse::Ok { message } => message.unwrap_or_else(|| "Disconnected".into()),
+        DaemonResponse::Error { code, message } => anyhow::bail!("{} ({})", message, code),
+        _ => anyhow::bail!("Unexpected daemon response"),
+    };
+
+    output::emit(
+        &serde_json::json!({ "cluster": &cluster_name, "message": &msg }),
+        || println!("{}", msg.green().bold()),
+    );
 
     Ok(())
 }
@@ -82,52 +79,50 @@ pub async fn handle_status() -> Result<()> {
     let mut client = DaemonClient::connect_default().await?;
     let resp = client.status().await?;
 
-    match resp {
-        DaemonResponse::Status { tunnels } => {
-            if tunnels.is_empty() {
-                println!("{}", "No active tunnels.".dimmed());
-                return Ok(());
-            }
+    let tunnels = match resp {
+        DaemonResponse::Status { tunnels } => tunnels,
+        DaemonResponse::Error { code, message } => anyhow::bail!("{} ({})", message, code),
+        _ => anyhow::bail!("Unexpected daemon response"),
+    };
+
+    output::emit(&serde_json::json!({ "tunnels": &tunnels }), || {
+        if tunnels.is_empty() {
+            println!("{}", "No active tunnels.".dimmed());
+            return;
+        }
+
+        println!(
+            "{:<12} {:<14} {:<10} {:<16} {:<10} TX/RX",
+            "CLUSTER", "STATE", "TRANSPORT", "OVERLAY IP", "UPTIME"
+        );
+
+        for t in &tunnels {
+            let state_str = match t.state {
+                TunnelState::Connected => t.state.to_string().green().to_string(),
+                TunnelState::Connecting | TunnelState::Reconnecting => {
+                    t.state.to_string().yellow().to_string()
+                }
+                TunnelState::Disconnected => t.state.to_string().red().to_string(),
+            };
+
+            let transport = t.transport.as_deref().unwrap_or("-");
+            let ip = t.overlay_ip.as_deref().unwrap_or("-");
+            let uptime = t
+                .uptime_secs
+                .map(format_uptime)
+                .unwrap_or_else(|| "-".into());
+            let traffic = format_bytes(t.bytes_tx, t.bytes_rx);
 
             println!(
-                "{:<12} {:<14} {:<10} {:<16} {:<10} TX/RX",
-                "CLUSTER", "STATE", "TRANSPORT", "OVERLAY IP", "UPTIME"
+                "{:<12} {:<14} {:<10} {:<16} {:<10} {}",
+                t.cluster, state_str, transport, ip, uptime, traffic
             );
 
-            for t in &tunnels {
-                let state_str = match t.state {
-                    TunnelState::Connected => t.state.to_string().green().to_string(),
-                    TunnelState::Connecting | TunnelState::Reconnecting => {
-                        t.state.to_string().yellow().to_string()
-                    }
-                    TunnelState::Disconnected => t.state.to_string().red().to_string(),
-                };
-
-                let transport = t.transport.as_deref().unwrap_or("-");
-                let ip = t.overlay_ip.as_deref().unwrap_or("-");
-                let uptime = t
-                    .uptime_secs
-                    .map(format_uptime)
-                    .unwrap_or_else(|| "-".into());
-                let traffic = format_bytes(t.bytes_tx, t.bytes_rx);
-
-                println!(
-                    "{:<12} {:<14} {:<10} {:<16} {:<10} {}",
-                    t.cluster, state_str, transport, ip, uptime, traffic
-                );
-
-                if let Some(ref err) = t.last_error {
-                    println!("  {}", format!("Error: {}", err).red());
-                }
+            if let Some(ref err) = t.last_error {
+                println!("  {}", format!("Error: {}", err).red());
             }
         }
-        DaemonResponse::Error { code, message } => {
-            anyhow::bail!("{} ({})", message, code);
-        }
-        _ => {
-            anyhow::bail!("Unexpected daemon response");
-        }
-    }
+    });
 
     Ok(())
 }
@@ -165,7 +160,10 @@ async fn handle_connect_foreground(cluster_name: &str) -> Result<()> {
     let base_dir = crate::config::config_dir()?;
     let config = load_cluster_config(cluster_name, &base_dir)?;
 
-    println!(
+    // Foreground mode is a long-running, interactive stream (runs until
+    // Ctrl+C), so lifecycle lines go through `step!` (stderr in JSON mode)
+    // and only the terminal shutdown is emitted as a JSON result.
+    crate::step!(
         "{}",
         format!(
             "Connecting to cluster \"{}\" (foreground mode)...",
@@ -174,19 +172,19 @@ async fn handle_connect_foreground(cluster_name: &str) -> Result<()> {
         .cyan()
         .bold()
     );
-    println!("  Cluster:    {} ({})", config.name, config.cluster_id);
-    println!(
+    crate::step!("  Cluster:    {} ({})", config.name, config.cluster_id);
+    crate::step!(
         "  Overlay IP: {}/10",
         config.overlay_ip.as_deref().unwrap_or("pending")
     );
-    println!("  Signal:     {}", config.signal_endpoint.dimmed());
-    println!("  Node:       {}", config.display_name);
+    crate::step!("  Signal:     {}", config.signal_endpoint.dimmed());
+    crate::step!("  Node:       {}", config.display_name);
 
     let cluster_name_for_dns = config.name.clone();
     let mut tunnel = ManagedTunnel::start(config)?;
 
     // Wait for Ctrl+C
-    println!(
+    crate::step!(
         "{}",
         "Tunnel starting... Press Ctrl+C to disconnect."
             .green()
@@ -195,11 +193,15 @@ async fn handle_connect_foreground(cluster_name: &str) -> Result<()> {
 
     tokio::signal::ctrl_c().await.ok();
 
-    println!();
-    println!("{}", "Shutting down...".yellow());
+    crate::step!("");
+    crate::step!("{}", "Shutting down...".yellow());
     tunnel.stop().await;
     crate::tund::net::dns::remove_resolver(&cluster_name_for_dns);
-    println!("{}", "Disconnected.".yellow());
+
+    output::emit(
+        &serde_json::json!({ "event": "disconnected", "cluster": &cluster_name_for_dns }),
+        || println!("{}", "Disconnected.".yellow()),
+    );
 
     Ok(())
 }

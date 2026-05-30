@@ -7,6 +7,11 @@ use mlsh_cli::commands;
 #[command(about = "Create and manage your mlsh mesh network", long_about = None)]
 #[command(version = env!("GIT_VERSION"))]
 struct Cli {
+    /// Emit machine-readable JSON instead of human text. Works on every
+    /// command and can be placed before or after the subcommand.
+    #[arg(long, global = true)]
+    json: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -223,7 +228,14 @@ fn main() {
     let code = match rt.block_on(run_cli()) {
         Ok(()) => 0,
         Err(e) => {
-            eprintln!("Error: {e:#}");
+            if mlsh_cli::output::is_json() {
+                // Errors as JSON go to stdout — one consistent channel for
+                // the consumer. clap's own parse errors exit before init()
+                // and are NOT JSON (documented limitation).
+                println!("{}", mlsh_cli::output::error_doc(&format!("{e:#}")));
+            } else {
+                eprintln!("Error: {e:#}");
+            }
             1
         }
     };
@@ -298,6 +310,7 @@ fn run_tund() {
 
 async fn run_cli() -> Result<()> {
     let cli = Cli::parse();
+    mlsh_cli::output::init(cli.json);
 
     match cli.command {
         Commands::Setup {

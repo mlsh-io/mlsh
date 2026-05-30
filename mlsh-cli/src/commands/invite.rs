@@ -3,6 +3,7 @@
 use anyhow::{Context, Result};
 use colored::Colorize;
 
+use crate::output;
 use crate::tund::tunnel::load_cluster_config;
 
 pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<()> {
@@ -35,14 +36,24 @@ pub async fn handle_invite(cluster_name: &str, ttl: u64, role: &str) -> Result<(
 
     let url = format!("mlsh://{}/adopt/{}", config.signal_endpoint, token);
 
-    println!("{}", "Invite created!".green().bold());
-    println!();
-    println!("  Cluster: {}", config.name);
-    println!("  Role:    {}", role);
-    println!("  Expires: {}s from now", ttl);
-    println!();
-    println!("On the new machine, run:");
-    println!("  {} {}", "mlsh adopt".bold(), url);
+    output::emit(
+        &serde_json::json!({
+            "url": &url,
+            "cluster": &config.name,
+            "role": role,
+            "ttl": ttl,
+        }),
+        || {
+            println!("{}", "Invite created!".green().bold());
+            println!();
+            println!("  Cluster: {}", config.name);
+            println!("  Role:    {}", role);
+            println!("  Expires: {}s from now", ttl);
+            println!();
+            println!("On the new machine, run:");
+            println!("  {} {}", "mlsh adopt".bold(), url);
+        },
+    );
 
     Ok(())
 }

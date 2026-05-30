@@ -7,6 +7,7 @@
 use anyhow::Result;
 use colored::Colorize;
 
+use crate::output;
 use crate::tund::control::{client::DaemonClient, protocol::DaemonResponse};
 
 pub async fn handle_expose(
@@ -16,7 +17,7 @@ pub async fn handle_expose(
     email: Option<&str>,
     acme_staging: bool,
 ) -> Result<()> {
-    println!(
+    crate::step!(
         "Exposing {} as {} in cluster {}...",
         target.bold(),
         domain.bold(),
@@ -34,18 +35,27 @@ pub async fn handle_expose(
             public_mode,
             public_ip,
         } => {
-            let ip_line = public_ip
-                .as_deref()
-                .map(|ip| format!(" (via {})", ip))
-                .unwrap_or_default();
-            println!(
-                "{}",
-                format!(
-                    "Exposed: https://{}  [mode: {}]{}",
-                    domain, public_mode, ip_line
-                )
-                .green()
-                .bold()
+            output::emit(
+                &serde_json::json!({
+                    "domain": &domain,
+                    "public_mode": &public_mode,
+                    "public_ip": &public_ip,
+                }),
+                || {
+                    let ip_line = public_ip
+                        .as_deref()
+                        .map(|ip| format!(" (via {})", ip))
+                        .unwrap_or_default();
+                    println!(
+                        "{}",
+                        format!(
+                            "Exposed: https://{}  [mode: {}]{}",
+                            domain, public_mode, ip_line
+                        )
+                        .green()
+                        .bold()
+                    );
+                },
             );
             Ok(())
         }
@@ -57,7 +67,7 @@ pub async fn handle_expose(
 }
 
 pub async fn handle_unexpose(cluster: &str, domain: &str) -> Result<()> {
-    println!(
+    crate::step!(
         "Removing {} from cluster {}...",
         domain.bold(),
         cluster.bold()
@@ -68,7 +78,9 @@ pub async fn handle_unexpose(cluster: &str, domain: &str) -> Result<()> {
 
     match resp {
         DaemonResponse::Ok { .. } => {
-            println!("{}", format!("Unexposed {}.", domain).green().bold());
+            output::emit(&serde_json::json!({ "domain": domain }), || {
+                println!("{}", format!("Unexposed {}.", domain).green().bold());
+            });
             Ok(())
         }
         DaemonResponse::Error { code, message } => {
@@ -90,31 +102,33 @@ pub async fn handle_list_exposed(cluster: &str) -> Result<()> {
         _ => anyhow::bail!("Unexpected daemon response"),
     };
 
-    if routes.is_empty() {
-        println!("No services exposed in cluster {}.", cluster.bold());
-        return Ok(());
-    }
-    println!(
-        "{:<32}  {:<10}  {:<28}  {:<16}",
-        "DOMAIN".bold(),
-        "MODE".bold(),
-        "TARGET".bold(),
-        "NODE".bold()
-    );
-    for r in &routes {
-        let mode_colored = if r.public_mode == "direct" {
-            r.public_mode.green()
-        } else {
-            r.public_mode.yellow()
-        };
+    output::emit(&serde_json::json!({ "routes": &routes }), || {
+        if routes.is_empty() {
+            println!("No services exposed in cluster {}.", cluster.bold());
+            return;
+        }
         println!(
             "{:<32}  {:<10}  {:<28}  {:<16}",
-            r.domain,
-            mode_colored,
-            r.target,
-            short_id(&r.node_id)
+            "DOMAIN".bold(),
+            "MODE".bold(),
+            "TARGET".bold(),
+            "NODE".bold()
         );
-    }
+        for r in &routes {
+            let mode_colored = if r.public_mode == "direct" {
+                r.public_mode.green()
+            } else {
+                r.public_mode.yellow()
+            };
+            println!(
+                "{:<32}  {:<10}  {:<28}  {:<16}",
+                r.domain,
+                mode_colored,
+                r.target,
+                short_id(&r.node_id)
+            );
+        }
+    });
     Ok(())
 }
 

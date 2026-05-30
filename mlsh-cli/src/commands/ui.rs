@@ -48,17 +48,29 @@ pub async fn handle_ui(cluster_name: &str, open_browser: bool) -> Result<()> {
     let local_addr = listener.local_addr().context("query local addr")?;
     let url = format!("http://{local_addr}");
 
-    println!(
-        "{} {} {}",
-        "mlsh ui:".bold(),
-        url.cyan(),
-        format!("→ {}:{}", config.name, CONTROL_PORT).dimmed()
+    // The proxy then blocks forever in `axum::serve`, so we can't use the
+    // usual terminal `emit`. Instead emit a single one-shot result up front
+    // (JSON mode) so a consumer can grab the proxy URL, then keep serving.
+    crate::output::emit(
+        &serde_json::json!({
+            "url": &url,
+            "cluster": &config.name,
+            "control_port": CONTROL_PORT,
+        }),
+        || {
+            println!(
+                "{} {} {}",
+                "mlsh ui:".bold(),
+                url.cyan(),
+                format!("→ {}:{}", config.name, CONTROL_PORT).dimmed()
+            );
+        },
     );
 
     if open_browser {
         open_in_browser(&url);
     } else {
-        println!("Open this URL in your browser. Ctrl+C to stop.");
+        crate::step!("Open this URL in your browser. Ctrl+C to stop.");
     }
 
     axum::serve(listener, app)
@@ -237,7 +249,7 @@ fn open_in_browser(url: &str) {
         Ok(std::process::ExitStatus::default())
     };
     if result.is_err() {
-        println!(
+        crate::step!(
             "{}",
             "(could not open browser automatically — copy the URL above)".dimmed()
         );
