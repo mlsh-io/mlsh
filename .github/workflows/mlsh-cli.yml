@@ -348,3 +348,9 @@ jobs:
         shell: cmd
         run: |
           iscc /DAppVersion=v0.0.0-ci installer\windows\mlsh.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlsh-windows-installer
+          path: installer/windows/output/*.exe
