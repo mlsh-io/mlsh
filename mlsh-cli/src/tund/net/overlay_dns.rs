@@ -159,22 +159,20 @@ async fn resolve(
 
     let peers = peer_table.known_peers().await;
 
-    // `<zone>` and `_control._mlsh.<zone>` both point to the control node.
-    // The FQDN form is required on Linux (systemd-resolved drops single-label
-    // unicast queries). Loopback when self: macOS' utun doesn't loop packets
-    // back. Bootstrap fallback to `my_ip` avoids NXDOMAIN before the first
-    // `ListNodes` seed.
+    // `<zone>` and `_control._mlsh.<zone>` both point to the control node
+    // (FQDN form required on Linux). Loopback when self: macOS' utun doesn't
+    // loop packets back. Unknown control (map not seeded) → NXDOMAIN, never
+    // `my_ip` (wrong host on a non-control node).
     let control_fqdn = format!("_control._mlsh.{}", zone);
     if name == zone || name == control_fqdn {
-        if let Some(uuid) = display_names.control_uuid().await {
-            if uuid == my_node_id {
-                return Some(Ipv4Addr::new(127, 0, 0, 1));
-            }
-            if let Some(p) = peers.iter().find(|p| p.node_id == uuid) {
-                return p.overlay_ip.parse().ok();
-            }
+        let uuid = display_names.control_uuid().await?;
+        if uuid == my_node_id {
+            return Some(Ipv4Addr::new(127, 0, 0, 1));
         }
-        return Some(my_ip);
+        return peers
+            .iter()
+            .find(|p| p.node_id == uuid)
+            .and_then(|p| p.overlay_ip.parse().ok());
     }
 
     let suffix = format!(".{}", zone);
@@ -366,19 +364,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resolve_bare_zone_falls_back_to_self_during_bootstrap() {
-        // Before the daemon's mlsh-control session has seeded the
-        // display-name map, the control UUID is unknown. The resolver
-        // must still return *something* for the bare zone to avoid an
-        // NXDOMAIN retry loop, so we fall back to my_ip until the seed
-        // arrives.
+    async fn resolve_bare_zone_unknown_control_is_nxdomain() {
+        // Control UUID unknown (map not seeded) → NXDOMAIN, not `my_ip`.
         let config = DnsConfig {
             bind_addr: "127.0.0.1:0".parse().unwrap(),
             zone: "homelab".into(),
             ttl: 60,
         };
         let table = PeerTable::new();
-        let my_ip = Ipv4Addr::new(100, 64, 0, 1);
+        let my_ip = Ipv4Addr::new(100, 64, 0, 2);
 
         let ip = resolve(
             "homelab",
@@ -389,7 +383,7 @@ mod tests {
             &table,
         )
         .await;
-        assert_eq!(ip, Some(my_ip));
+        assert_eq!(ip, None);
     }
 
     #[tokio::test]
@@ -695,17 +689,14 @@ mod tests {
         let table = PeerTable::new();
         let my_ip = Ipv4Addr::new(100, 64, 0, 1);
 
+        // Seed self as control so the bare zone has an answer to encode.
+        let map = DisplayNameMap::new();
+        map.set_local_control_uuid("nas".into()).await;
+
         let query = make_a_query("homelab");
-        let resp = handle_query(
-            &query,
-            &config,
-            my_ip,
-            "nas",
-            &DisplayNameMap::new(),
-            &table,
-        )
-        .await
-        .unwrap();
+        let resp = handle_query(&query, &config, my_ip, "nas", &map, &table)
+            .await
+            .unwrap();
 
         // Check response: QR=1, ANCOUNT=1
         assert_eq!(resp[2] & 0x80, 0x80); // QR bit

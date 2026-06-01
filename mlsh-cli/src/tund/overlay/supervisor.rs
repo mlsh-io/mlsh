@@ -15,6 +15,17 @@ struct ActivePeer {
     handle: tokio::task::JoinHandle<()>,
     ip: Ipv4Addr,
     candidates: Vec<Candidate>,
+    /// Per-peer child token. Cancelling it drives the FSM's `Cancelled`
+    /// teardown (remove route) instead of `abort()`, which leaks the route.
+    cancel: tokio_util::sync::CancellationToken,
+}
+
+impl ActivePeer {
+    /// Cancel and await so the route is removed before the next `has_route`.
+    async fn shutdown(self) {
+        self.cancel.cancel();
+        let _ = self.handle.await;
+    }
 }
 
 fn candidates_equal(a: &[Candidate], b: &[Candidate]) -> bool {
@@ -73,12 +84,8 @@ pub async fn run_connection_manager(
 
         for node_id in removed {
             if let Some(active) = active_peers.remove(&node_id) {
-                tracing::info!("Peer {} left, aborting connection task", node_id);
-                active.handle.abort();
-                // Don't remove the route here — the quic_server may have
-                // inserted a newer direct route for this peer. Routes are
-                // cleaned up when the actual QUIC connection closes (in
-                // establish_peer_connection or quic_server::accept_loop).
+                tracing::info!("Peer {} left, tearing down connection task", node_id);
+                active.shutdown().await;
             }
         }
 
@@ -128,9 +135,10 @@ pub async fn run_connection_manager(
                 continue;
             }
 
-            // Spawn a task to establish connection to this peer
+            // Child token so tearing one peer down doesn't disturb the others.
+            let peer_cancel = ctx.cancel.child_token();
             let peer_info = peer.clone();
-            let cancel = ctx.cancel.clone();
+            let cancel = peer_cancel.clone();
             let ep = ctx.endpoint.clone();
             let table = ctx.peer_table.clone();
             let dev = ctx.device.clone();
@@ -165,6 +173,7 @@ pub async fn run_connection_manager(
                     handle,
                     ip: peer_ip,
                     candidates: peer.candidates.clone(),
+                    cancel: peer_cancel,
                 },
             );
         }
@@ -175,16 +184,13 @@ pub async fn run_connection_manager(
                 if result.is_err() { break; }
             }
             _ = signal_conn_rx.changed() => {
-                // Signal reconnected. Peer tasks captured the old signal_conn
-                // at spawn time; abort them so the next iteration respawns
-                // them with the fresh connection. Routes they installed are
-                // cleaned up as part of their Cancelled transition.
-                tracing::debug!("Signal connection changed, aborting peer tasks");
-                for (node_id, active) in active_peers.drain() {
-                    active.handle.abort();
-                    ctx.peer_table.remove_route(active.ip).await;
-                    ctx.fsm_registry.unregister(active.ip).await;
-                    tracing::debug!("Aborted peer task for {node_id}");
+                // Signal reconnected: tear down peer tasks (they hold the old
+                // signal_conn) so the next iteration respawns them with the new one.
+                tracing::debug!("Signal connection changed, tearing down peer tasks");
+                let draining: Vec<(String, ActivePeer)> = active_peers.drain().collect();
+                for (node_id, active) in draining {
+                    active.shutdown().await;
+                    tracing::debug!("Tore down peer task for {node_id}");
                 }
             }
             _ = ctx.cancel.cancelled() => { break; }
@@ -193,8 +199,8 @@ pub async fn run_connection_manager(
         }
     }
 
-    // Clean up all active peer tasks
+    // Drain remaining peer tasks (parent cancel already fired).
     for (_, active) in active_peers {
-        active.handle.abort();
+        active.shutdown().await;
     }
 }
