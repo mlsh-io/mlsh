@@ -315,34 +315,49 @@ async fn display_names_loop(
 ) {
     use mlsh_protocol::control::{ControlRequest, ControlResponse};
 
-    // --- Initial seed via ListNodes on the live connection ---
+    // The seed must succeed before serving the incremental loop. On failure,
+    // close the connection so `supervise()` reopens it and respawns the seed —
+    // we retry until reachable instead of running with an empty map.
     let req = ControlRequest::ListNodes;
     let mut buf = Vec::new();
     if let Err(e) = ciborium::into_writer(&req, &mut buf) {
-        tracing::warn!(error = %e, "display_names: failed to encode ListNodes; skipping seed");
-    } else {
-        match call_on(&conn, buf).await {
-            Ok(reply_bytes) => {
-                match ciborium::from_reader::<ControlResponse, _>(&reply_bytes[..]) {
-                    Ok(ControlResponse::Nodes { nodes }) => {
-                        let count = nodes.len();
-                        map.seed(&nodes).await;
-                        tracing::info!(count, "display_names: seeded from ListNodes");
-                    }
-                    Ok(ControlResponse::Error { code, message }) => {
-                        tracing::warn!(code, message, "display_names: ListNodes returned error");
-                    }
-                    Ok(other) => {
-                        tracing::warn!(?other, "display_names: unexpected ListNodes response");
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "display_names: failed to decode ListNodes reply");
-                    }
-                }
+        tracing::error!(error = %e, "display_names: failed to encode ListNodes");
+        return;
+    }
+    match call_on(&conn, buf).await {
+        Ok(reply_bytes) => match ciborium::from_reader::<ControlResponse, _>(&reply_bytes[..]) {
+            Ok(ControlResponse::Nodes { nodes }) => {
+                let count = nodes.len();
+                map.seed(&nodes).await;
+                tracing::info!(count, "display_names: seeded from ListNodes");
+            }
+            Ok(ControlResponse::Error { code, message }) => {
+                tracing::warn!(
+                    code,
+                    message,
+                    "display_names: ListNodes error, reconnecting"
+                );
+                conn.close(quinn::VarInt::from_u32(0), b"reseed");
+                return;
+            }
+            Ok(other) => {
+                tracing::warn!(
+                    ?other,
+                    "display_names: unexpected ListNodes response, reconnecting"
+                );
+                conn.close(quinn::VarInt::from_u32(0), b"reseed");
+                return;
             }
             Err(e) => {
-                tracing::warn!(error = %e, "display_names: ListNodes call failed");
+                tracing::warn!(error = %e, "display_names: decode ListNodes failed, reconnecting");
+                conn.close(quinn::VarInt::from_u32(0), b"reseed");
+                return;
             }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "display_names: ListNodes call failed, reconnecting");
+            conn.close(quinn::VarInt::from_u32(0), b"reseed");
+            return;
         }
     }
 
