@@ -80,13 +80,13 @@ rpm: cli ## Build .rpm package (current arch)
 .PHONY: cli
 cli: ## Build mlsh + mlshtund (current arch)
 	@echo "==> Building Rust binaries..."
-	cargo build --release -p mlsh-cli
+	cargo build --release -p mlsh-cli --features control-plane
 
 .PHONY: cli-universal
 cli-universal: ## Build mlsh + mlshtund universal (x86_64 + arm64)
 	@echo "==> Building Rust binaries (universal)..."
-	cargo build --release -p mlsh-cli --target aarch64-apple-darwin
-	cargo build --release -p mlsh-cli --target x86_64-apple-darwin
+	cargo build --release -p mlsh-cli --features control-plane --target aarch64-apple-darwin
+	cargo build --release -p mlsh-cli --features control-plane --target x86_64-apple-darwin
 
 # ---------------------------------------------------------------------------
 # Windows
@@ -95,7 +95,7 @@ cli-universal: ## Build mlsh + mlshtund universal (x86_64 + arm64)
 .PHONY: windows
 windows: ## Build mlsh.exe + mlshtund.exe (cross-compile via cargo-xwin)
 	@echo "==> Building Windows binaries ($(WIN_TARGET))..."
-	PATH="/opt/homebrew/opt/llvm/bin:$$PATH" cargo xwin build --release -p mlsh-cli --target $(WIN_TARGET)
+	PATH="/opt/homebrew/opt/llvm/bin:$$PATH" cargo xwin build --release -p mlsh-cli --features control-plane --target $(WIN_TARGET)
 	@rm -rf $(WIN_DIR)
 	@mkdir -p $(WIN_DIR)
 	@cp target/$(WIN_TARGET)/release/mlsh.exe $(WIN_DIR)/mlsh.exe
