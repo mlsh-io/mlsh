@@ -476,6 +476,28 @@ pub async fn allocate_ip(
         .map(u32::from)
         .collect();
 
+    // Sticky reuse: if this node already holds a valid, in-range IP that no
+    // other node has taken, keep it. Without this, every NodeAuth reassigns
+    // the lowest-free IP, so a wake/reconnect can drift a node (e.g. the
+    // control node) off its address.
+    let own: Option<(String,)> =
+        sqlx::query_as("SELECT overlay_ip FROM nodes WHERE cluster_id = ?1 AND node_id = ?2")
+            .bind(cluster_id)
+            .bind(node_id)
+            .fetch_optional(pool)
+            .await
+            .context("Failed to query own IP")?;
+    if let Some(ip) = own
+        .and_then(|(s,)| s.parse::<std::net::Ipv4Addr>().ok())
+        .filter(|ip| {
+            let v = u32::from(*ip);
+            (subnet.first..=subnet.last).contains(&v) && !used_ips.contains(&v)
+        })
+    {
+        tracing::debug!(cluster_id, node_id, %ip, "Reusing sticky overlay IP");
+        return Ok(ip);
+    }
+
     // Find the first available IP in the subnet
     let mut candidate = subnet.first;
     while candidate <= subnet.last {
@@ -1033,6 +1055,52 @@ mod tests {
         let ip2 = reg(&pool, "c1", "b", "fp-b", &s).await;
         assert_eq!(ip1, std::net::Ipv4Addr::new(10, 0, 10, 1));
         assert_eq!(ip2, std::net::Ipv4Addr::new(10, 0, 10, 2));
+    }
+
+    #[tokio::test]
+    async fn allocate_ip_is_sticky() {
+        let pool = test_pool().await;
+        let s = default_subnet();
+        // Control on .1, a peer on .2.
+        reg(&pool, "c1", "ctrl", "fp-c", &s).await;
+        reg(&pool, "c1", "peer", "fp-p", &s).await;
+
+        // Re-auth keeps each node's IP, regardless of how many times.
+        for _ in 0..3 {
+            let ip = allocate_ip(&pool, "c1", "ctrl", &s).await.unwrap();
+            assert_eq!(ip, std::net::Ipv4Addr::new(100, 64, 0, 1));
+        }
+
+        // Even after the peer's row is removed (its .2 freed), control keeps
+        // .1 — it is never reassigned to the now-lowest-free slot.
+        assert!(remove_node(&pool, "c1", "peer").await.unwrap());
+        let ip = allocate_ip(&pool, "c1", "ctrl", &s).await.unwrap();
+        assert_eq!(ip, std::net::Ipv4Addr::new(100, 64, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn allocate_ip_reassigns_when_stored_ip_out_of_range() {
+        let pool = test_pool().await;
+        let s = OverlaySubnet::parse("10.0.10.0/24").unwrap();
+        reg(&pool, "c1", "a", "fp-a", &s).await; // 10.0.10.1
+
+        // b carries a stale IP from a different (wider) subnet — out of range
+        // for the current subnet, so it can't be reused.
+        sqlx::query(
+            "INSERT INTO nodes (cluster_id, node_id, fingerprint, overlay_ip, role)
+             VALUES (?1, ?2, ?3, ?4, 'node')",
+        )
+        .bind("c1")
+        .bind("b")
+        .bind("fp-b")
+        .bind("100.64.0.5")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Out-of-range stored IP → fallback scan gives b a fresh in-range IP.
+        let ip = allocate_ip(&pool, "c1", "b", &s).await.unwrap();
+        assert_eq!(ip, std::net::Ipv4Addr::new(10, 0, 10, 2));
     }
 
     #[tokio::test]
