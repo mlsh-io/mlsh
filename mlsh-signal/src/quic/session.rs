@@ -244,11 +244,10 @@ async fn run_node_session(
             return Ok(());
         }
     };
+    // The overlay IP is assigned once at adoption and persisted; NodeAuth
+    // only reads it. The `nodes` row is the single source of truth.
+    let overlay_ip = node.overlay_ip;
     let node_id = node.node_id;
-
-    // Allocate a fresh overlay IP from the current subnet (no persistent leases)
-    let overlay_ip =
-        db::allocate_ip(&state.db, cluster_id, &node_id, &state.overlay_subnet).await?;
 
     // Build peer list (excluding self)
     let peers = state.sessions.get_peer_list(cluster_id, &node_id).await;
