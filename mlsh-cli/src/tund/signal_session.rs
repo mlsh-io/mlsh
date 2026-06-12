@@ -505,7 +505,7 @@ async fn run_session(
 /// Verify a peer's admission certificate before accepting it into the peer list.
 ///
 /// Returns `true` if the cert is valid, `false` if it should be rejected.
-/// Signal stripped admission-cert storage in ADR-030 (the field is empty
+/// Signal stripped admission-cert storage (the field is empty
 /// from the wire); when admission certs are reintroduced via the daemon
 /// path, this function does the verification.
 fn verify_admission(

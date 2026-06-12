@@ -10,7 +10,7 @@
 //! `migrate <node>` is convenience: demote locally and print the steps for
 //! the operator to copy state and run `mlsh control promote` on the target.
 //! End-to-end peer-to-peer migration (over the overlay) is a future
-//! enhancement (ADR-030 — out of scope for v1).
+//! enhancement.
 //!
 //! All three commands talk to mlshtund via its Unix socket.
 
@@ -76,7 +76,7 @@ pub async fn handle_promote(cluster_name: &str) -> Result<()> {
     let mut roles = read_roles(&cluster_file)?;
 
     if !roles.iter().any(|r| r == CONTROL_ROLE) {
-        // control implies admin (ADR-030 §2)
+        // control implies admin
         if !roles.iter().any(|r| r == "admin") {
             roles.push("admin".to_string());
         }

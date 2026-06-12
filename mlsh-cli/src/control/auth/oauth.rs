@@ -1,4 +1,4 @@
-//! Managed-mode auth via mlsh-cloud (ADR-032 §4).
+//! Managed-mode auth via mlsh-cloud.
 //!
 //! mlsh-control authenticates the operator against mlsh-cloud using the same
 //! OAuth device flow already used by `mlsh setup` (see `crate::cloud`):

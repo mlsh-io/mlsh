@@ -75,7 +75,7 @@ pub async fn find(pool: &SqlitePool, cluster_id: &str, node_uuid: &str) -> Resul
 }
 
 /// Look up an active node by its TLS certificate fingerprint. Used by the
-/// mTLS middleware to authenticate machine callers (ADR-035 Phase D).
+/// mTLS middleware to authenticate machine callers.
 pub async fn find_by_fingerprint(
     pool: &SqlitePool,
     cluster_id: &str,

@@ -3,12 +3,12 @@
 //! The server presents the node's self-signed identity cert (same one used
 //! for QUIC towards signal). It also requests — but does not require —
 //! a client certificate; identity is verified post-handshake by hashing the
-//! peer cert and looking the fingerprint up in the `nodes` table
-//! (ADR-023, ADR-035 Phase D). Human callers without a client cert fall
+//! peer cert and looking the fingerprint up in the `nodes` table.
+//! Human callers without a client cert fall
 //! through to the cookie-session middleware.
 //!
 //! When the listener serves both `control.<cluster>` (cluster-CA-signed)
-//! and `<cluster>.mlsh.io` (Let's Encrypt) per ADR-035 Phase C, the SNI
+//! and `<cluster>.mlsh.io` (Let's Encrypt), the SNI
 //! resolver replaces `with_single_cert` here.
 
 use std::sync::Arc;

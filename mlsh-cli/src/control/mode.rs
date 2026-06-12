@@ -1,4 +1,4 @@
-//! Cluster mode marker (ADR-032 §2).
+//! Cluster mode marker.
 //!
 //! `mlsh setup` writes `mode-init.json` next to the control DB to declare
 //! whether this cluster is `self-hosted` or `managed`. The control plane

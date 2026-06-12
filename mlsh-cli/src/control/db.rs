@@ -40,7 +40,7 @@ pub(crate) async fn migrate(pool: &SqlitePool) -> Result<()> {
 }
 
 async fn apply_v1(pool: &SqlitePool) -> Result<()> {
-    // Cluster-wide configuration (mode, etc.). See ADR-032 §2.
+    // Cluster-wide configuration (mode, etc.).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS config (
             key    TEXT PRIMARY KEY,
@@ -50,7 +50,7 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // Human users (ADR-032 §6). password_hash for self-hosted, cloud_user_id for managed.
+    // Human users. password_hash for self-hosted, cloud_user_id for managed.
     // The XOR CHECK enforces exactly one identity source per user in v1.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS users (
@@ -79,7 +79,7 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // TOTP secret stored AES-GCM-encrypted as a blob (ADR-032 §6).
+    // TOTP secret stored AES-GCM-encrypted as a blob.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS totp_credentials (
             user_id     TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -105,7 +105,7 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // License JWT cache (ADR-030 §10).
+    // License JWT cache.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS license (
             id          INTEGER PRIMARY KEY CHECK (id = 1),
@@ -135,7 +135,6 @@ async fn apply_v1(pool: &SqlitePool) -> Result<()> {
     .await?;
 
     // Bound the mTLS lookup-by-fingerprint to <100µs even on large clusters
-    // (ADR-035 Phase D auth path).
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_nodes_fingerprint
             ON nodes (cluster_id, fingerprint)",

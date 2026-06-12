@@ -1,5 +1,5 @@
 //! mTLS-authenticated REST client used by `mlsh nodes/rename/promote/revoke`
-//! to talk to the cluster's control plane (ADR-035 Phase E).
+//! to talk to the cluster's control plane.
 //!
 //! The client uses the node's own identity cert (`cert.pem` + `key.pem` from
 //! the cluster's identity dir) for mTLS. The server side (mlshtund running
@@ -8,7 +8,7 @@
 //!
 //! Server cert verification is disabled because the control plane presents a
 //! self-signed identity cert (CN = node UUID), not a chain-validated cert.
-//! Trust pinning will land alongside the cluster-CA work in ADR-035 Phase C
+//! Trust pinning will land alongside the cluster-CA work
 //! (SNI + cluster-CA cert for `control.<cluster>`).
 
 use anyhow::{Context, Result};
@@ -42,8 +42,8 @@ pub fn for_cluster(cluster_name: &str) -> Result<(reqwest::Client, String, Clust
 
     let http = reqwest::Client::builder()
         .identity(identity)
-        // The control plane serves a self-signed identity cert. Trust pinning
-        // lands in ADR-035 Phase C.
+        // The control plane serves a self-signed identity cert; pinning is
+        // not implemented yet.
         .danger_accept_invalid_certs(true)
         .build()
         .context("build reqwest client")?;

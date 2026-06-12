@@ -1,9 +1,9 @@
 //! CBOR-over-UNIX-socket listener for the mlsh-control plane.
 //!
 //! The control node terminates the bi-streams that signal relays for it
-//! on ALPN `mlsh-control`. Every admin call has moved to the REST API
-//! (ADR-035 Phase E); the operations dispatched here are now strictly
-//! bootstrap + cache infrastructure (ADR-035 Phase G):
+//! on ALPN `mlsh-control`. Every admin call has moved to the REST API;
+//! the operations dispatched here are strictly bootstrap + cache
+//! infrastructure:
 //!   - [`ControlRequest::AdoptConfirm`] — register a new node before it
 //!     has an overlay address.
 //!   - [`ControlRequest::Subscribe`] — push `ControlEvent`s to drive the
@@ -36,7 +36,7 @@ pub struct StreamState {
     /// UUID of the node that hosts this control plane — i.e. the node
     /// running this very mlshtund process. Used to flag the matching row
     /// in `ListNodes` responses so daemons resolving `control.<cluster>`
-    /// can find the right IP. ADR-030 §2 keeps this single-valued
+    /// can find the right IP. Kept single-valued
     /// (one control node per cluster in v1).
     pub control_node_uuid: String,
 }

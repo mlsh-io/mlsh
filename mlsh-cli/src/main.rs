@@ -166,7 +166,7 @@ enum Commands {
 
     /// Open the cluster's web UI in the default browser via a localhost
     /// proxy. Requires the tunnel to be up so `control.<cluster>` resolves
-    /// over the overlay (ADR-035 Phase F). Available only on control-plane
+    /// over the overlay. Available only on control-plane
     /// builds.
     #[cfg(feature = "control-plane")]
     Ui {
@@ -181,7 +181,7 @@ enum Commands {
     #[command(subcommand)]
     Tunnel(commands::daemon::DaemonCommands),
 
-    /// Manage the control-plane role on this node (ADR-030)
+    /// Manage the control-plane role on this node
     #[command(subcommand)]
     Control(ControlCommands),
 }

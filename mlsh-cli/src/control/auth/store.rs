@@ -139,7 +139,7 @@ impl AuthStore {
     }
 
     /// Look up a managed user by `cloud_user_id`, creating one on first sight.
-    /// First-ever user is auto-admin (ADR-032 §4): no other users exist yet, so
+    /// First-ever user is auto-admin : no other users exist yet, so
     /// the JWT-bearing operator is the cluster owner.
     pub async fn find_or_create_managed(&self, cloud_user_id: &str, email: &str) -> Result<User> {
         if let Some(u) = self.find_by_cloud_user_id(cloud_user_id).await? {

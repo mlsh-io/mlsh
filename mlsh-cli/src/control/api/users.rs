@@ -6,7 +6,7 @@
 //!     are provisioned from JWT)
 //!   - you can't delete yourself (would lock the cluster out)
 //!   - sensitive ops (PUT password, DELETE) require a TOTP step-up if the
-//!     caller has TOTP enrolled (ADR-029).
+//!     caller has TOTP enrolled.
 
 use axum::{
     extract::{Path, State},

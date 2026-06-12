@@ -2,11 +2,11 @@
 //!
 //! This protocol predates the REST API. Most CLI admin calls (`Rename`,
 //! `Promote`, `Revoke`) used to live here; they have moved to the REST
-//! surface documented in ADR-035 Phase E. What still travels over CBOR on
+//! surface. What still travels over CBOR on
 //! this channel is the **bootstrap and runtime-cache** glue — operations
 //! that happen on a connection to signal **before** the joining node has
 //! an overlay address (so HTTP+mTLS to `control.<cluster>:8443` is not
-//! reachable yet). See ADR-035 Phase G.
+//! reachable yet).
 //!
 //! Surface kept:
 //!   - [`ControlRequest::AdoptConfirm`] — bootstrap registration. The
@@ -49,8 +49,7 @@ pub enum ControlRequest {
         invite_token: String,
     },
     /// Internal: seed the daemon's display-name cache. Not exposed to the
-    /// CLI — admin listing happens over `GET /api/v1/nodes` (ADR-035 Phase
-    /// E).
+    /// CLI — admin listing happens over `GET /api/v1/nodes`.
     ListNodes,
     /// Open a long-lived event stream. The control server keeps the bi-stream
     /// alive and writes a sequence of `ControlEvent` records on it. The
@@ -87,7 +86,7 @@ pub struct ControlNodeInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen: Option<String>,
     /// `true` for the row corresponding to the cluster's control node — the
-    /// peer that hosts the REST admin surface (one per cluster, ADR-030 §2).
+    /// peer that hosts the REST admin surface (one per cluster).
     /// Used by the daemon's overlay DNS to resolve `control.<cluster>` to
     /// the right IP without baking the role into signal.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

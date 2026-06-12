@@ -18,7 +18,7 @@ pub use mode::{write as write_mode_init, Mode};
 use crate::tund::cluster_config::ClusterConfig;
 
 /// Boot the control plane in-process. Spawned as a tokio task by mlshtund
-/// for clusters whose config carries the `control` role (ADR-035 Phase 0).
+/// for clusters whose config carries the `control` role.
 pub async fn serve(config: Arc<ClusterConfig>) -> anyhow::Result<()> {
     tracing::info!(
         cluster = %config.name,
