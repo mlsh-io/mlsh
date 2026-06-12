@@ -1,4 +1,4 @@
-//! WebAuthn (passkeys) for step-up MFA (ADR-029, ADR-032 §5).
+//! WebAuthn (passkeys) for step-up MFA.
 //!
 //! Two ceremonies, two stages each:
 //! 1. **Registration**: `register/start` returns a challenge; the browser uses

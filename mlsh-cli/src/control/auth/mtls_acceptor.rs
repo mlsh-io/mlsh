@@ -5,7 +5,7 @@
 //! Without this layer the peer cert is captured by rustls during the
 //! handshake but never makes it past axum-server into the Axum router. The
 //! [`super::caller::Caller`] extractor reads the extension to authenticate
-//! a node by SHA-256 fingerprint (ADR-035 Phase D).
+//! a node by SHA-256 fingerprint.
 
 use std::future::Future;
 use std::pin::Pin;

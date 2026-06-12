@@ -4,7 +4,7 @@
 //! request handlers in `stream.rs`) call [`EventHub::publish`] on every
 //! mutation; the subscriber loop drains its channel and writes events to its
 //! `SendStream`. Subscribers that fall behind (channel full) are dropped on
-//! the spot — they reconnect and reseed via `ListNodes` (see ADR 018).
+//! the spot — they reconnect and reseed via `ListNodes`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;

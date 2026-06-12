@@ -28,7 +28,7 @@ pub struct ClusterConfig {
     /// Root admin fingerprint for peer-side admission cert verification.
     pub root_fingerprint: String,
     /// Roles this node holds: `node` (always), optionally `admin` and `control`
-    /// (ADR-030). When `control` is present, mlshtund forks `mlsh-control`.
+    /// When `control` is present, mlshtund forks `mlsh-control`.
     pub roles: Vec<String>,
     /// Public DNS zone served by signal (`mlsh.io`, `dev.mlsh.io`, …). Used
     /// to build admin URLs (`<name>.<zone>`). May be empty for clusters

@@ -61,7 +61,7 @@ pub struct ManagedTunnel {
     /// reads to compute node liveness without a signal round-trip.
     signal_session_rx: watch::Receiver<Option<signal_session::SignalSessionHandle>>,
     /// In-process tokio task hosting the control HTTP server, when this
-    /// node holds the `control` role (ADR-035 Phase 0). Cluster config kept
+    /// node holds the `control` role. Cluster config kept
     /// alongside so `start_control()` can re-spawn after a previous stop.
     control_task: Option<JoinHandle<()>>,
     control_config: Arc<ClusterConfig>,
@@ -93,7 +93,7 @@ impl ManagedTunnel {
         let control_config_arc = config.clone();
 
         // Spawn the control plane in-process when this node holds the
-        // `control` role (ADR-035 Phase 0). Lifecycle tied to the tunnel —
+        // `control` role. Lifecycle tied to the tunnel —
         // task aborted on stop(). Gated on the `control-plane` Cargo feature
         // so slim builds (mlshtund without admin UI) don't link the router.
         let control_task = control_role_active(&config).then(|| spawn_control_task(config.clone()));
@@ -268,8 +268,8 @@ fn control_role_active(config: &ClusterConfig) -> bool {
 
 /// Spawn the in-process control HTTP server for the given cluster.
 ///
-/// Hosts the control router as a tokio task in mlshtund itself (ADR-035
-/// Phase 0). When the returned `JoinHandle` is aborted (or dropped), axum
+/// Hosts the control router as a tokio task in mlshtund itself. When the
+/// returned `JoinHandle` is aborted (or dropped), axum
 /// stops accepting connections and the listener socket is released.
 #[cfg(feature = "control-plane")]
 fn spawn_control_task(config: Arc<ClusterConfig>) -> JoinHandle<()> {

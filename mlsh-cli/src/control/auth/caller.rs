@@ -3,7 +3,7 @@
 //! Two flavors:
 //!   - [`Caller::Machine`]: the request connection presented an mTLS client
 //!     cert whose SHA-256 fingerprint is registered in the `nodes` table.
-//!     This is how the CLI and other nodes authenticate (ADR-035 Phase D).
+//!     This is how the CLI and other nodes authenticate.
 //!   - [`Caller::Human`]: the request carries a valid session cookie tied
 //!     to a `users` row. This is how the bundled web UI authenticates.
 //!

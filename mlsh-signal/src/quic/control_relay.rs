@@ -1,6 +1,6 @@
 //! ALPN `mlsh-control` connection handler — relays streams to the control node.
 //!
-//! ADR-035 Phase G — **this is the bootstrap path only**.
+//! **this is the bootstrap path only**.
 //!
 //! Every steady-state admin operation now uses the REST API at
 //! `https://control.<cluster>:8443` over the overlay (Phase E). The relay

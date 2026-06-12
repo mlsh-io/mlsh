@@ -55,7 +55,7 @@ pub async fn init(db_path: &str) -> Result<SqlitePool> {
     // Signal owns network-level metadata only: identity (uuid + fingerprint),
     // overlay IP allocation, and the cluster `role` used to gate sponsor-signed
     // invite verification at adopt time. Display name and role mutations live
-    // in mlsh-control (see ADR 018).
+    // in mlsh-control.
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS nodes (
             cluster_id   TEXT NOT NULL,

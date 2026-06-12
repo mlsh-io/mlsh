@@ -20,7 +20,7 @@ struct Inner {
     /// sanitised label (lowercase, RFC 1035) → node_uuid. Rebuilt from
     /// `by_uuid` on every mutation so lookups stay O(1).
     by_label: HashMap<String, String>,
-    /// UUID of the cluster's control node (one per cluster, ADR-030 §2).
+    /// UUID of the cluster's control node (one per cluster).
     /// Set by `seed()` from the `is_control_node` flag in the
     /// `ControlNodeInfo` snapshot. Used by overlay DNS to resolve
     /// `control.<cluster>`.

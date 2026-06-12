@@ -1,5 +1,5 @@
 //! `mlsh ui <cluster>` — open the cluster's web UI in the default browser
-//! via a localhost HTTP proxy (ADR-035 Phase F).
+//! via a localhost HTTP proxy.
 //!
 //! The browser sees a plain `http://127.0.0.1:<random>` URL. Each request
 //! is forwarded to `https://control.<cluster>:8443` over an mTLS
@@ -92,7 +92,7 @@ fn build_proxy_state(config: &ClusterConfig) -> Result<ProxyState> {
 
     let client = reqwest::Client::builder()
         .identity(identity)
-        // Self-signed identity cert; pinning lands in ADR-035 Phase C.
+        // Self-signed identity cert; pinning is not implemented yet.
         .danger_accept_invalid_certs(true)
         // Don't auto-redirect — the browser handles 3xx itself, we just
         // forward the response.

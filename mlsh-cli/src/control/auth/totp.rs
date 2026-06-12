@@ -1,4 +1,4 @@
-//! TOTP (RFC 6238) for step-up MFA (ADR-029 §1, ADR-032 §5).
+//! TOTP (RFC 6238) for step-up MFA.
 //!
 //! Secrets are wrapped with the AES-256-GCM key managed by `crypto.rs` before
 //! hitting SQLite. A user enrolls (`enroll`) → receives a fresh secret + an

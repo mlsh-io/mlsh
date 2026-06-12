@@ -1,6 +1,6 @@
 //! `mlsh expose` / `mlsh unexpose` / `mlsh exposed`.
 //!
-//! Routed through mlshtund's Unix socket (ADR-030). The daemon performs the
+//! Routed through mlshtund's Unix socket. The daemon performs the
 //! expose end-to-end: signal-side route registration plus the local ingress
 //! mapping and ACME issuance, atomically per request.
 

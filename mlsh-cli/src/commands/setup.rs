@@ -35,8 +35,8 @@ async fn handle_setup_inner(
     crate::step!("  Cluster: {}", cluster_name);
     crate::step!("  Signal:  {}", signal_host);
 
-    // ADR-032 §2: declare the cluster mode so the control plane and UI render
-    // the right login flow. ADR-032 §3: self-hosted prompts for an admin
+    // declare the cluster mode so the control plane and UI render
+    // the right login flow. self-hosted prompts for an admin
     // password; managed delegates auth to mlsh-cloud (no password here).
     #[cfg(feature = "control-plane")]
     {
@@ -69,7 +69,7 @@ async fn handle_setup_inner(
         node_id: &node_id,
         display_name: &display_name,
         pre_auth_token: &setup_code,
-        // First node holds all three roles (ADR-030 §2). The control role
+        // First node holds all three roles. The control role
         // can be migrated later via `mlsh control migrate <node>`.
         roles: &["node", "admin", "control"],
     })
