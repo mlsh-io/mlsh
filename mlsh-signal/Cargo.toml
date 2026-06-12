@@ -23,8 +23,7 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 # Compile sqlite3 into the binary — required for static musl builds
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 # Serialization
-serde      = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 # Error handling
 anyhow = "1"
 # Token generation
@@ -55,3 +54,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.cargo-machete]
+# bundled sqlite3 is linked, not imported
+ignored = ["libsqlite3-sys"]

@@ -19,3 +19,7 @@ time = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.cargo-machete]
+# used via #[serde(with = "serde_bytes")]
+ignored = ["serde_bytes"]
