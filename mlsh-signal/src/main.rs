@@ -147,7 +147,11 @@ async fn run_server() -> anyhow::Result<()> {
         overlay_subnet,
         metrics,
         control_conns: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-        http_client: reqwest::Client::new(),
+        http_client: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("build http client"),
+        adopt_lock: tokio::sync::Mutex::new(()),
     });
 
     // Start the public-ingress TCP listener.

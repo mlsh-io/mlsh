@@ -24,6 +24,9 @@ pub struct QuicState {
     pub control_conns: Arc<Mutex<HashMap<String, quinn::Connection>>>,
     /// Outbound HTTP client for cloud calls (quota check).
     pub http_client: reqwest::Client,
+    /// Serializes quota check + node registration so concurrent adoptions
+    /// cannot both pass the quota check.
+    pub adopt_lock: Mutex<()>,
 }
 
 /// QUIC accept loop. Runs until the endpoint is closed or the shutdown receiver fires.
@@ -36,14 +39,33 @@ pub async fn run(
     let endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
     tracing::info!("QUIC server listening on {}", bind_addr);
 
+    // cap concurrent connections per source IP.
+    const MAX_CONNS_PER_IP: usize = 32;
+    let per_ip = Arc::new(std::sync::Mutex::new(
+        HashMap::<std::net::IpAddr, usize>::new(),
+    ));
+
     loop {
         tokio::select! {
             incoming = endpoint.accept() => {
                 let Some(incoming) = incoming else { break };
                 let remote = incoming.remote_address();
+                {
+                    let mut map = per_ip.lock().unwrap();
+                    let count = map.entry(remote.ip()).or_insert(0);
+                    if *count >= MAX_CONNS_PER_IP {
+                        drop(map);
+                        tracing::warn!("Refusing connection from {}: per-IP limit reached", remote);
+                        incoming.refuse();
+                        continue;
+                    }
+                    *count += 1;
+                }
                 let state = state.clone();
+                let per_ip = per_ip.clone();
 
                 tokio::spawn(async move {
+                    let _guard = PerIpGuard(per_ip, remote.ip());
                     let conn = match incoming.await {
                         Ok(conn) => conn,
                         Err(e) => {
@@ -95,4 +117,22 @@ pub async fn run(
     endpoint.wait_idle().await;
     tracing::info!("QUIC server shut down");
     Ok(())
+}
+
+/// Decrements the per-IP connection count when the connection task ends.
+struct PerIpGuard(
+    Arc<std::sync::Mutex<HashMap<std::net::IpAddr, usize>>>,
+    std::net::IpAddr,
+);
+
+impl Drop for PerIpGuard {
+    fn drop(&mut self) {
+        let mut m = self.0.lock().unwrap();
+        if let Some(c) = m.get_mut(&self.1) {
+            *c -= 1;
+            if *c == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
 }
