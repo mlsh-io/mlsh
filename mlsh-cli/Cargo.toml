@@ -18,6 +18,7 @@ control-plane = [
     "dep:axum",
     "dep:axum-server",
     "dep:tower",
+    "dep:utoipa",
     "dep:sqlx",
     "dep:rust-embed",
     "dep:argon2",
@@ -41,7 +42,6 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-utoipa = { version = "5", features = ["axum_extras", "uuid"] }
 ciborium = "0.2"
 # Error handling
 anyhow = "1.0"
@@ -92,6 +92,7 @@ uuid = { version = "1", features = ["v4"] }
 if-watch = { version = "3", features = ["tokio"] }
 
 # control-plane feature deps (optional)
+utoipa = { version = "5", features = ["axum_extras", "uuid"], optional = true }
 axum = { version = "0.8", optional = true }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"], optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
@@ -141,3 +142,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core", "pem"] }
 tower = { version = "0.5", features = ["util"] }
+
+[package.metadata.cargo-machete]
+# vendored openssl is needed by webauthn-rs under cross-compile, not imported
+ignored = ["openssl"]
