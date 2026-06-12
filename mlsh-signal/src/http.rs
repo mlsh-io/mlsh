@@ -203,8 +203,12 @@ async fn delete_cluster(
 
 // -- Prometheus metrics -------------------------------------------------------
 
-async fn metrics(State(state): State<Arc<HttpState>>) -> (StatusCode, String) {
-    (StatusCode::OK, state.metrics.prometheus().await)
+async fn metrics(
+    State(state): State<Arc<HttpState>>,
+    headers: HeaderMap,
+) -> Result<String, StatusCode> {
+    verify_token(&headers, &state.api_token)?;
+    Ok(state.metrics.prometheus().await)
 }
 
 // -- Server ------------------------------------------------------------------

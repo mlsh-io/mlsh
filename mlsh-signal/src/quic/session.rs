@@ -7,7 +7,7 @@
 //! - `RelayOpen` → relay bi-stream splice to target peer
 //!
 //! Display-name renames, role transitions and node revocations are owned by
-//! mlsh-control (ADR 018) — signal does not handle them.
+//! mlsh-control — signal does not handle them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -239,6 +239,7 @@ async fn run_node_session(
     let node = match db::lookup_node_by_fingerprint(&state.db, cluster_id, &fingerprint).await? {
         Some(n) => n,
         None => {
+            warn!(id, cluster_id, "NodeAuth with unknown fingerprint");
             let resp = ServerMessage::error("auth_failed", "Unknown fingerprint");
             framing::write_msg(&mut send, &resp).await.ok();
             return Ok(());
@@ -422,10 +423,10 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
         }
     };
 
+    let _adopt_guard = state.adopt_lock.lock().await;
     if let Err(reason) = check_quota_with_cloud(state, cluster_id).await {
         return ServerMessage::error("quota_exceeded", &reason);
     }
-    // TODO(quota-race): two concurrent adoptions can both pass; atomic increment in DB needed.
 
     let overlay_ip = match db::register_node_full(
         &state.db,
