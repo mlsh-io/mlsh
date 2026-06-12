@@ -289,8 +289,10 @@ pub async fn establish_peer_connection(ctx: PeerConnectionContext) {
     probe_cancel.cancel();
     relay_cancel.cancel();
     probe_retry_ticker.abort();
+    let _ = probe_retry_ticker.await;
     if let Some(h) = direct_lifecycle {
         h.abort();
+        let _ = h.await;
     }
     ctx.fsm_registry.unregister(peer_ip).await;
 }

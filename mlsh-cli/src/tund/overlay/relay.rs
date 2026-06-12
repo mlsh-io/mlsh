@@ -235,11 +235,15 @@ pub async fn run_relay_initiator(r: RelayInitiator) {
         cancel,
     } = r;
 
+    // Every exit path must emit RelayClosed: the FSM relies on it (via
+    // ProbeRetryTick) to retry the relay after a transient failure, e.g.
+    // when the peer restarts and the open hits its dying signal session.
     let (send, recv) =
         match open_relay_to_peer(&signal_conn, &cluster_id, &my_node_id, &peer_node_id).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("Failed to open relay to {}: {}", peer_node_id, e);
+                let _ = events_tx.send(Event::RelayClosed);
                 return;
             }
         };
@@ -248,6 +252,7 @@ pub async fn run_relay_initiator(r: RelayInitiator) {
         Ok(id) => id,
         Err(e) => {
             tracing::warn!("Failed to load identity for relay TLS: {}", e);
+            let _ = events_tx.send(Event::RelayClosed);
             return;
         }
     };
@@ -256,6 +261,7 @@ pub async fn run_relay_initiator(r: RelayInitiator) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Relay TLS handshake to {} failed: {}", peer_node_id, e);
+            let _ = events_tx.send(Event::RelayClosed);
             return;
         }
     };
@@ -474,13 +480,15 @@ async fn lookup_peer_ip(from_node_id: &str, peer_table: &PeerTable) -> Option<Ip
     if from_node_id.is_empty() {
         return None;
     }
-    for attempt in 0..5 {
+    // Generous window: right after a wake or peer restart the PeerJoined
+    // carrying this node may arrive well after the relay stream does.
+    for attempt in 0..10 {
         let peers = peer_table.known_peers().await;
         if let Some(p) = peers.iter().find(|p| p.node_id == from_node_id) {
             return p.overlay_ip.parse().ok();
         }
-        if attempt < 4 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if attempt < 9 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
     tracing::warn!("Relay from {}: peer not found", from_node_id);

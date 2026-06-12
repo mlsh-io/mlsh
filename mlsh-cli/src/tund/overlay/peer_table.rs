@@ -118,25 +118,19 @@ impl PeerTable {
 
     /// Insert a direct connection route and add OS-level /32 route.
     pub async fn insert_direct(&self, ip: Ipv4Addr, conn: quinn::Connection) {
-        let is_new = !self.inner.read().await.routes.contains_key(&ip);
-        self.inner
-            .write()
-            .await
-            .routes
-            .insert(ip, PeerRoute::Direct(conn));
-        if is_new && !self.tun_name.is_empty() {
-            crate::tund::net::routes::add_peer_route(ip, &self.tun_name, self.tun_index);
-        }
+        self.insert_route(ip, PeerRoute::Direct(conn)).await;
     }
 
     /// Insert a relay route and add OS-level /32 route.
     pub async fn insert_relay(&self, ip: Ipv4Addr, tx: mpsc::Sender<Vec<u8>>) {
-        let is_new = !self.inner.read().await.routes.contains_key(&ip);
-        self.inner
-            .write()
-            .await
-            .routes
-            .insert(ip, PeerRoute::Relay(tx));
+        self.insert_route(ip, PeerRoute::Relay(tx)).await;
+    }
+
+    async fn insert_route(&self, ip: Ipv4Addr, route: PeerRoute) {
+        let is_new = {
+            let mut inner = self.inner.write().await;
+            inner.routes.insert(ip, route).is_none()
+        };
         if is_new && !self.tun_name.is_empty() {
             crate::tund::net::routes::add_peer_route(ip, &self.tun_name, self.tun_index);
         }

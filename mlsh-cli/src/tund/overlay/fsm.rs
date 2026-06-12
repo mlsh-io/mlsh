@@ -160,6 +160,13 @@ pub fn transition(state: State, event: Event, is_initiator: bool) -> (State, Vec
 
         // Background direct re-probe: relay stays up while a fresh probe runs.
         (Relay, ProbeRetryTick) => (RelayWithProbing, vec![SpawnProbe]),
+        // In Probing we have neither direct nor relay: the initiator also
+        // retries the relay (the one-shot RelayGraceElapsed attempt may have
+        // failed, e.g. while the peer was restarting).
+        (Probing, ProbeRetryTick) if is_initiator => (
+            Probing,
+            vec![AbortProbeTask, SpawnProbe, AbortRelayTask, InitiateRelay],
+        ),
         (Probing, ProbeRetryTick) => (Probing, vec![AbortProbeTask, SpawnProbe]),
 
         // New peer candidates arrived. Restart the probe with the fresh list;
@@ -417,9 +424,24 @@ mod tests {
 
     #[test]
     fn probe_retry_tick_from_probing_respawns_probe() {
-        let (state, effects) = transition(State::Probing, Event::ProbeRetryTick, true);
+        let (state, effects) = transition(State::Probing, Event::ProbeRetryTick, false);
         assert_eq!(state, State::Probing);
         assert_eq!(effects, vec![Effect::AbortProbeTask, Effect::SpawnProbe]);
+    }
+
+    #[test]
+    fn probe_retry_tick_from_probing_also_retries_relay_for_initiator() {
+        let (state, effects) = transition(State::Probing, Event::ProbeRetryTick, true);
+        assert_eq!(state, State::Probing);
+        assert_eq!(
+            effects,
+            vec![
+                Effect::AbortProbeTask,
+                Effect::SpawnProbe,
+                Effect::AbortRelayTask,
+                Effect::InitiateRelay
+            ]
+        );
     }
 
     #[test]

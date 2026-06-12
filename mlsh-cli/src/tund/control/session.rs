@@ -1,6 +1,6 @@
 //! Persistent QUIC connection from mlshtund to mlsh-signal on ALPN `mlsh-control`.
 //!
-//! ADR-035 Phase G — bootstrap-and-runtime-cache channel, not admin API.
+//! This is a bootstrap-and-runtime-cache channel, not an admin API.
 //! All steady-state admin operations (rename, promote, revoke, list…) live
 //! on the REST API at `https://control.<cluster>:8443` reached over the
 //! overlay (Phase E). What still goes through this CBOR-over-QUIC channel:
@@ -43,8 +43,8 @@ pub struct ControlSession {
     endpoint: quinn::Endpoint,
     creds: Arc<SignalCredentials>,
     /// Local human-facing label written to mlsh-control on first AdoptConfirm.
-    /// Held here rather than in `SignalCredentials` because signal no longer
-    /// stores display names (ADR 018).
+    /// Held here rather than in `SignalCredentials` because signal does not
+    /// store display names.
     display_name: Arc<String>,
     control_socket: PathBuf,
     events_tx: broadcast::Sender<Arc<ControlEvent>>,
@@ -553,6 +553,12 @@ async fn adopt_confirm_once(
 }
 
 async fn call_on(conn: &quinn::Connection, payload: Vec<u8>) -> Result<Vec<u8>> {
+    tokio::time::timeout(Duration::from_secs(10), call_on_inner(conn, payload))
+        .await
+        .context("mlsh-control RPC timed out")?
+}
+
+async fn call_on_inner(conn: &quinn::Connection, payload: Vec<u8>) -> Result<Vec<u8>> {
     let (mut send, mut recv) = conn
         .open_bi()
         .await
