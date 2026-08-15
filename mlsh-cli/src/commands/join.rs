@@ -5,7 +5,7 @@
 //! loopback redirect; the resulting id_token rides the normal Adopt path
 //! as `pre_auth_token = "oidc:<id_token>"`.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
