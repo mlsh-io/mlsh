@@ -58,6 +58,17 @@ enum Commands {
         /// Loopback port for the browser callback
         #[arg(long)]
         callback_port: Option<u16>,
+
+        /// Address the browser callback listens on and is reached at.
+        /// Defaults to 127.0.0.1; set a LAN IP when the browser runs on
+        /// another device (headless machine, phone on the same network).
+        #[arg(long)]
+        callback_host: Option<String>,
+
+        /// Interface to bind the callback listener on, when it differs
+        /// from --callback-host (e.g. browser behind an SSH tunnel).
+        #[arg(long)]
+        callback_bind: Option<String>,
     },
 
     /// Connect to a cluster via QUIC overlay
@@ -346,7 +357,18 @@ async fn run_cli() -> Result<()> {
             url,
             name,
             callback_port,
-        } => commands::join::handle_join(&url, name.as_deref(), callback_port).await,
+            callback_host,
+            callback_bind,
+        } => {
+            commands::join::handle_join(
+                &url,
+                name.as_deref(),
+                callback_port,
+                callback_host.as_deref(),
+                callback_bind.as_deref(),
+            )
+            .await
+        }
         Commands::Connect { name, foreground } => {
             commands::connect::handle_connect(&name, foreground).await
         }

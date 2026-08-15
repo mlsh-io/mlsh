@@ -28,15 +28,23 @@ pub struct JoinRef {
     pub client_id: String,
 }
 
-pub async fn handle_join(url: &str, name_override: Option<&str>, port: Option<u16>) -> Result<()> {
+pub async fn handle_join(
+    url: &str,
+    name_override: Option<&str>,
+    port: Option<u16>,
+    callback_host: Option<&str>,
+    callback_bind: Option<&str>,
+) -> Result<()> {
     let (signal_host, jref) = parse_join_url(url)?;
     let port = port.unwrap_or(DEFAULT_CALLBACK_PORT);
+    let callback_host = callback_host.unwrap_or("127.0.0.1");
+    let callback_bind = callback_bind.unwrap_or(callback_host);
 
     crate::step!("{}", "Joining cluster via OIDC...".cyan().bold());
     crate::step!("  Signal: {}", signal_host);
     crate::step!("  IdP:    {}", jref.issuer);
 
-    let id_token = oidc_login(&jref, port).await?;
+    let id_token = oidc_login(&jref, callback_host, callback_bind, port).await?;
 
     let node_id = bootstrap::generate_node_id();
     let display_name = bootstrap::default_display_name(name_override);
@@ -98,7 +106,15 @@ struct Discovery {
 }
 
 /// Loopback Authorization Code + PKCE against the IdP (public client).
-async fn oidc_login(jref: &JoinRef, port: u16) -> Result<String> {
+/// `callback_host` is what the browser's redirect targets; `callback_bind`
+/// is the interface the listener binds — they differ when the browser
+/// reaches us through a tunnel or from another device.
+async fn oidc_login(
+    jref: &JoinRef,
+    callback_host: &str,
+    callback_bind: &str,
+    port: u16,
+) -> Result<String> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .build()?;
@@ -114,10 +130,10 @@ async fn oidc_login(jref: &JoinRef, port: u16) -> Result<String> {
         .await
         .context("IdP discovery failed")?;
 
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+    let listener = tokio::net::TcpListener::bind((callback_bind, port))
         .await
-        .with_context(|| format!("bind 127.0.0.1:{port} (is another join running?)"))?;
-    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+        .with_context(|| format!("bind {callback_bind}:{port} (is another join running?)"))?;
+    let redirect_uri = format!("http://{callback_host}:{port}/callback");
 
     let (verifier, challenge) = mlsh_crypto::pkce::pair();
     let state = mlsh_crypto::pkce::random_urlsafe();
