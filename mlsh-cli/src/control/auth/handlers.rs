@@ -472,6 +472,83 @@ pub async fn bootstrap_create(
     (StatusCode::OK, headers, Json(UserView::from(user))).into_response()
 }
 
+/// Generic OIDC login start (ADR-018): 302 to the IdP authorization URL.
+/// HTTP surface in `crate::control::api::auth::oidc_start`.
+pub async fn oidc_start(headers: HeaderMap) -> Response {
+    let Some(oidc) = super::oidc::client() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response();
+    };
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing Host header").into_response();
+    };
+    match oidc.start(host).await {
+        Ok(url) => axum::response::Redirect::temporary(&url).into_response(),
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc start failed");
+            (StatusCode::BAD_GATEWAY, "IdP unreachable").into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct OidcCallbackQuery {
+    pub code: String,
+    pub state: String,
+}
+
+/// Generic OIDC callback (ADR-018): validate, upsert the user keyed by
+/// `oidc:<iss>#<sub>` in `cloud_user_id`, set a session cookie, go home.
+/// HTTP surface in `crate::control::api::auth::oidc_callback`.
+pub async fn oidc_callback(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<OidcCallbackQuery>,
+) -> Response {
+    let Some(oidc) = super::oidc::client() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response();
+    };
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing Host header").into_response();
+    };
+    let identity = match oidc.callback(host, &q.code, &q.state).await {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc callback failed");
+            return (StatusCode::UNAUTHORIZED, "OIDC login failed").into_response();
+        }
+    };
+    let user = match state
+        .store
+        .find_or_create_managed(&identity.subject_key, &identity.email)
+        .await
+    {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc user upsert failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    if !user.active {
+        return (StatusCode::FORBIDDEN, "account suspended").into_response();
+    }
+    let cookie = match session::issue(&state, &user.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "session issue failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let mut out = HeaderMap::new();
+    out.insert(SET_COOKIE, session::set_cookie_header(&cookie, false));
+    (out, axum::response::Redirect::temporary("/")).into_response()
+}
+
 fn current_session_id(state: &AuthState, headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for piece in raw.split(';') {

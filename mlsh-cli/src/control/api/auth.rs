@@ -38,6 +38,9 @@ pub fn router(state: AuthState) -> Router {
         // mlsh-cloud device flow
         .route("/auth/login/device/start", post(device_start))
         .route("/auth/login/device/poll", post(device_poll))
+        // Generic OIDC (ADR-018)
+        .route("/auth/oidc/start", get(imp::oidc_start))
+        .route("/auth/oidc/callback", get(imp::oidc_callback))
         // TOTP
         .route("/auth/totp/enroll", post(totp_enroll))
         .route("/auth/totp/verify", post(totp_verify))

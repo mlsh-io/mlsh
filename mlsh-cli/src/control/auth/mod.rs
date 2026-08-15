@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod handlers;
 pub mod mtls_acceptor;
 pub mod oauth;
+pub mod oidc;
 pub mod session;
 pub mod store;
 pub mod totp;
