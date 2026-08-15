@@ -174,7 +174,6 @@ impl OidcClient {
         }
         let tok: TokenResponse = req.send().await?.error_for_status()?.json().await?;
 
-        let header = decode_header(&tok.id_token)?;
         let jwks: JwkSet = self
             .http
             .get(&d.jwks_uri)
@@ -183,6 +182,11 @@ impl OidcClient {
             .error_for_status()?
             .json()
             .await?;
+        self.verify_id_token(&tok.id_token, &jwks, &pending.nonce)
+    }
+
+    fn verify_id_token(&self, id_token: &str, jwks: &JwkSet, nonce: &str) -> Result<OidcIdentity> {
+        let header = decode_header(id_token)?;
         let jwk = header
             .kid
             .as_ref()
@@ -193,10 +197,10 @@ impl OidcClient {
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.client_id]);
         let claims =
-            decode::<serde_json::Value>(&tok.id_token, &DecodingKey::from_jwk(jwk)?, &validation)?
+            decode::<serde_json::Value>(id_token, &DecodingKey::from_jwk(jwk)?, &validation)?
                 .claims;
 
-        if claims.get("nonce").and_then(|v| v.as_str()) != Some(pending.nonce.as_str()) {
+        if claims.get("nonce").and_then(|v| v.as_str()) != Some(nonce) {
             bail!("nonce mismatch");
         }
         if !self.allowed_groups.is_empty() {
@@ -226,5 +230,132 @@ impl OidcClient {
             subject_key: format!("oidc:{}#{}", self.issuer, sub),
             email,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::pkcs8::spki::der::pem::LineEnding;
+    use ed25519_dalek::pkcs8::EncodePrivateKey;
+    use ed25519_dalek::SigningKey;
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use std::sync::OnceLock as StdOnceLock;
+
+    const ISS: &str = "https://id.example";
+    const CLIENT_ID: &str = "mlsh";
+
+    struct Keys {
+        priv_pem: String,
+        jwks: JwkSet,
+    }
+
+    fn keys() -> &'static Keys {
+        static K: StdOnceLock<Keys> = StdOnceLock::new();
+        K.get_or_init(|| {
+            let signing = SigningKey::generate(&mut rand::rngs::OsRng);
+            let priv_pem = signing.to_pkcs8_pem(LineEnding::LF).unwrap().to_string();
+            let x = b64url(signing.verifying_key().as_bytes());
+            let jwks: JwkSet = serde_json::from_value(serde_json::json!({
+                "keys": [{ "kty": "OKP", "crv": "Ed25519", "kid": "t1", "x": x }]
+            }))
+            .unwrap();
+            Keys { priv_pem, jwks }
+        })
+    }
+
+    fn client(allowed_groups: Vec<String>) -> OidcClient {
+        OidcClient {
+            issuer: ISS.into(),
+            client_id: CLIENT_ID.into(),
+            client_secret: None,
+            scopes: "openid profile email".into(),
+            groups_claim: "groups".into(),
+            allowed_groups,
+            http: reqwest::Client::new(),
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn sign(claims: &serde_json::Value) -> String {
+        let key = EncodingKey::from_ed_pem(keys().priv_pem.as_bytes()).unwrap();
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some("t1".into());
+        encode(&header, claims, &key).unwrap()
+    }
+
+    fn base_claims() -> serde_json::Value {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        serde_json::json!({
+            "iss": ISS, "aud": CLIENT_ID, "sub": "u1", "email": "alice@example.com",
+            "exp": now + 300, "nonce": "n1", "groups": ["mlsh", "dev"]
+        })
+    }
+
+    #[test]
+    fn accepts_valid_token() {
+        let id = client(vec![])
+            .verify_id_token(&sign(&base_claims()), &keys().jwks, "n1")
+            .unwrap();
+        assert_eq!(id.subject_key, format!("oidc:{ISS}#u1"));
+        assert_eq!(id.email, "alice@example.com");
+    }
+
+    #[test]
+    fn rejects_wrong_issuer() {
+        let mut c = base_claims();
+        c["iss"] = "https://evil.example".into();
+        assert!(client(vec![])
+            .verify_id_token(&sign(&c), &keys().jwks, "n1")
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_audience() {
+        let mut c = base_claims();
+        c["aud"] = "other".into();
+        assert!(client(vec![])
+            .verify_id_token(&sign(&c), &keys().jwks, "n1")
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_expired_token() {
+        let mut c = base_claims();
+        c["exp"] = 1000.into();
+        assert!(client(vec![])
+            .verify_id_token(&sign(&c), &keys().jwks, "n1")
+            .is_err());
+    }
+
+    #[test]
+    fn rejects_nonce_mismatch() {
+        assert!(client(vec![])
+            .verify_id_token(&sign(&base_claims()), &keys().jwks, "other-nonce")
+            .is_err());
+    }
+
+    #[test]
+    fn group_gate_allows_member_rejects_outsider() {
+        let tok = sign(&base_claims());
+        assert!(client(vec!["mlsh".into()])
+            .verify_id_token(&tok, &keys().jwks, "n1")
+            .is_ok());
+        assert!(client(vec!["admins-only".into()])
+            .verify_id_token(&tok, &keys().jwks, "n1")
+            .is_err());
+    }
+
+    #[test]
+    fn missing_email_falls_back_to_sub() {
+        let mut c = base_claims();
+        c.as_object_mut().unwrap().remove("email");
+        let id = client(vec![])
+            .verify_id_token(&sign(&c), &keys().jwks, "n1")
+            .unwrap();
+        assert_eq!(id.email, "u1");
     }
 }
