@@ -472,7 +472,7 @@ pub async fn bootstrap_create(
     (StatusCode::OK, headers, Json(UserView::from(user))).into_response()
 }
 
-/// Generic OIDC login start (ADR-018): 302 to the IdP authorization URL.
+/// Generic OIDC login start: 302 to the IdP authorization URL.
 /// HTTP surface in `crate::control::api::auth::oidc_start`.
 pub async fn oidc_start(headers: HeaderMap) -> Response {
     let Some(oidc) = super::oidc::client() else {
@@ -499,7 +499,7 @@ pub struct OidcCallbackQuery {
     pub state: String,
 }
 
-/// Generic OIDC callback (ADR-018): validate, upsert the user keyed by
+/// Generic OIDC callback: validate, upsert the user keyed by
 /// `oidc:<iss>#<sub>` in `cloud_user_id`, set a session cookie, go home.
 /// HTTP surface in `crate::control::api::auth::oidc_callback`.
 pub async fn oidc_callback(

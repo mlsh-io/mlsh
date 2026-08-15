@@ -46,6 +46,20 @@ enum Commands {
         name: Option<String>,
     },
 
+    /// Enroll this machine in a cluster by signing in with your identity provider
+    Join {
+        /// Join URL (e.g. mlsh://signal.example.com/join/<payload>)
+        url: String,
+
+        /// Node name (defaults to hostname)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Loopback port for the browser callback
+        #[arg(long)]
+        callback_port: Option<u16>,
+    },
+
     /// Connect to a cluster via QUIC overlay
     Connect {
         /// Peer name or "node.cluster" syntax (e.g. "homelab" or "nas.homelab")
@@ -328,6 +342,11 @@ async fn run_cli() -> Result<()> {
             ),
         },
         Commands::Adopt { url, name } => commands::adopt::handle_adopt(&url, name.as_deref()).await,
+        Commands::Join {
+            url,
+            name,
+            callback_port,
+        } => commands::join::handle_join(&url, name.as_deref(), callback_port).await,
         Commands::Connect { name, foreground } => {
             commands::connect::handle_connect(&name, foreground).await
         }

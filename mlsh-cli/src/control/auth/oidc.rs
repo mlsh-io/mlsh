@@ -1,5 +1,5 @@
-//! Generic OIDC login (ADR-018). Env-configured, enabled when
-//! `MLSH_CONTROL_OIDC_ISSUER` is set. Design rationale lives in the ADR.
+//! Generic OIDC login. Env-configured, enabled when
+//! `MLSH_CONTROL_OIDC_ISSUER` is set.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -185,7 +185,26 @@ impl OidcClient {
         self.verify_id_token(&tok.id_token, &jwks, &pending.nonce)
     }
 
+    /// Verify an id_token presented as join proof. The CLI
+    /// was the OAuth client, so there is no nonce to check on our side.
+    pub async fn verify_join_token(&self, id_token: &str) -> Result<OidcIdentity> {
+        let d = self.discover().await?;
+        let jwks: JwkSet = self
+            .http
+            .get(&d.jwks_uri)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        self.verify(id_token, &jwks, None)
+    }
+
     fn verify_id_token(&self, id_token: &str, jwks: &JwkSet, nonce: &str) -> Result<OidcIdentity> {
+        self.verify(id_token, jwks, Some(nonce))
+    }
+
+    fn verify(&self, id_token: &str, jwks: &JwkSet, nonce: Option<&str>) -> Result<OidcIdentity> {
         let header = decode_header(id_token)?;
         let jwk = header
             .kid
@@ -200,8 +219,10 @@ impl OidcClient {
             decode::<serde_json::Value>(id_token, &DecodingKey::from_jwk(jwk)?, &validation)?
                 .claims;
 
-        if claims.get("nonce").and_then(|v| v.as_str()) != Some(nonce) {
-            bail!("nonce mismatch");
+        if let Some(nonce) = nonce {
+            if claims.get("nonce").and_then(|v| v.as_str()) != Some(nonce) {
+                bail!("nonce mismatch");
+            }
         }
         if !self.allowed_groups.is_empty() {
             let ok = claims

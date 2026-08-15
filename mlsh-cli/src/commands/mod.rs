@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod expose;
 pub mod identity;
 pub mod invite;
+pub mod join;
 pub mod nodes;
 pub mod promote;
 pub mod rename;

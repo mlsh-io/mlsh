@@ -48,6 +48,10 @@ pub enum ControlRequest {
         display_name: String,
         invite_token: String,
     },
+    /// Bootstrap: signal asks control to validate an OIDC id_token as
+    /// admission proof. Control answers with a verdict; the node
+    /// registration itself stays on signal, like the invite path.
+    OidcAdoptCheck { id_token: String },
     /// Internal: seed the daemon's display-name cache. Not exposed to the
     /// CLI — admin listing happens over `GET /api/v1/nodes`.
     ListNodes,
@@ -64,6 +68,12 @@ pub enum ControlRequest {
 pub enum ControlResponse {
     AdoptAck {
         accepted: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
+    OidcAdoptVerdict {
+        accepted: bool,
+        role: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },

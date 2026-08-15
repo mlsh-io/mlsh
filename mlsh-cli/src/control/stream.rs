@@ -154,6 +154,50 @@ async fn dispatch(
             Err(e) => ControlResponse::error("internal", &format!("upsert failed: {e:#}")),
         },
 
+        // signal forwards an id_token as join proof; v1
+        // accepts only an existing, active user of this control plane.
+        ControlRequest::OidcAdoptCheck { id_token } => {
+            let Some(oidc) = crate::control::auth::oidc::client() else {
+                return ControlResponse::error("oidc_disabled", "OIDC not configured");
+            };
+            let identity = match oidc.verify_join_token(id_token).await {
+                Ok(i) => i,
+                Err(e) => {
+                    return ControlResponse::OidcAdoptVerdict {
+                        accepted: false,
+                        role: String::new(),
+                        message: Some(format!("id_token rejected: {e:#}")),
+                    }
+                }
+            };
+            let active: Option<i64> =
+                match sqlx::query_scalar("SELECT active FROM users WHERE cloud_user_id = ?")
+                    .bind(&identity.subject_key)
+                    .fetch_optional(pool)
+                    .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return ControlResponse::error("internal", &format!("{e:#}")),
+                };
+            match active {
+                Some(1) => ControlResponse::OidcAdoptVerdict {
+                    accepted: true,
+                    role: "node".into(),
+                    message: None,
+                },
+                Some(_) => ControlResponse::OidcAdoptVerdict {
+                    accepted: false,
+                    role: String::new(),
+                    message: Some("account suspended".into()),
+                },
+                None => ControlResponse::OidcAdoptVerdict {
+                    accepted: false,
+                    role: String::new(),
+                    message: Some("no matching user; log in to the admin UI once first".into()),
+                },
+            }
+        }
+
         ControlRequest::ListNodes => match nodes::list(pool, cluster_key(auth)).await {
             Ok(rows) => ControlResponse::Nodes {
                 nodes: rows
