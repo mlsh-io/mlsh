@@ -132,7 +132,7 @@ async fn oidc_login(jref: &JoinRef, port: u16) -> Result<String> {
         sep,
         urlenc(&jref.client_id),
         urlenc(&redirect_uri),
-        urlenc("openid profile email"),
+        urlenc("openid profile email groups"),
         state,
         challenge,
     );
