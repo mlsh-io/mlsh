@@ -152,6 +152,7 @@ async fn run_server() -> anyhow::Result<()> {
             .build()
             .expect("build http client"),
         adopt_lock: tokio::sync::Mutex::new(()),
+        control_offline: std::sync::Mutex::new(std::collections::HashMap::new()),
     });
 
     // Start the public-ingress TCP listener.
