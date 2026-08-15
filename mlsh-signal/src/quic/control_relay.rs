@@ -42,6 +42,12 @@ pub async fn handle_control_connection(conn: quinn::Connection, state: Arc<QuicS
             prev.close(quinn::VarInt::from_u32(0), b"control replaced");
         }
     }
+    // If this fingerprint was a control node cached as offline, it is back.
+    state
+        .control_offline
+        .lock()
+        .unwrap()
+        .retain(|_, (fp, _)| fp != &caller_fp);
     info!(fp = %caller_fp, "control: connection registered");
 
     let _ = accept_loop(conn.clone(), &caller_fp, state.clone()).await;
@@ -105,6 +111,27 @@ async fn relay_one_stream(
         None => return reject(&mut cli_send, "auth_failed", "Unknown fingerprint").await,
     };
 
+    // Cheap path for clusters whose control node was recently seen offline:
+    // no control-node lookup, no per-attempt logging.
+    let cache_ttl = std::time::Duration::from_secs(state.config.limits.control_offline_cache_secs);
+    if !cache_ttl.is_zero() {
+        let cached = state
+            .control_offline
+            .lock()
+            .unwrap()
+            .get(&caller.cluster_id)
+            .filter(|(_, at)| at.elapsed() < cache_ttl)
+            .is_some();
+        if cached {
+            debug!(
+                cluster_id = %caller.cluster_id,
+                caller_node = %caller.node_id,
+                "control: rejecting relay — control offline (cached)"
+            );
+            return reject(&mut cli_send, "control_offline", "Control offline").await;
+        }
+    }
+
     let control = match crate::db::find_control_node(&state.db, &caller.cluster_id).await? {
         Some(n) => n,
         None => return reject(&mut cli_send, "no_control", "No control node").await,
@@ -121,8 +148,15 @@ async fn relay_one_stream(
                 cluster_id = %caller.cluster_id,
                 caller_node = %caller.node_id,
                 wanted_control_fp = %control.fingerprint,
+                cached_for_secs = cache_ttl.as_secs(),
                 "control: rejecting relay — control node connection not in map"
             );
+            if !cache_ttl.is_zero() {
+                state.control_offline.lock().unwrap().insert(
+                    caller.cluster_id.clone(),
+                    (control.fingerprint.clone(), std::time::Instant::now()),
+                );
+            }
             return reject(&mut cli_send, "control_offline", "Control offline").await;
         }
     };

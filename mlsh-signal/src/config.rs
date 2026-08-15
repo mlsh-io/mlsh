@@ -56,6 +56,51 @@ pub struct Config {
     /// instance; dev/staging instances should override (e.g. `"dev.mlsh.io"`).
     #[serde(default = "default_zone")]
     pub zone: String,
+
+    /// Abuse limits for the QUIC listener and control relay.
+    #[serde(default)]
+    pub limits: LimitsConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LimitsConfig {
+    /// Max concurrent QUIC connections per source IP.
+    #[serde(default = "default_max_conns_per_ip")]
+    pub max_conns_per_ip: usize,
+
+    /// Max new QUIC connections accepted per source IP per minute.
+    /// Legitimate nodes reconnect at most every few seconds; a client stuck
+    /// in a reconnect loop burns hundreds per minute. 0 disables.
+    #[serde(default = "default_new_conns_per_ip_per_min")]
+    pub new_conns_per_ip_per_min: u32,
+
+    /// Seconds a "control node offline" verdict is cached per cluster.
+    /// While cached, relay attempts are rejected without a control-node
+    /// lookup and without logging each attempt. 0 disables.
+    #[serde(default = "default_control_offline_cache_secs")]
+    pub control_offline_cache_secs: u64,
+}
+
+fn default_max_conns_per_ip() -> usize {
+    32
+}
+
+fn default_new_conns_per_ip_per_min() -> u32 {
+    60
+}
+
+fn default_control_offline_cache_secs() -> u64 {
+    30
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_conns_per_ip: default_max_conns_per_ip(),
+            new_conns_per_ip_per_min: default_new_conns_per_ip_per_min(),
+            control_offline_cache_secs: default_control_offline_cache_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +168,7 @@ impl Default for Config {
             ingress_proxy_protocol: false,
             admin_hosts: default_admin_hosts(),
             zone: default_zone(),
+            limits: LimitsConfig::default(),
         }
     }
 }
