@@ -20,6 +20,7 @@ pub struct OidcClient {
     scopes: String,
     groups_claim: String,
     allowed_groups: Vec<String>,
+    provision_all: bool,
     http: reqwest::Client,
     pending: Mutex<HashMap<String, Pending>>,
 }
@@ -89,12 +90,23 @@ impl OidcClient {
             groups_claim: std::env::var("MLSH_CONTROL_OIDC_GROUPS_CLAIM")
                 .unwrap_or_else(|_| "groups".into()),
             allowed_groups: csv("MLSH_CONTROL_OIDC_ALLOWED_GROUPS"),
+            provision_all: std::env::var("MLSH_CONTROL_OIDC_PROVISION_ALL")
+                .map(|v| v == "true" || v == "1")
+                .unwrap_or(false),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .expect("build http client"),
             pending: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Whether an identity that just authenticated (and passed the group gate)
+    /// may be auto-provisioned as a new user. Fail closed: with no group
+    /// allow-list, refuse unless the operator explicitly opted into open
+    /// provisioning, so a broad IdP cannot mint control-plane accounts.
+    pub fn may_provision(&self) -> bool {
+        !self.allowed_groups.is_empty() || self.provision_all
     }
 
     async fn discover(&self) -> Result<Discovery> {
@@ -113,7 +125,9 @@ impl OidcClient {
     }
 
     /// Build the IdP authorization URL and remember the PKCE/state/nonce.
-    pub async fn start(&self, host: &str) -> Result<String> {
+    /// Returns `(url, state)`; the caller binds `state` to the browser via a
+    /// cookie so the callback cannot be redeemed in a different browser.
+    pub async fn start(&self, host: &str) -> Result<(String, String)> {
         let d = self.discover().await?;
         let (state, verifier, nonce) = (random_token(), random_token(), random_token());
         let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
@@ -142,7 +156,7 @@ impl OidcClient {
                 ("code_challenge_method", "S256"),
             ],
         )?;
-        Ok(url.into())
+        Ok((url.into(), state))
     }
 
     /// Exchange the code, validate the id_token, apply the group gate.
@@ -313,6 +327,7 @@ mod tests {
             scopes: "openid profile email".into(),
             groups_claim: "groups".into(),
             allowed_groups,
+            provision_all: false,
             http: reqwest::Client::new(),
             pending: Mutex::new(HashMap::new()),
         }
@@ -343,6 +358,12 @@ mod tests {
             .unwrap();
         assert_eq!(id.subject_key, format!("oidc:{ISS}#u1"));
         assert_eq!(id.email, "alice@example.com");
+    }
+
+    #[test]
+    fn provisioning_fails_closed_without_allowlist() {
+        assert!(!client(vec![]).may_provision());
+        assert!(client(vec!["admins".into()]).may_provision());
     }
 
     #[test]
