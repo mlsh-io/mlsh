@@ -44,9 +44,15 @@ pub async fn handle_join(
     crate::step!("  Signal: {}", signal_host);
     crate::step!("  IdP:    {}", jref.issuer);
 
-    let id_token = oidc_login(&jref, callback_host, callback_bind, port).await?;
-
+    // Generate the node identity before login so the id_token can be bound to
+    // its fingerprint via the OIDC nonce (the control node re-derives and
+    // verifies it). `bootstrap::run` below reuses this same identity.
     let node_id = bootstrap::generate_node_id();
+    let identity = bootstrap::ensure_identity(&node_id)?;
+    let nonce = mlsh_crypto::pkce::nonce_for_fingerprint(&identity.fingerprint);
+
+    let id_token = oidc_login(&jref, callback_host, callback_bind, port, &nonce).await?;
+
     let display_name = bootstrap::default_display_name(name_override);
     let signal_endpoint = bootstrap::ensure_port(&signal_host, DEFAULT_SIGNAL_PORT);
 
@@ -114,6 +120,7 @@ async fn oidc_login(
     callback_host: &str,
     callback_bind: &str,
     port: u16,
+    nonce: &str,
 ) -> Result<String> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
@@ -143,13 +150,14 @@ async fn oidc_login(
         '?'
     };
     let auth_url = format!(
-        "{}{}response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
+        "{}{}response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
         d.authorization_endpoint,
         sep,
         urlenc(&jref.client_id),
         urlenc(&redirect_uri),
         urlenc("openid profile email groups"),
         state,
+        urlenc(nonce),
         challenge,
     );
 

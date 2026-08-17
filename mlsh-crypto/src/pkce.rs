@@ -20,3 +20,12 @@ pub fn pair() -> (String, String) {
     let challenge = b64url(&Sha256::digest(verifier.as_bytes()));
     (verifier, challenge)
 }
+
+/// OIDC `nonce` bound to a node's certificate fingerprint. The joining node
+/// sets it in the authorization request; the control node recomputes it from
+/// the fingerprint it received over the (cert-verified) adopt path and
+/// requires the id_token to carry the same value. Both sides must derive it
+/// identically, so it lives here.
+pub fn nonce_for_fingerprint(fingerprint: &str) -> String {
+    b64url(&Sha256::digest(fingerprint.as_bytes()))
+}

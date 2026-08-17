@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use base64::Engine;
-use jsonwebtoken::{decode, decode_header, jwk::JwkSet, DecodingKey, Validation};
+use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -185,9 +185,15 @@ impl OidcClient {
         self.verify_id_token(&tok.id_token, &jwks, &pending.nonce)
     }
 
-    /// Verify an id_token presented as join proof. The CLI
-    /// was the OAuth client, so there is no nonce to check on our side.
-    pub async fn verify_join_token(&self, id_token: &str) -> Result<OidcIdentity> {
+    /// Verify an id_token presented as join proof. `expected_nonce` binds the
+    /// token to the joining node's certificate fingerprint, so a token minted
+    /// for another node (or for the web-login flow, which carries a random
+    /// nonce) is rejected.
+    pub async fn verify_join_token(
+        &self,
+        id_token: &str,
+        expected_nonce: &str,
+    ) -> Result<OidcIdentity> {
         let d = self.discover().await?;
         let jwks: JwkSet = self
             .http
@@ -197,7 +203,7 @@ impl OidcClient {
             .error_for_status()?
             .json()
             .await?;
-        self.verify(id_token, &jwks, None)
+        self.verify(id_token, &jwks, Some(expected_nonce))
     }
 
     fn verify_id_token(&self, id_token: &str, jwks: &JwkSet, nonce: &str) -> Result<OidcIdentity> {
@@ -206,6 +212,20 @@ impl OidcClient {
 
     fn verify(&self, id_token: &str, jwks: &JwkSet, nonce: Option<&str>) -> Result<OidcIdentity> {
         let header = decode_header(id_token)?;
+        // Pin to asymmetric signature algorithms; never trust an HS*/none
+        // `alg` from the token header (the JWKS keys are public, so an HS*
+        // token would let anyone forge one).
+        const ALLOWED: [Algorithm; 6] = [
+            Algorithm::RS256,
+            Algorithm::RS384,
+            Algorithm::RS512,
+            Algorithm::ES256,
+            Algorithm::ES384,
+            Algorithm::EdDSA,
+        ];
+        if !ALLOWED.contains(&header.alg) {
+            bail!("disallowed token algorithm: {:?}", header.alg);
+        }
         let jwk = header
             .kid
             .as_ref()
@@ -323,6 +343,24 @@ mod tests {
             .unwrap();
         assert_eq!(id.subject_key, format!("oidc:{ISS}#u1"));
         assert_eq!(id.email, "alice@example.com");
+    }
+
+    #[test]
+    fn join_nonce_bound_to_fingerprint() {
+        // The nonce the CLI derives from a fingerprint must be exactly what
+        // control expects; a token for a different fingerprint is rejected.
+        let fp = "abc123";
+        let nonce = mlsh_crypto::pkce::nonce_for_fingerprint(fp);
+        let mut c = base_claims();
+        c["nonce"] = nonce.clone().into();
+        let tok = sign(&c);
+        assert!(client(vec![])
+            .verify_id_token(&tok, &keys().jwks, &nonce)
+            .is_ok());
+        let other = mlsh_crypto::pkce::nonce_for_fingerprint("different-fp");
+        assert!(client(vec![])
+            .verify_id_token(&tok, &keys().jwks, &other)
+            .is_err());
     }
 
     #[test]

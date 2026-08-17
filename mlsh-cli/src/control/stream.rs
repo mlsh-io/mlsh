@@ -160,7 +160,11 @@ async fn dispatch(
             let Some(oidc) = crate::control::auth::oidc::client() else {
                 return ControlResponse::error("oidc_disabled", "OIDC not configured");
             };
-            let identity = match oidc.verify_join_token(id_token).await {
+            // The id_token must carry a nonce bound to the fingerprint signal
+            // verified against the node's TLS certificate — so a token cannot
+            // be replayed to enroll a different node.
+            let expected_nonce = mlsh_crypto::pkce::nonce_for_fingerprint(&auth.caller_fingerprint);
+            let identity = match oidc.verify_join_token(id_token, &expected_nonce).await {
                 Ok(i) => i,
                 Err(e) => {
                     return ControlResponse::OidcAdoptVerdict {
