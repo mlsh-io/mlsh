@@ -102,6 +102,26 @@ async fn handle_stream(
                 send.finish().ok();
                 return Ok(());
             }
+            // The registered fingerprint must be the one the node proved
+            // possession of in the TLS handshake, not a self-asserted body
+            // value. This binds every admission proof (setup code, invite,
+            // future OIDC) to the connecting keypair.
+            match extract_peer_fingerprint(conn) {
+                Some(fp) if fp == fingerprint => {}
+                _ => {
+                    warn!(
+                        cluster_id,
+                        "Adopt fingerprint does not match client certificate"
+                    );
+                    let resp = ServerMessage::error(
+                        "auth_failed",
+                        "Fingerprint does not match certificate",
+                    );
+                    framing::write_msg(&mut send, &resp).await.ok();
+                    send.finish().ok();
+                    return Ok(());
+                }
+            }
             let resp = handle_adopt(
                 state,
                 &AdoptRequest {
