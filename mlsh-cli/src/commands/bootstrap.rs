@@ -35,11 +35,17 @@ pub struct BootstrapOutput {
 
 /// Run the QUIC adopt + TOML write. Caller is responsible for any pre/post
 /// printing tailored to its command.
+/// Load (or create once) this machine's node identity. Idempotent, so callers
+/// that need the fingerprint before adopting can call it early and `run` will
+/// return the same identity.
+pub fn ensure_identity(node_id: &str) -> Result<mlsh_crypto::identity::NodeIdentity> {
+    let identity_dir = crate::config::config_dir()?.join("identity");
+    mlsh_crypto::identity::load_or_generate(&identity_dir, node_id)
+        .map_err(|e| anyhow::anyhow!("Failed to generate identity: {}", e))
+}
+
 pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
-    let config_dir = crate::config::config_dir()?;
-    let identity_dir = config_dir.join("identity");
-    let identity = mlsh_crypto::identity::load_or_generate(&identity_dir, input.node_id)
-        .map_err(|e| anyhow::anyhow!("Failed to generate identity: {}", e))?;
+    let identity = ensure_identity(input.node_id)?;
 
     let public_key = mlsh_crypto::invite::extract_public_key_from_cert_pem(&identity.cert_pem)
         .map(|pk| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&pk))
@@ -105,7 +111,7 @@ pub async fn run(input: BootstrapInput<'_>) -> Result<BootstrapOutput> {
         overlay_ip,
         overlay_subnet,
         cluster_id: resp_cluster_id,
-        identity_dir,
+        identity_dir: crate::config::config_dir()?.join("identity"),
         fingerprint: identity.fingerprint,
     })
 }

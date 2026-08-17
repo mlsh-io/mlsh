@@ -46,6 +46,31 @@ enum Commands {
         name: Option<String>,
     },
 
+    /// Enroll this machine in a cluster by signing in with your identity provider
+    Join {
+        /// Join URL (e.g. mlsh://signal.example.com/join/<payload>)
+        url: String,
+
+        /// Node name (defaults to hostname)
+        #[arg(long)]
+        name: Option<String>,
+
+        /// Loopback port for the browser callback
+        #[arg(long)]
+        callback_port: Option<u16>,
+
+        /// Address the browser callback listens on and is reached at.
+        /// Defaults to 127.0.0.1; set a LAN IP when the browser runs on
+        /// another device (headless machine, phone on the same network).
+        #[arg(long)]
+        callback_host: Option<String>,
+
+        /// Interface to bind the callback listener on, when it differs
+        /// from --callback-host (e.g. browser behind an SSH tunnel).
+        #[arg(long)]
+        callback_bind: Option<String>,
+    },
+
     /// Connect to a cluster via QUIC overlay
     Connect {
         /// Peer name or "node.cluster" syntax (e.g. "homelab" or "nas.homelab")
@@ -328,6 +353,22 @@ async fn run_cli() -> Result<()> {
             ),
         },
         Commands::Adopt { url, name } => commands::adopt::handle_adopt(&url, name.as_deref()).await,
+        Commands::Join {
+            url,
+            name,
+            callback_port,
+            callback_host,
+            callback_bind,
+        } => {
+            commands::join::handle_join(
+                &url,
+                name.as_deref(),
+                callback_port,
+                callback_host.as_deref(),
+                callback_bind.as_deref(),
+            )
+            .await
+        }
         Commands::Connect { name, foreground } => {
             commands::connect::handle_connect(&name, foreground).await
         }

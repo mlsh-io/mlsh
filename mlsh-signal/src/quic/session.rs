@@ -436,6 +436,12 @@ async fn handle_adopt(state: &QuicState, req: &AdoptRequest) -> ServerMessage {
 
     let role = if is_setup_code {
         "admin".to_string()
+    } else if let Some(id_token) = pre_auth_token.strip_prefix("oidc:") {
+        // 3. OIDC id_token → control node validates the human identity.
+        match verify_oidc_with_control(state, cluster_id, node_uuid, fingerprint, id_token).await {
+            Ok(target_role) => target_role,
+            Err(e) => return ServerMessage::error("unauthorized", &e),
+        }
     } else {
         match verify_sponsor_invite(state, cluster_id, pre_auth_token).await {
             Ok(target_role) => target_role,
@@ -528,6 +534,76 @@ async fn check_quota_with_cloud(state: &QuicState, cluster_id: &str) -> Result<(
         return Err(body.reason.unwrap_or_else(|| "quota exceeded".into()));
     }
     Ok(())
+}
+
+/// Ask the cluster's control node for an OIDC admission verdict.
+/// Signal stays identity-agnostic: it only transports the id_token and
+/// trusts control's answer.
+async fn verify_oidc_with_control(
+    state: &QuicState,
+    cluster_id: &str,
+    node_uuid: &str,
+    fingerprint: &str,
+    id_token: &str,
+) -> Result<String, String> {
+    let control = crate::db::find_control_node(&state.db, cluster_id)
+        .await
+        .map_err(|_| "Database error".to_string())?
+        .ok_or("No control node")?;
+    let conn = {
+        let g = state.control_conns.lock().await;
+        g.get(&control.fingerprint).cloned()
+    }
+    .filter(|c| c.close_reason().is_none())
+    .ok_or("Control node offline")?;
+
+    let rpc = async {
+        let (mut send, mut recv) = conn.open_bi().await.map_err(|e| e.to_string())?;
+        let cluster_name = crate::db::get_cluster_name_by_id(&state.db, cluster_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let header = mlsh_protocol::control::ControlAuthHeader {
+            cluster_id: cluster_id.to_string(),
+            cluster_name,
+            caller_node_uuid: node_uuid.to_string(),
+            caller_fingerprint: fingerprint.to_string(),
+            caller_role: "join".to_string(),
+        };
+        framing::write_msg(&mut send, &header)
+            .await
+            .map_err(|e| e.to_string())?;
+        framing::write_msg(
+            &mut send,
+            &mlsh_protocol::control::ControlRequest::OidcAdoptCheck {
+                id_token: id_token.to_string(),
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let _ = send.finish();
+        framing::read_msg::<mlsh_protocol::control::ControlResponse>(&mut recv)
+            .await
+            .map_err(|e| e.to_string())
+    };
+    let resp = tokio::time::timeout(Duration::from_secs(15), rpc)
+        .await
+        .map_err(|_| "Control node timeout".to_string())??;
+    match resp {
+        mlsh_protocol::control::ControlResponse::OidcAdoptVerdict {
+            accepted: true,
+            role,
+            ..
+        } => Ok(role),
+        mlsh_protocol::control::ControlResponse::OidcAdoptVerdict {
+            accepted: false,
+            message,
+            ..
+        } => Err(message.unwrap_or_else(|| "OIDC login rejected".into())),
+        mlsh_protocol::control::ControlResponse::Error { message, .. } => Err(message),
+        _ => Err("Unexpected control response".to_string()),
+    }
 }
 
 /// Verify a sponsor-signed invite token.

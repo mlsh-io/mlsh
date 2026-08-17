@@ -87,7 +87,7 @@ pub fn set_cookie_header(value: &str, clear: bool) -> HeaderValue {
     HeaderValue::from_str(&cookie).expect("ASCII-only cookie")
 }
 
-fn sign_cookie(key: &SessionKey, session_id: &str) -> String {
+pub fn sign_cookie(key: &SessionKey, session_id: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(&key.0).expect("HMAC accepts any key length");
     mac.update(session_id.as_bytes());
     let tag = mac.finalize().into_bytes();

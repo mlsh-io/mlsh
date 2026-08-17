@@ -472,6 +472,142 @@ pub async fn bootstrap_create(
     (StatusCode::OK, headers, Json(UserView::from(user))).into_response()
 }
 
+/// Cookie carrying the (signed) OAuth `state`, so the callback can only be
+/// redeemed in the browser that started the flow. Scoped to the OIDC paths;
+/// `SameSite=Lax` so it survives the top-level redirect back from the IdP.
+const OIDC_STATE_COOKIE: &str = "mlsh_oidc_state";
+
+fn oidc_state_cookie(signed: &str, clear: bool) -> axum::http::HeaderValue {
+    let max_age = if clear { 0 } else { 600 };
+    axum::http::HeaderValue::from_str(&format!(
+        "{OIDC_STATE_COOKIE}={value}; Path=/auth/oidc; HttpOnly; SameSite=Lax; Max-Age={max_age}",
+        value = if clear { "" } else { signed },
+    ))
+    .expect("ASCII-only cookie")
+}
+
+fn read_oidc_state_cookie(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    raw.split(';')
+        .find_map(|p| p.trim().strip_prefix(&format!("{OIDC_STATE_COOKIE}=")))
+        .map(|v| v.to_string())
+}
+
+/// Generic OIDC login start: 302 to the IdP authorization URL.
+/// HTTP surface in `crate::control::api::auth::oidc_start`.
+pub async fn oidc_start(State(state): State<AuthState>, headers: HeaderMap) -> Response {
+    let Some(oidc) = super::oidc::client() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response();
+    };
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing Host header").into_response();
+    };
+    match oidc.start(host).await {
+        Ok((url, oauth_state)) => {
+            let signed = session::sign_cookie(&state.key, &oauth_state);
+            let mut out = HeaderMap::new();
+            out.insert(SET_COOKIE, oidc_state_cookie(&signed, false));
+            (out, axum::response::Redirect::temporary(&url)).into_response()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc start failed");
+            (StatusCode::BAD_GATEWAY, "IdP unreachable").into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct OidcCallbackQuery {
+    pub code: String,
+    pub state: String,
+}
+
+/// Generic OIDC callback: validate, upsert the user keyed by
+/// `oidc:<iss>#<sub>` in `cloud_user_id`, set a session cookie, go home.
+/// HTTP surface in `crate::control::api::auth::oidc_callback`.
+pub async fn oidc_callback(
+    State(state): State<AuthState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<OidcCallbackQuery>,
+) -> Response {
+    let Some(oidc) = super::oidc::client() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response();
+    };
+    let Some(host) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing Host header").into_response();
+    };
+    // The state must match the cookie set when this browser started the flow,
+    // so an attacker's code+state cannot be redeemed in a victim's browser.
+    let cookie_state = read_oidc_state_cookie(&headers)
+        .and_then(|raw| session::verify_signed_cookie(&state.key, &raw));
+    if cookie_state.as_deref() != Some(q.state.as_str()) {
+        return (StatusCode::UNAUTHORIZED, "state mismatch").into_response();
+    }
+    let identity = match oidc.callback(host, &q.code, &q.state).await {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc callback failed");
+            return (StatusCode::UNAUTHORIZED, "OIDC login failed").into_response();
+        }
+    };
+    // Fail closed: an identity we have never seen is provisioned only when the
+    // deployment scopes who may join (group allow-list or explicit opt-in).
+    let user = match state
+        .store
+        .find_by_cloud_user_id(&identity.subject_key)
+        .await
+    {
+        Ok(Some(u)) => u,
+        Ok(None) if oidc.may_provision() => {
+            match state
+                .store
+                .create_managed_user(super::store::NewManagedUser {
+                    email: &identity.email,
+                    cloud_user_id: &identity.subject_key,
+                })
+                .await
+            {
+                Ok(u) => u,
+                Err(e) => {
+                    tracing::warn!(error = %e, "oidc user creation failed");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+                }
+            }
+        }
+        Ok(None) => {
+            return (
+                StatusCode::FORBIDDEN,
+                "no account for this identity; ask an admin to grant access",
+            )
+                .into_response();
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "oidc user lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    if !user.active {
+        return (StatusCode::FORBIDDEN, "account suspended").into_response();
+    }
+    let cookie = match session::issue(&state, &user.id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "session issue failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let mut out = HeaderMap::new();
+    out.append(SET_COOKIE, session::set_cookie_header(&cookie, false));
+    out.append(SET_COOKIE, oidc_state_cookie("", true));
+    (out, axum::response::Redirect::temporary("/")).into_response()
+}
+
 fn current_session_id(state: &AuthState, headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     for piece in raw.split(';') {

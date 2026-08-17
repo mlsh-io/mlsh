@@ -9,6 +9,7 @@ const router = useRouter()
 const route = useRoute()
 
 const mode = ref<ClusterMode | null>(null)
+const oidcAvailable = ref(false)
 
 // --- Self-hosted flow (email + password [+ TOTP]) ---
 const email = ref('')
@@ -39,6 +40,13 @@ onMounted(async () => {
     mode.value = (await api.bootstrapStatus()).mode
   } catch {
     /* fall back to the password form on failure */
+  }
+  try {
+    // 302 (opaqueredirect) when OIDC is configured, 503 otherwise.
+    const r = await fetch('/auth/oidc/start', { redirect: 'manual' })
+    oidcAvailable.value = r.type === 'opaqueredirect' || r.status === 302
+  } catch {
+    /* keep the button hidden */
   }
 })
 
@@ -211,6 +219,7 @@ function cancelDevice() {
         <Btn variant="primary" type="submit" :disabled="submitting">
           {{ submitting ? 'Signing in…' : totpRequired ? 'Verify' : 'Sign in' }}
         </Btn>
+        <a v-if="oidcAvailable" class="sso" href="/auth/oidc/start">Sign in with SSO</a>
       </form>
     </div>
   </div>
@@ -263,6 +272,13 @@ input {
 }
 input:focus { outline: none; border-color: var(--gold); }
 .error { color: var(--red); font-size: 13px; margin: 0; }
+.sso {
+  text-align: center;
+  font-size: 13px;
+  color: var(--gold);
+  text-decoration: none;
+}
+.sso:hover { text-decoration: underline; }
 
 .device-card {
   display: flex;

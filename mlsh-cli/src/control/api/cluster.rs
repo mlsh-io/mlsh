@@ -19,7 +19,35 @@ pub fn router(state: AuthState) -> Router {
     Router::new()
         .route("/api/v1/cluster", get(get_cluster))
         .route("/api/v1/cluster/expose", get(get_expose).put(put_expose))
+        .route("/api/v1/cluster/join-url", get(get_join_url))
         .with_state(state)
+}
+
+/// Non-secret join URL for `mlsh join`: names the cluster and pins
+/// fingerprints; the OIDC login is the actual admission proof.
+pub async fn get_join_url(State(state): State<AuthState>, _user: HumanCaller) -> Response {
+    use base64::Engine;
+    let (Ok(issuer), Ok(client_id)) = (
+        std::env::var("MLSH_CONTROL_OIDC_ISSUER"),
+        std::env::var("MLSH_CONTROL_OIDC_CLIENT_ID"),
+    ) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "OIDC not configured").into_response();
+    };
+    let c = &state.cluster;
+    let jref = crate::commands::join::JoinRef {
+        cluster_name: c.name.clone(),
+        cluster_id: c.cluster_id.clone(),
+        signal_fingerprint: c.signal_fingerprint.clone(),
+        root_fingerprint: c.root_fingerprint.clone(),
+        issuer,
+        client_id,
+    };
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(serde_json::to_vec(&jref).expect("serialize join ref"));
+    Json(serde_json::json!({
+        "url": format!("mlsh://{}/join/{}", c.signal_endpoint, payload)
+    }))
+    .into_response()
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
